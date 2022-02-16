@@ -76,10 +76,13 @@ enum {
 #if !defined(IA64)
 
 class vframeStreamForte : public vframeStreamCommon {
+  bool forte_next_into_inlined = false;
  public:
   // constructor that starts with sender of frame fr (top_frame)
   vframeStreamForte(JavaThread *jt, frame fr, bool stop_at_java_call_stub);
   void forte_next();
+  bool forte_next_did_go_into_inlined() { return forte_next_into_inlined; }
+  bool inlined() { return _sender_decode_offset != 0; }
 };
 
 
@@ -116,10 +119,14 @@ vframeStreamForte::vframeStreamForte(JavaThread *jt,
 // interpreted and the current sender is compiled, we verify that the
 // current sender is also walkable. If it is not walkable, then we mark
 // the current vframeStream as at the end.
+//
+// returns true if inlined
 void vframeStreamForte::forte_next() {
   // handle frames with inlining
+  forte_next_into_inlined = false;
   if (_mode == compiled_mode &&
       vframeStreamCommon::fill_in_compiled_inlined_sender()) {
+    forte_next_into_inlined = true;
     return;
   }
 
@@ -716,8 +723,8 @@ static bool is_recorded_frame(JavaThread* thread, frame frame) {
 template<typename T = int>
 static int get_frame_count(JavaThread* thread, frame top_frame, int* raw_frame_count,
 void (*raw_frame_func)(frame&, T),
-void (*interp_frame_func)(interpretedVFrame&, T),
-void (*compiled_frame_func)(compiledVFrame&, bool, T),
+void (*interp_frame_func)(frame&, Method*, int, T),
+void (*compiled_frame_func)(Method*, int, bool, T),
 void (*misc_frame_func)(frame&, T),
 T args = 0) {
   RegisterMap map(thread, false, false);
@@ -733,40 +740,45 @@ T args = 0) {
       raw_frame_func(top_frame, args);
       count++;
       RegisterMap map(thread, false, false);
-      char* mem[vframe::max_allocated_size()];
 
       if (top_frame.is_java_frame()) { // another validity check
-        javaVFrame *vframe = (javaVFrame*)mem;
-        vframe::new_vframe((const frame*)&top_frame, (const RegisterMap*)&map, thread, vframe);
-        if (!Method::is_valid_method(vframe->method())) {
-          // we throw away everything we've gathered in this sample since
-          // none of it is safe
-          return ticks_GC_active; // -2
-        }
-      }
+        Method *method_p = NULL;
+        int bci_p = 0;
 
-      if (top_frame.is_interpreted_frame()) {
-        interpretedVFrame *iframe = (interpretedVFrame*)mem;
-        vframe::new_vframe((const frame*)&top_frame, (const RegisterMap*)&map, thread, iframe);
-        interp_frame_func(*iframe, args);
-      } else if (top_frame.is_compiled_frame()) {
-        compiledVFrame *cframe = (compiledVFrame*)mem;
-        vframe::new_vframe((const frame*)&top_frame, (const RegisterMap*)&map, thread, (vframe*)cframe);
-        // compiled frames might be inlined
-        char* mem2[sizeof(compiledVFrame)];
-        compiledVFrame *cframe2 = (compiledVFrame*)mem2;
-        while (true) {
-          bool has_outer = cframe->sender(cframe2);
-          if (has_outer && cframe2->is_compiled_frame() &&
-             cframe->frame_pointer()->fp() == top_frame.fp() &&
-             cframe->frame_pointer()->fp() == cframe2->frame_pointer()->fp()) { // cframe is inlined
-            compiled_frame_func(*cframe, true, args);
-            memcpy((char*)cframe, (char*)cframe2, sizeof(compiledVFrame));
-            count++;
-          } else {
-            compiled_frame_func(*cframe, false, args);
-            break;
+        if (top_frame.is_interpreted_frame() && is_decipherable_interpreted_frame(thread, &top_frame, &method_p, &bci_p)) {
+          if (!Method::is_valid_method(method_p)) {
+            // we throw away everything we've gathered in this sample since
+            // none of it is safe
+            return ticks_GC_active; // -2
           }
+          interp_frame_func(top_frame, method_p, bci_p, args);
+        } else if (top_frame.is_compiled_frame() && !top_frame.is_native_frame()) {
+          frame enclosing_frame = top_frame;
+          CompiledMethod* nm = enclosing_frame.cb()->as_compiled_method();
+          method_p = nm->method();
+          bci_p = -1;
+          if (!is_decipherable_compiled_frame(thread, &enclosing_frame, nm) || !nm->is_compiled() || top_frame.cb() == NULL){
+            return -1;
+          }
+
+          vframeStreamForte st(thread, top_frame, false);
+
+          for (; !st.at_end(); st.forte_next()) {
+            Method* method = st.method();
+            int bci = st.bci();
+
+            if (!Method::is_valid_method(method)) {
+              // we throw away everything we've gathered in this sample since
+              // none of it is safe
+              return ticks_GC_active;
+            }
+            compiled_frame_func(method, bci, st.inlined(), args);
+            if (!st.inlined()) {
+              break;
+            }
+          }
+        } else {
+          return -1;
         }
       } else {
         misc_frame_func(top_frame, args);
@@ -785,7 +797,6 @@ class frameState {
   int current_frame;
 public:
   frameState(ASGCT_CallTrace2* trace, int depth, int actual_frames): trace(trace), depth(depth) {
-    printf("depth %d actual_depth %d current_frame %d\n", depth, actual_frames, actual_frames - 1);
     current_frame = actual_frames - 1;
   }
 
@@ -797,31 +808,29 @@ public:
   }
 };
 
-void handle_interpreted_frame(interpretedVFrame& frame, frameState &state) {
-  Method *method = frame.method();
-  printf("interpreted frame\n");
+void handle_interpreted_frame(frame& frame, Method* method, int bci, frameState &state) {
+  //printf("interpreted frame %s\n", method->name_and_sig_as_C_string());
   state.register_current_frame({
-    frame.bci(),
+    bci,
     method->find_jmethod_id_or_null(),
-    frame.fr().pc(),
+    0,
     encode_type(FRAME_INTERPRETED, CompLevel_none)
   });
 }
 
-void handle_compiled_frame(compiledVFrame& frame, bool inlined, frameState &state) {
-  Method *method = frame.method();
-  printf("compiled frame %s \n", method->name_and_sig_as_C_string());
+void handle_compiled_frame(Method* method, int bci, bool inlined, frameState &state) {
+  //printf("compiled frame %s %s\n", method->name_and_sig_as_C_string(), inlined ? "inlined" : "");
   int16_t type = encode_type(inlined ? FRAME_INLINED : FRAME_JIT_COMPILED, method->highest_comp_level());
   state.register_current_frame({
-    frame.bci(),
+    bci,
     method->find_jmethod_id_or_null(),
-    frame.fr().pc(),
+    0,
     type
   });
 }
 
 void handle_misc_frame(frame& frame, frameState &state) {
-  printf("misc frame\n");
+  //printf("misc frame\n");
   bool is_native_frame = frame.is_native_frame();
   state.register_current_frame({
       -4,
@@ -837,11 +846,9 @@ static void forte_fill_call_trace_given_top2(JavaThread* thd,
                                             int depth,
                                             frame top_frame) {
   assert(trace->frames != NULL, "trace->frames must be non-NULL");
-  printf("trace->frames %p\n", trace->frames);
   NoHandleMark nhm;
   int raw_frame_count;
   int rec_frame_count = get_frame_count(thd, top_frame, &raw_frame_count, nil_function, nil_function, nil_function, nil_function);
-  printf("rec_frame_count %d\n", rec_frame_count); // around 90% of all frames are != -1 (fastdebug + Thread example)
   if (rec_frame_count == -1) {
     trace->num_frames = 0;
     return;
