@@ -700,14 +700,6 @@ typedef struct {
     ASGCT_CallFrame2 *frames;          // frames
 } ASGCT_CallTrace2;
 
-static bool forte_new_frame(const frame* f, const RegisterMap* reg_map, JavaThread* thread, vframe* vframe_) {
-  if (f->cb() != NULL && f->cb()->is_compiled() && ((CompiledMethod*)f->cb())->pc_desc_at(f->pc()) == NULL) {
-    return false;
-  }
-  vframe::new_vframe(f, reg_map, thread, vframe_);
-  return true;
-}
-
 static bool is_recorded_frame(JavaThread* thread, frame frame) {
   if (frame.is_ignored_frame() || frame.is_runtime_frame()) {
     return false;
@@ -794,14 +786,17 @@ class frameState {
   ASGCT_CallTrace2* trace;
   int depth;
   int current_frame;
+  int index;
 public:
   frameState(ASGCT_CallTrace2* trace, int depth, int actual_frames): trace(trace), depth(depth) {
     current_frame = actual_frames - 1;
+    index = 0;
   }
 
   void register_current_frame(ASGCT_CallFrame2 frame) {
     if (current_frame < depth) {
-      trace->frames[current_frame] = frame;
+      trace->frames[index] = frame;
+      index++;
     }
     current_frame--;
   }
