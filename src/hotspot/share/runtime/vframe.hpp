@@ -65,6 +65,9 @@ class vframe: public ResourceObj {
  public:
   // Factory methods for creating vframes
   static vframe* new_vframe(const frame* f, const RegisterMap *reg_map, JavaThread* thread);
+  // with preallocation
+  static void new_vframe(const frame* f, const RegisterMap *reg_map, JavaThread* thread, vframe* vframe_);
+  static size_t max_allocated_size();
   static vframe* new_vframe(StackFrameStream& fst, JavaThread* thread);
 
   // Accessors
@@ -82,6 +85,8 @@ class vframe: public ResourceObj {
 
   // Returns the sender vframe
   virtual vframe* sender() const;
+  // stores the sender in the passed vframe if return is true
+  virtual bool sender(vframe* sender) const;
 
   // Returns the next javaVFrame on the stack (skipping all other kinds of frame)
   javaVFrame *java_sender() const;
