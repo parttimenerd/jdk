@@ -702,13 +702,45 @@ typedef struct {
 } ASGCT_CallTrace2;
 
 static bool is_recorded_frame(JavaThread* thread, frame frame) {
-  if (frame.is_ignored_frame() || frame.is_runtime_frame()) {
-    return false;
-  }
   if (frame.is_interpreted_frame()) {
     return frame.is_interpreted_frame_valid(thread);
   }
   return true;
+}
+
+/**
+ *
+ * Gets the caller frame of `fr`.
+ *
+ * based on the next_frame method from vmError.cpp aka pns gdb command
+ *
+ * only usable when we are sure to not have any compiled frames afterwards,
+ * as this method might trip up
+ *
+ * Problem: leads to "invalid bci or invalid scope error" in vframestream
+ */
+static frame next_frame(JavaThread* t, frame fr, bool supports_os_get_frame) {
+  // Compiled code may use EBP register on x86 so it looks like
+  // non-walkable C frame. Use frame.sender() for java frames.
+  frame invalid;
+  // Catch very first native frame by using stack address.
+  // For JavaThread stack_base and stack_size should be set.
+  if (!t->is_in_full_stack((address)(fr.real_fp() + 1))) {
+    return invalid;
+  }
+  if (fr.is_java_frame() || fr.is_native_frame() || fr.is_runtime_frame() || !supports_os_get_frame) {
+    printf("run\n");
+    if (!fr.safe_for_sender(t)) {
+      return invalid;
+    }
+    RegisterMap map(t, false, false); // No update
+    return fr.sender(&map);
+  } else {
+    // is_first_C_frame() does only simple checks for frame pointer,
+    // it will pass if java compiled code has a pointer in EBP.
+    if (os::is_first_C_frame(&fr)) return invalid;
+    return os::get_sender_for_C_frame(&fr);
+  }
 }
 
 // -1: problems somewhere, -2 if gc seems to be active, otherwise the count of non ignored frames
@@ -717,39 +749,46 @@ static int get_frame_count(JavaThread* thread, frame top_frame, int* raw_frame_c
 void (*raw_frame_func)(frame&, T),
 void (*interp_frame_func)(frame&, Method*, int, T),
 void (*compiled_frame_func)(Method*, int, bool, T),
-void (*misc_frame_func)(frame&, T),
+void (*misc_frame_func)(frame&, bool, T),
 T args = 0) {
+  printf("try\n");
   RegisterMap map(thread, false, false);
   int count = 0;
   int raw_count = 0;
   do {
     if (!top_frame.safe_for_sender(thread)) {
-      return -1;
+      //printf("unsafe\n");
+      count = -1; // try with next_frame below
+      break;
     }
     top_frame = top_frame.sender(&map);
     if (is_recorded_frame(thread, top_frame)) {
       raw_frame_count++;
       raw_frame_func(top_frame, args);
       count++;
-      RegisterMap map(thread, false, false);
 
       if (top_frame.is_java_frame()) { // another validity check
         Method *method_p = NULL;
         int bci_p = 0;
 
-        if (top_frame.is_interpreted_frame() && is_decipherable_interpreted_frame(thread, &top_frame, &method_p, &bci_p)) {
+        if (top_frame.is_interpreted_frame()) {
+          if (!is_decipherable_interpreted_frame(thread, &top_frame, &method_p, &bci_p)) {
+            printf("interpret not decipherable\n");
+            return -1;
+          }
           if (!Method::is_valid_method(method_p)) {
             // we throw away everything we've gathered in this sample since
             // none of it is safe
+            printf("gc_active\n");
             return ticks_GC_active; // -2
           }
           interp_frame_func(top_frame, method_p, bci_p, args);
-        } else if (top_frame.is_compiled_frame() && !top_frame.is_native_frame()) {
+        } else if (top_frame.is_compiled_frame()) {
           frame enclosing_frame = top_frame;
           CompiledMethod* nm = enclosing_frame.cb()->as_compiled_method();
           method_p = nm->method();
           bci_p = -1;
-          if (!is_decipherable_compiled_frame(thread, &enclosing_frame, nm) || !nm->is_compiled() || top_frame.cb() == NULL){
+          if (!is_decipherable_compiled_frame(thread, &enclosing_frame, nm)){
             return -1;
           }
 
@@ -770,13 +809,18 @@ T args = 0) {
             }
           }
         } else {
-          return -1;
+          misc_frame_func(top_frame, false, args);
         }
-      } else {
-        misc_frame_func(top_frame, args);
       }
+    } else {
+      misc_frame_func(top_frame, false, args);
     }
-  } while (!top_frame.is_entry_frame());
+  } while (!top_frame.is_first_frame());
+  while ((top_frame = next_frame(thread, top_frame, true)).pc() != NULL) {
+    misc_frame_func(top_frame, true, args);
+    count++;
+    raw_frame_count++;
+  }
   return count;
 }
 
@@ -824,7 +868,7 @@ void handle_compiled_frame(Method* method, int bci, bool inlined, frameState &st
   });
 }
 
-void handle_misc_frame(frame& frame, frameState &state) {
+void handle_misc_frame(frame& frame, bool after_end, frameState &state) {
   //printf("misc frame\n");
   bool is_native_frame = frame.is_native_frame();
   state.register_current_frame({
