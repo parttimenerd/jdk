@@ -802,7 +802,11 @@ T args = 0) {
               // none of it is safe
               return ticks_GC_active;
             }
-            compiled_frame_func(method, bci, st.inlined(), args);
+            if (method->find_jmethod_id_or_null() != NULL) {
+              compiled_frame_func(method, bci, st.inlined(), args);
+            } else {  // there has to be something wrong here
+              return -1;
+            }
             if (!st.inlined()) {
               break;
             }
