@@ -838,6 +838,8 @@ public:
     }
     current_frame--;
   }
+
+  int registered_frames() { return index; }
 };
 
 void handle_interpreted_frame(frame& frame, Method* method, int bci, frameState &state) {
@@ -895,7 +897,7 @@ static void forte_fill_call_trace_given_top2(JavaThread* thd,
     handle_compiled_frame,
     handle_misc_frame,
     state);
-  trace->num_frames = rec_frame_count;
+  trace->num_frames = state.registered_frames();
   return;
 }
 
