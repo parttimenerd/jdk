@@ -700,13 +700,6 @@ typedef struct {
     ASGCT_CallFrame2 *frames;          // frames
 } ASGCT_CallTrace2;
 
-static bool is_recorded_frame(JavaThread* thread, frame frame) {
-  if (frame.is_interpreted_frame()) {
-    return frame.is_interpreted_frame_valid(thread);
-  }
-  return true;
-}
-
 /**
  *
  * Gets the caller frame of `fr`.
@@ -728,7 +721,6 @@ static frame next_frame(JavaThread* t, frame fr, bool supports_os_get_frame) {
     return invalid;
   }
   if (fr.is_java_frame() || fr.is_native_frame() || fr.is_runtime_frame() || !supports_os_get_frame) {
-    printf("run\n");
     if (!fr.safe_for_sender(t)) {
       return invalid;
     }
@@ -744,76 +736,76 @@ static frame next_frame(JavaThread* t, frame fr, bool supports_os_get_frame) {
 
 // -1: problems somewhere, -2 if gc seems to be active, otherwise the count of non ignored frames
 template<typename T = int>
-static int get_frame_count(JavaThread* thread, frame top_frame, int* raw_frame_count,
+static int get_frame_count(JavaThread* thread,
+frame top_frame,
 void (*raw_frame_func)(frame&, T),
 void (*interp_frame_func)(frame&, Method*, int, T),
 void (*compiled_frame_func)(Method*, int, bool, T),
 void (*misc_frame_func)(frame&, bool, T),
 T args = 0) {
-  printf("try\n");
   RegisterMap map(thread, false, false);
   int count = 0;
   int raw_count = 0;
   do {
     if (!top_frame.safe_for_sender(thread)) {
       //printf("unsafe\n");
-      count = -1; // try with next_frame below
-      break;
+      if (next_frame(thread, top_frame, true).pc() != NULL) {
+        // we are still able to walk the C stack
+        break;
+      }
+      return -1;
     }
     top_frame = top_frame.sender(&map);
-    if (is_recorded_frame(thread, top_frame)) {
-      raw_frame_count++;
-      raw_frame_func(top_frame, args);
-      count++;
+    raw_frame_func(top_frame, args);
+    count++;
 
-      if (top_frame.is_java_frame()) { // another validity check
-        Method *method_p = NULL;
-        int bci_p = 0;
+    if (top_frame.is_java_frame()) { // another validity check
+      Method *method_p = NULL;
+      int bci_p = 0;
 
-        if (top_frame.is_interpreted_frame()) {
-          if (!is_decipherable_interpreted_frame(thread, &top_frame, &method_p, &bci_p)) {
-            printf("interpret not decipherable\n");
-            return -1;
-          }
-          if (!Method::is_valid_method(method_p)) {
+      if (top_frame.is_interpreted_frame()) {
+        if (!top_frame.is_interpreted_frame_valid(thread) || !is_decipherable_interpreted_frame(thread, &top_frame, &method_p, &bci_p)) {
+          printf("interpret not decipherable\n");
+          return -1;
+        }
+        if (!Method::is_valid_method(method_p)) {
+          // we throw away everything we've gathered in this sample since
+          // none of it is safe
+          printf("gc_active\n");
+          return ticks_GC_active; // -2
+        }
+        interp_frame_func(top_frame, method_p, bci_p, args);
+      } else if (top_frame.is_compiled_frame()) {
+        frame enclosing_frame = top_frame;
+        CompiledMethod* nm = enclosing_frame.cb()->as_compiled_method();
+        method_p = nm->method();
+        bci_p = -1;
+        if (!is_decipherable_compiled_frame(thread, &enclosing_frame, nm)){
+          return -1;
+        }
+
+        vframeStreamForte st(thread, top_frame, false);
+
+        for (; !st.at_end(); st.forte_next()) {
+          Method* method = st.method();
+          int bci = st.bci();
+
+          if (!Method::is_valid_method(method)) {
             // we throw away everything we've gathered in this sample since
             // none of it is safe
-            printf("gc_active\n");
-            return ticks_GC_active; // -2
+            return ticks_GC_active;
           }
-          interp_frame_func(top_frame, method_p, bci_p, args);
-        } else if (top_frame.is_compiled_frame()) {
-          frame enclosing_frame = top_frame;
-          CompiledMethod* nm = enclosing_frame.cb()->as_compiled_method();
-          method_p = nm->method();
-          bci_p = -1;
-          if (!is_decipherable_compiled_frame(thread, &enclosing_frame, nm)){
+          if (method->find_jmethod_id_or_null() != NULL) {
+            compiled_frame_func(method, bci, st.inlined(), args);
+          } else {  // there has to be something wrong here
             return -1;
           }
-
-          vframeStreamForte st(thread, top_frame, false);
-
-          for (; !st.at_end(); st.forte_next()) {
-            Method* method = st.method();
-            int bci = st.bci();
-
-            if (!Method::is_valid_method(method)) {
-              // we throw away everything we've gathered in this sample since
-              // none of it is safe
-              return ticks_GC_active;
-            }
-            if (method->find_jmethod_id_or_null() != NULL) {
-              compiled_frame_func(method, bci, st.inlined(), args);
-            } else {  // there has to be something wrong here
-              return -1;
-            }
-            if (!st.inlined()) {
-              break;
-            }
+          if (!st.inlined()) {
+            break;
           }
-        } else {
-          misc_frame_func(top_frame, false, args);
         }
+      } else {
+        misc_frame_func(top_frame, false, args);
       }
     } else {
       misc_frame_func(top_frame, false, args);
@@ -822,7 +814,6 @@ T args = 0) {
   while ((top_frame = next_frame(thread, top_frame, true)).pc() != NULL) {
     misc_frame_func(top_frame, true, args);
     count++;
-    raw_frame_count++;
   }
   return count;
 }
@@ -889,8 +880,7 @@ static void forte_fill_call_trace_given_top2(JavaThread* thd,
                                             frame top_frame) {
   assert(trace->frames != NULL, "trace->frames must be non-NULL");
   NoHandleMark nhm;
-  int raw_frame_count;
-  int rec_frame_count = get_frame_count(thd, top_frame, &raw_frame_count, nil_function, nil_function, nil_function, nil_function);
+  int rec_frame_count = get_frame_count(thd, top_frame, nil_function, nil_function, nil_function, nil_function);
   if (rec_frame_count == -1) {
     trace->num_frames = 0;
     return;
@@ -901,7 +891,7 @@ static void forte_fill_call_trace_given_top2(JavaThread* thd,
   }
 
   frameState state(trace, depth, rec_frame_count);
-  get_frame_count<frameState&>(thd, top_frame, &raw_frame_count, nil_function,
+  get_frame_count<frameState&>(thd, top_frame, nil_function,
     handle_interpreted_frame,
     handle_compiled_frame,
     handle_misc_frame,
@@ -1013,31 +1003,22 @@ void AsyncGetCallTrace2(ASGCT_CallTrace2 *trace, jint depth, void* ucontext) {
   case _thread_in_vm:
   case _thread_in_vm_trans:
     {
-
-      intptr_t* ret_fp;
-      intptr_t* ret_sp;
-      address addr = os::fetch_frame_from_context(ucontext, &ret_sp, &ret_fp);
-      if (addr == NULL || ret_sp == NULL ) {
-        // ucontext wasn't useful
-        trace->num_frames = -3;
+      frame ret_frame;
+      if (!thread->pd_get_top_frame_for_signal_handler(&ret_frame, ucontext, false)) {
+        trace->num_frames = ticks_unknown_not_Java;  // -3 unknown frame
         return;
       }
-      frame ret_frame(ret_sp, ret_fp, addr);
       forte_fill_call_trace_given_top2(thread, trace, depth, ret_frame);
     }
     break;
   case _thread_in_Java:
   case _thread_in_Java_trans:
     {
-      intptr_t* ret_fp;
-      intptr_t* ret_sp;
-      address addr = os::fetch_frame_from_context(ucontext, &ret_sp, &ret_fp);
-      if (addr == NULL || ret_sp == NULL ) {
-        // ucontext wasn't useful
-        trace->num_frames = -3;
+      frame ret_frame;
+      if (!thread->pd_get_top_frame_for_signal_handler(&ret_frame, ucontext, true)) {
+        trace->num_frames = ticks_unknown_not_Java;  // -3 unknown frame
         return;
       }
-      frame ret_frame(ret_sp, ret_fp, addr);
       forte_fill_call_trace_given_top2(thread, trace, depth, ret_frame);
     }
     break;
