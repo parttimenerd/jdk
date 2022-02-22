@@ -735,18 +735,22 @@ static frame next_frame(JavaThread* t, frame fr, bool supports_os_get_frame) {
 
 // -1: problems somewhere, -2 if gc seems to be active, otherwise the count of non ignored frames
 template<typename T = int>
-static int get_frame_count(JavaThread* thread,
+static int walk_stack(JavaThread* thread,
 frame top_frame,
 void (*raw_frame_func)(frame&, T),
 void (*interp_frame_func)(frame&, Method*, int, T),
 void (*compiled_frame_func)(Method*, int, bool, T),
 void (*misc_frame_func)(frame&, bool, T),
+bool (*abort)(T),
 T args = 0) {
   bool supports_os_get_frame = os::current_frame().pc() != NULL;
   RegisterMap map(thread, false, false);
   int count = 0;
   int raw_count = 0;
   do {
+    if (abort(args)) {
+      return count;
+    }
     if (!top_frame.safe_for_sender(thread)) {
       if (next_frame(thread, top_frame, supports_os_get_frame).pc() != NULL) {
         // we are still able to walk the C stack
@@ -798,11 +802,7 @@ T args = 0) {
             // none of it is safe
             return ticks_GC_active;
           }
-          if (method->find_jmethod_id_or_null() != NULL) {
-            compiled_frame_func(method, bci, st.inlined(), args);
-          } else {  // there has to be something wrong here
-            return -1;
-          }
+          compiled_frame_func(method, bci, st.inlined(), args);
           if (!st.inlined()) {
             break;
           }
@@ -829,24 +829,21 @@ static void nil_function(T... args) {}
 
 class frameState {
   ASGCT_CallTrace2* trace;
-  int depth;
-  int current_frame;
+  int max_depth;
   int index;
 public:
-  frameState(ASGCT_CallTrace2* trace, int depth, int actual_frames): trace(trace), depth(depth) {
-    current_frame = actual_frames - 1;
-    index = 0;
-  }
+  frameState(ASGCT_CallTrace2* trace, int max_depth): trace(trace), max_depth(max_depth), index(0) {}
 
   void register_current_frame(ASGCT_CallFrame2 frame) {
-    if (current_frame < depth) {
+    if (not_full()) {
       trace->frames[index] = frame;
       index++;
     }
-    current_frame--;
   }
 
-  int registered_frames() { return index; }
+  int registered_frames() const { return index; }
+
+  int not_full() const { return index < max_depth; }
 };
 
 void handle_interpreted_frame(frame& frame, Method* method, int bci, frameState &state) {
@@ -879,9 +876,11 @@ void handle_misc_frame(frame& frame, bool after_end, frameState &state) {
       frame.pc(),
       encode_type(is_native_frame ? FRAME_NATIVE : FRAME_CPP, frame.is_stub_frame() ? CompLevel_all : CompLevel_none)
     });
- // printf("misc type: %d", encode_type(is_native_frame ? FRAME_NATIVE : FRAME_CPP, CompLevel_none));
 }
 
+bool abort(frameState& state) {
+  return !state.not_full();
+}
 
 static void forte_fill_call_trace_given_top2(JavaThread* thd,
                                             ASGCT_CallTrace2* trace,
@@ -889,23 +888,19 @@ static void forte_fill_call_trace_given_top2(JavaThread* thd,
                                             frame top_frame) {
   assert(trace->frames != NULL, "trace->frames must be non-NULL");
   NoHandleMark nhm;
-  int rec_frame_count = get_frame_count(thd, top_frame, nil_function, nil_function, nil_function, nil_function);
-  if (rec_frame_count == -1) {
-    trace->num_frames = 0;
-    return;
-  }
-  if (rec_frame_count < -1) { // some other error
-    trace->num_frames = rec_frame_count;
-    return;
-  }
-
-  frameState state(trace, depth, rec_frame_count);
-  get_frame_count<frameState&>(thd, top_frame, nil_function,
+  frameState state(trace, depth);
+  int rec_frame_count = walk_stack<frameState&>(thd, top_frame, nil_function,
     handle_interpreted_frame,
     handle_compiled_frame,
     handle_misc_frame,
+    abort,
     state);
   trace->num_frames = state.registered_frames();
+  if (rec_frame_count == -1) {
+    trace->num_frames = 0;
+  } else if (rec_frame_count < -1) {
+    trace->num_frames = rec_frame_count;
+  }
   return;
 }
 
