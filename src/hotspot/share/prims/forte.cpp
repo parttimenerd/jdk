@@ -742,17 +742,21 @@ void (*interp_frame_func)(frame&, Method*, int, T),
 void (*compiled_frame_func)(Method*, int, bool, T),
 void (*misc_frame_func)(frame&, bool, T),
 T args = 0) {
+  bool supports_os_get_frame = os::current_frame().pc() != NULL;
   RegisterMap map(thread, false, false);
   int count = 0;
   int raw_count = 0;
   do {
     if (!top_frame.safe_for_sender(thread)) {
-      //printf("unsafe\n");
-      if (next_frame(thread, top_frame, true).pc() != NULL) {
+      if (next_frame(thread, top_frame, supports_os_get_frame).pc() != NULL) {
         // we are still able to walk the C stack
         break;
       }
-      return -1;
+      if (count > 0) {
+        return count;
+      } else {
+        return -1;
+      }
     }
     top_frame = top_frame.sender(&map);
     raw_frame_func(top_frame, args);
@@ -810,10 +814,13 @@ T args = 0) {
       misc_frame_func(top_frame, false, args);
     }
   } while (!top_frame.is_first_frame());
-  while ((top_frame = next_frame(thread, top_frame, true)).pc() != NULL) {
+  while ((top_frame = next_frame(thread, top_frame, supports_os_get_frame)).pc() != NULL) {
     misc_frame_func(top_frame, true, args);
     count++;
   }
+
+  //printf("count %d\n", count);
+  //printf("finish\n");
   return count;
 }
 
@@ -870,8 +877,9 @@ void handle_misc_frame(frame& frame, bool after_end, frameState &state) {
       -4,
       0,
       frame.pc(),
-      encode_type(is_native_frame ? FRAME_NATIVE : FRAME_CPP, CompLevel_none)
+      encode_type(is_native_frame ? FRAME_NATIVE : FRAME_CPP, frame.is_stub_frame() ? CompLevel_all : CompLevel_none)
     });
+ // printf("misc type: %d", encode_type(is_native_frame ? FRAME_NATIVE : FRAME_CPP, CompLevel_none));
 }
 
 
@@ -1002,19 +1010,11 @@ void AsyncGetCallTrace2(ASGCT_CallTrace2 *trace, jint depth, void* ucontext) {
   case _thread_blocked_trans:
   case _thread_in_vm:
   case _thread_in_vm_trans:
-    {
-      frame ret_frame;
-      if (!thread->pd_get_top_frame_for_signal_handler(&ret_frame, ucontext, false)) {
-        trace->num_frames = ticks_unknown_not_Java;  // -3 unknown frame
-        return;
-      }
-      forte_fill_call_trace_given_top2(thread, trace, depth, ret_frame);
-    }
-    break;
   case _thread_in_Java:
   case _thread_in_Java_trans:
     {
       frame ret_frame;
+      //printf("--- try\n");
       if (!thread->pd_get_top_frame_for_signal_handler(&ret_frame, ucontext, true)) {
         trace->num_frames = ticks_unknown_not_Java;  // -3 unknown frame
         return;
