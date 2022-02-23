@@ -699,6 +699,56 @@ typedef struct {
     ASGCT_CallFrame2 *frames;          // frames
 } ASGCT_CallTrace2;
 
+bool is_first_C_frame(frame* fr) {
+printf("%d\n", __LINE__);
+#ifdef _WINDOWS
+  return true; // native stack isn't walkable on windows this way.
+#endif
+   printf("%d\n", __LINE__);
+  // Load up sp, fp, sender sp and sender fp, check for reasonable values.
+  // Check usp first, because if that's bad the other accessors may fault
+  // on some architectures.  Ditto ufp second, etc.
+  uintptr_t fp_align_mask = (uintptr_t)(sizeof(address)-1);
+  // sp on amd can be 32 bit aligned.
+  uintptr_t sp_align_mask = (uintptr_t)(sizeof(int)-1);
+
+  printf("%d\n", __LINE__);
+  uintptr_t usp    = (uintptr_t)fr->sp();
+  printf("%d\n", __LINE__);
+  if ((usp & sp_align_mask) != 0) return true;
+printf("%d\n", __LINE__);
+  uintptr_t ufp    = (uintptr_t)fr->fp();
+  printf("%d\n", __LINE__);
+  if ((ufp & fp_align_mask) != 0) return true;
+printf("%d\n", __LINE__);
+  uintptr_t old_sp = (uintptr_t)fr->sender_sp(); // check here
+  printf("%d\n", __LINE__);
+  if ((old_sp & sp_align_mask) != 0) return true;
+  printf("%d\n", __LINE__);
+  if (old_sp == 0 || old_sp == (uintptr_t)-1) return true;
+printf("%d\n", __LINE__);
+  uintptr_t old_fp = (uintptr_t)fr->link();  // check here
+  printf("%d\n", __LINE__);
+  if ((old_fp & fp_align_mask) != 0) return true;
+  printf("%d\n", __LINE__);
+  if (old_fp == 0 || old_fp == (uintptr_t)-1 || old_fp == ufp) {
+    printf("%d\n", __LINE__);
+    return true;
+  }
+ printf("%d\n", __LINE__);
+  // stack grows downwards; if old_fp is below current fp or if the stack
+  // frame is too large, either the stack is corrupted or fp is not saved
+  // on stack (i.e. on x86, ebp may be used as general register). The stack
+  // is not walkable beyond current frame.
+  if (old_fp < ufp) return true;
+  printf("%d\n", __LINE__);
+  if (old_fp - ufp > 64 * K) return true;
+  printf("%d\n", __LINE__);
+
+  return false;
+}
+
+
 /**
  *
  * Gets the caller frame of `fr`.
@@ -728,7 +778,12 @@ static frame next_frame(JavaThread* t, frame fr, bool supports_os_get_frame) {
   } else {
     // is_first_C_frame() does only simple checks for frame pointer,
     // it will pass if java compiled code has a pointer in EBP.
-    if (os::is_first_C_frame(&fr)) return invalid;
+    printf("%d\n", __LINE__);
+    if (is_first_C_frame(&fr)) {
+      printf("%d\n", __LINE__);
+      return invalid;
+    }
+    printf("%d\n", __LINE__);
     return os::get_sender_for_C_frame(&fr);
   }
 }
