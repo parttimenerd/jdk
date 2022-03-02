@@ -27,57 +27,145 @@
 
 #include "runtime/frame.hpp"
 #include "runtime/thread.hpp"
+#include "runtime/vframe.inline.hpp"
+
+// a helper stream
+class compiledFrameStream : public vframeStreamCommon {
+  bool forte_next_into_inlined = false;
+  bool _invalid = false;
+ public:
+  compiledFrameStream(): vframeStreamCommon(NULL, false), _invalid(true) {};
+  // constructor that starts with sender of frame fr (top_frame)
+  compiledFrameStream(JavaThread *jt, frame fr, bool stop_at_java_call_stub);
+  void forte_next();
+  bool forte_next_did_go_into_inlined() const { return forte_next_into_inlined; }
+  bool inlined() const { return _sender_decode_offset != 0; }
+  bool invalid() const { return _invalid; }
+};
 
 // errors, subset of forte errors
 enum StackWalkerError {
   STACKWALKER_INDECIPHERABLE_FRAME = -1,
   STACKWALKER_GC_ACTIVE            = -2,
-  STACKWALKER_NOT_WALKABLE         = -6
+  STACKWALKER_NOT_WALKABLE         = -6,
+  STACKWALKER_TOO_MANY_C_FRAMES    = -7 // too many c frames to skip
 };
 
-// walk the stack of a current thread
+enum StackWalkerReturn {
+  STACKWALKER_END = 0,
+  STACKWALKER_INTERPRETED_FRAME = 1,
+  STACKWALKER_COMPILED_FRAME = 2,
+  STACKWALKER_NATIVE_FRAME = 3,
+  STACKWALKER_C_FRAME = 4,
+  STACKWALKER_START = 5
+};
+
+
+// walk the stack of a thread from any given frame
+// includes all c frames and lot's of checks
+// borrowed from forte.hpp
 class StackWalker {
 
   // Java thread to walk
-  JavaThread* thread;
+  JavaThread* _thread;
+
+  bool _skip_c_frames;
+
+  int _max_c_frames_skip = -1;
+
+  // current frame (surrounding frame if inlined)
+  frame _frame;
 
   // is os::get_sender_for_C_frame currently supported?
   const bool supports_os_get_frame;
 
+  // StackWalkerError + StackWalkerReturn
+  int _state;
+
+  bool _inlined;
+
+  Method *_method;
+
+  int _bci;
+
+  RegisterMap _map;
+
+  compiledFrameStream _st;
+
+  bool in_c_on_top;
+
   frame next_c_frame(frame fr);
+
+  void init();
+
+  void process();
+
+  void advance();
+
+  // reset _method, _bci and inlined
+  void reset();
+
+  // set the state and reset everything besides interpreted and compiled frame
+  void set_state(int state);
+
+  // check that current frame is processable
+  bool checkFrame();
+
+  void advance_normal();
+
+  void advance_fully_c();
+
+  void process_normal();
+
+  void process_in_compiled();
 
 public:
 
-  StackWalker(JavaThread* thread);
+  StackWalker(JavaThread* thread, frame top_frame, bool skip_c_frames = true, bool max_c_frames_skip = -1);
 
-  // walk the stack starting from the passed frame
-  // -6: problems somewhere, -2 if gc seems to be active, otherwise the count handled frames
-  // equivalent to the forte error codes
-  int walk(frame top_frame);
+  StackWalker(JavaThread* thread, bool skip_c_frames = true, bool max_c_frames_skip = -1);
 
-  // find the top most (decipherable) java
-  // returns the java or fame() (with pc = 0) if a frame is not found or the maximum depth is reached
-  frame find_top_java_frame(frame top_frame, int max_depth = -1, int* err_code = NULL);
+  // returns an error code < 0 on error and StackWalkerReturn code otherwise.
+  // 0 == ended,
+  int next();
 
-  // abort now? called after the handlers
-  virtual bool abort() const { return false; }
+  // skip all c frames, return true if Java frame found
+  bool skip_c_frames();
 
-  // called for every frame
-  virtual void handle_frame(const frame& frame) {}
+  // call advance at most skip times in a row
+  void skip_frames(int skip);
 
-  // called for every interpreted or compiled (non inlined) java frame
-  virtual void handle_java_frame(const frame& frame) {}
+  // StackWalkerError + StackWalkerReturn
+  int state() const { return _state; }
 
-  // called for every interpreted frame
-  virtual void handle_interpreted_frame(const frame& frame, Method* method, int bci) {}
+  bool at_end() const { return _state == STACKWALKER_END; }
 
-  // called for every (JIT) compiled frame
-  // if the frame is a compiled frame and a PCDesc is available
-  // if inlined: base_frame is the envelopping frame
-  virtual void handle_compiled_frame(const frame& base_frame, Method* method, int bci, bool inlined) {}
+  bool at_error() const { return _state < 0; }
 
-  // called for all frames that are neither compiled nor interpreted
-  virtual void handle_misc_frame(const frame& frame) {}
+  // not at and and not at error
+  bool has_frame() const { return !at_end() && !at_error(); }
+
+  bool is_interpreted_frame() const { return _state == STACKWALKER_INTERPRETED_FRAME; }
+
+  bool is_compiled_frame() const { return _state == STACKWALKER_COMPILED_FRAME; }
+
+  bool is_native_frame() const { return _state == STACKWALKER_NATIVE_FRAME; }
+
+  bool is_c_frame() const { return _state == STACKWALKER_C_FRAME; }
+
+  bool is_java_frame() const { return is_interpreted_frame() || is_compiled_frame() || is_native_frame(); }
+
+  // inlined, returns true only for inlined compiled frames, otherwise false
+  bool is_inlined() const { return _inlined; }
+
+  // current frame (surrounding frame if inlined) or NULL if at error or at end
+  const frame* base_frame() const { return has_frame() ? &_frame : NULL; }
+
+  // current method or NULL if at error or at end
+  Method* method() const { return _method; }
+
+  // bci or -1 if not at a Java frame
+  int bci() const { return _bci; }
 
 };
 

@@ -87,61 +87,63 @@ typedef struct {
     ASGCT_CallFrame2 *frames;          // frames
 } ASGCT_CallTrace2;
 
+static void fill_call_trace_given_top(JavaThread* thd,
+                                      ASGCT_CallTrace2* trace,
+                                      int depth,
+                                      frame top_frame) {
+  NoHandleMark nhm;
+  assert(trace->frames != NULL, "trace->frames must be non-NULL");
 
-class ASGCT2StackWalker : private StackWalker {
+  StackWalker st(thd, top_frame, false /* do not skip c frames */);
 
-  ASGCT_CallTrace2* trace;
-  const int max_depth;
-  int frame_count;
-
-  void handle_interpreted_frame(const frame& frame, Method* method, int bci) {
-    //printf("interpreted frame %s\n", method->name_and_sig_as_C_string());
-    trace->frames[frame_count] = {
-      bci,
-      method->find_jmethod_id_or_null(),
-      0,
-      encode_type(FRAME_INTERPRETED, CompLevel_none)
-    };
-    frame_count ++;
+  int count = 0;
+  for (; !st.at_end() && count < depth; st.next(), count++) {
+    if (st.at_error()) {
+      trace->num_frames = st.state();
+      return;
+    }
+    switch (st.state()) {
+      case STACKWALKER_INTERPRETED_FRAME:
+        trace->frames[count] = {
+          st.bci(),
+          st.method()->find_jmethod_id_or_null(),
+          0,
+          encode_type(FRAME_INTERPRETED, CompLevel_none)
+        };
+        break;
+      case STACKWALKER_COMPILED_FRAME:
+        trace->frames[count] = {
+          st.bci(),
+          st.method()->find_jmethod_id_or_null(),
+          0,
+          encode_type(st.is_inlined() ? FRAME_INLINED : FRAME_JIT_COMPILED, st.method()->highest_comp_level())
+        };
+        break;
+      case STACKWALKER_NATIVE_FRAME:
+        trace->frames[count] = {
+          -3,
+          st.method()->find_jmethod_id_or_null(),
+          0,
+          FRAME_NATIVE
+        };
+        break;
+      case STACKWALKER_C_FRAME:
+        trace->frames[count] = {
+          -4,
+          0,
+          st.base_frame()->pc(),
+          encode_type(FRAME_CPP, st.base_frame()->is_stub_frame() ? CompLevel_all : CompLevel_none)
+        };
+        break;
+      default:
+        assert(false, "should never happen");
+        trace->num_frames = ticks_unknown_Java;
+    }
   }
+  trace->num_frames = count;
+  return;
+}
 
-  void handle_compiled_frame(const frame& base_frame, Method* method, int bci, bool inlined) {
-    //printf("compiled frame %s %s\n", method->name_and_sig_as_C_string(), inlined ? "inlined" : "");
-    int16_t type = encode_type(inlined ? FRAME_INLINED : FRAME_JIT_COMPILED, method->highest_comp_level());
-    trace->frames[frame_count] = {
-      bci,
-      method->find_jmethod_id_or_null(),
-      0,
-      type
-    };
-    frame_count++;
-  }
-
-  void handle_misc_frame(const frame& frame) {
-    //printf("misc frame\n");
-    bool is_native_frame = frame.is_native_frame();
-    trace->frames[frame_count] = {
-      -4,
-      0,
-      frame.pc(),
-      encode_type(is_native_frame ? FRAME_NATIVE : FRAME_CPP, frame.is_stub_frame() ? CompLevel_all : CompLevel_none)
-    };
-  }
-
-  bool abort() const { return frame_count < max_depth; }
-
-public:
-  ASGCT2StackWalker(JavaThread* thd, ASGCT_CallTrace2* trace, int max_depth):
-    StackWalker(thd), trace(trace), max_depth(max_depth), frame_count(0) {}
-
-  void fill_given_top(frame top_frame) {
-    NoHandleMark nhm;
-    assert(frame_count == 0, "do not call this method twice on the same object");
-    assert(trace->frames != NULL, "trace->frames must be non-NULL");
-
-    trace->num_frames = walk(top_frame);
-  }
-};
 
 // AsyncGetCallTrace2() entry point.
 //
@@ -253,7 +255,7 @@ void AsyncGetCallTrace2(ASGCT_CallTrace2 *trace, jint depth, void* ucontext) {
         trace->num_frames = ticks_unknown_not_Java;  // -3 unknown frame
         return;
       }
-      ASGCT2StackWalker(thread, trace, depth).fill_given_top(ret_frame);
+      fill_call_trace_given_top(thread, trace, depth, ret_frame);
     }
     break;
   default:
