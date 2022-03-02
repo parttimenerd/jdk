@@ -24,7 +24,6 @@
 
 #include "precompiled.hpp"
 #include "code/debugInfoRec.hpp"
-#include "code/pcDesc.hpp"
 #include "gc/shared/collectedHeap.inline.hpp"
 #include "memory/universe.hpp"
 #include "oops/oop.inline.hpp"
@@ -76,56 +75,37 @@ enum {
 
 #if !defined(IA64)
 
-class ForteStackWalker : private StackWalker {
+static int wrap_error_state(int stackwalker_state) {
+  return stackwalker_state == STACKWALKER_TOO_MANY_C_FRAMES ? ticks_no_Java_frame : stackwalker_state;
+}
 
-  ASGCT_CallTrace* trace;
-  const int max_depth;
-  int frame_count;
+static void forte_fill_call_trace_given_top(JavaThread* thd,
+                                            ASGCT_CallTrace* trace,
+                                            int depth,
+                                            frame top_frame) {
+  NoHandleMark nhm;
 
-  void handle_compiled_frame(const frame& base_frame, Method* method, int bci, bool inlined) {
-    handle(method, bci);
-  }
+  StackWalker st(thd, top_frame, true /* skip c frames */,
+    MaxJavaStackTraceDepth * 2 /* number of c frames to skip */);
 
-  void handle_interpreted_frame(const frame& frame, Method* method, int bci) {
-    handle(method, bci);
-  }
+  int count = 0;
 
-  void handle(Method* method, int bci) {
-    trace->frames[frame_count].method_id = method->find_jmethod_id_or_null();
-    if (!method->is_native()) {
-      trace->frames[frame_count].lineno = bci;
-    } else {
-      trace->frames[frame_count].lineno = -3;
-    }
-    frame_count++;
-  }
-
-  bool abort() const { return frame_count < max_depth; }
-
-public:
-  ForteStackWalker(JavaThread* thd, ASGCT_CallTrace* trace, int max_depth):
-    StackWalker(thd), trace(trace), max_depth(max_depth), frame_count(0) {}
-
-  void fill_given_top(frame top_frame) {
-    NoHandleMark nhm;
-    int initial_frame_err = 0;
-    frame initial_Java_frame = find_top_java_frame(top_frame, max_depth * 2, &initial_frame_err);
-
-    assert(frame_count == 0, "do not call this method twice on the same object");
-    assert(trace->frames != NULL, "trace->frames must be non-NULL");
-
-    if (initial_frame_err != 0) {
-      trace->num_frames = initial_frame_err; // either GC active or no_class_load
+  for (; !st.at_end() && count < depth; st.next(), count++) {
+    if (st.at_error()) {
+      trace->num_frames = wrap_error_state(st.state());
       return;
     }
 
-    int ret = walk(top_frame);
-    if (ret < 0) {
-      trace->num_frames = ret;
+    trace->frames[count].method_id = st.method()->find_jmethod_id_or_null();
+    if (!st.method()->is_native()) {
+      trace->frames[count].lineno = st.bci();
+    } else {
+      trace->frames[count].lineno = -3;
     }
   }
-};
-
+  trace->num_frames = count;
+  return;
+}
 
 // Forte Analyzer AsyncGetCallTrace() entry point. Currently supported
 // on Linux X86, Solaris SPARC and Solaris X86.
@@ -184,14 +164,15 @@ public:
 extern "C" {
 JNIEXPORT
 void AsyncGetCallTrace(ASGCT_CallTrace *trace, jint depth, void* ucontext) {
-    if (trace->env_id == NULL || JavaThread::is_thread_from_jni_environment_terminated(trace->env_id)) {
+
+  JavaThread* thread;
+
+  if (trace->env_id == NULL ||
+      (thread = JavaThread::thread_from_jni_environment(trace->env_id))->is_exiting()) {
     // bad env_id, thread has exited or thread is exiting
     trace->num_frames = ticks_thread_exit; // -8
     return;
   }
-
-  JavaThread* thread = JavaThread::thread_from_jni_environment(trace->env_id);
-
 
   if (thread->in_deopt_handler()) {
     // thread is in the deoptimization handler so return no frames
@@ -237,7 +218,7 @@ void AsyncGetCallTrace(ASGCT_CallTrace *trace, jint depth, void* ucontext) {
           trace->num_frames = 0; // No Java frames
         } else {
           trace->num_frames = ticks_not_walkable_not_Java;    // -4 non walkable frame by default
-          ForteStackWalker(thread, trace, depth).fill_given_top(fr);
+          forte_fill_call_trace_given_top(thread, trace, depth, fr);
 
           // This assert would seem to be valid but it is not.
           // It would be valid if we weren't possibly racing a gc
@@ -260,7 +241,7 @@ void AsyncGetCallTrace(ASGCT_CallTrace *trace, jint depth, void* ucontext) {
         trace->num_frames = ticks_unknown_Java;  // -5 unknown frame
       } else {
         trace->num_frames = ticks_not_walkable_Java;  // -6, non walkable frame by default
-        ForteStackWalker(thread, trace, depth).fill_given_top(fr);
+        forte_fill_call_trace_given_top(thread, trace, depth, fr);
       }
     }
     break;

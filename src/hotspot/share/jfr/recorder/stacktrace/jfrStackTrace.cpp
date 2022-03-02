@@ -27,6 +27,7 @@
 #include "jfr/recorder/checkpoint/types/traceid/jfrTraceId.inline.hpp"
 #include "jfr/recorder/repository/jfrChunkWriter.hpp"
 #include "jfr/recorder/stacktrace/jfrStackTrace.hpp"
+#include "jfr/recorder/stacktrace/stackWalker.hpp"
 #include "jfr/recorder/storage/jfrBuffer.hpp"
 #include "jfr/support/jfrMethodLookup.hpp"
 #include "memory/allocation.inline.hpp"
@@ -132,54 +133,28 @@ void JfrStackFrame::write(JfrCheckpointWriter& cpw) const {
   write_frame(cpw, _methodid, _line, _bci, _type);
 }
 
-class vframeStreamSamples : public vframeStreamCommon {
- public:
-  // constructor that starts with sender of frame fr (top_frame)
-  vframeStreamSamples(JavaThread *jt, frame fr, bool stop_at_java_call_stub) : vframeStreamCommon(jt, false /* process_frames */) {
-    _stop_at_java_call_stub = stop_at_java_call_stub;
-    _frame = fr;
-
-    // We must always have a valid frame to start filling
-    bool filled_in = fill_from_frame();
-    assert(filled_in, "invariant");
-  }
-  void samples_next();
-  void stop() {}
-};
-
-// Solaris SPARC Compiler1 needs an additional check on the grandparent
-// of the top_frame when the parent of the top_frame is interpreted and
-// the grandparent is compiled. However, in this method we do not know
-// the relationship of the current _frame relative to the top_frame so
-// we implement a more broad sanity check. When the previous callee is
-// interpreted and the current sender is compiled, we verify that the
-// current sender is also walkable. If it is not walkable, then we mark
-// the current vframeStream as at the end.
-void vframeStreamSamples::samples_next() {
-  // handle frames with inlining
-  if (_mode == compiled_mode &&
-    vframeStreamCommon::fill_in_compiled_inlined_sender()) {
-    return;
-  }
-
-  // handle general case
-  u4 loop_count = 0;
-  u4 loop_max = MAX_STACK_DEPTH * 2;
-  do {
-    loop_count++;
-    // By the time we get here we should never see unsafe but better safe then segv'd
-    if (loop_count > loop_max || !_frame.safe_for_sender(_thread)) {
-      _mode = at_end_mode;
-      return;
-    }
-    _frame = _frame.sender(&_reg_map);
-  } while (!fill_from_frame());
-}
-
 static const size_t min_valid_free_size_bytes = 16;
 
 static inline bool is_full(const JfrBuffer* enqueue_buffer) {
   return enqueue_buffer->free_size() < min_valid_free_size_bytes;
+}
+
+static void process_stackwalker_frame_state(const StackWalker &st, int* type, int* bci) {
+  *bci = 0;
+  switch (st.state()) {
+  case STACKWALKER_INTERPRETED_FRAME:
+    *type = JfrStackFrame::FRAME_INTERPRETER;
+    break;
+  case STACKWALKER_COMPILED_FRAME:
+    *type = st.is_inlined() ? JfrStackFrame::FRAME_INLINE : JfrStackFrame::FRAME_JIT;
+    break;
+  case STACKWALKER_NATIVE_FRAME:
+    *type = JfrStackFrame::FRAME_NATIVE;
+    *bci = 0;
+  default:
+    assert(false, "this case should never be reached");
+    break;
+  }
 }
 
 bool JfrStackTrace::record_thread(JavaThread& thread, frame& frame) {
@@ -189,7 +164,8 @@ bool JfrStackTrace::record_thread(JavaThread& thread, frame& frame) {
   // we have suspended could be the holder of the malloc lock. If there is no more available space, the attempt is aborted.
   const JfrBuffer* const enqueue_buffer = JfrTraceIdLoadBarrier::get_enqueue_buffer(Thread::current());
   assert(enqueue_buffer != nullptr, "invariant");
-  vframeStreamSamples st(&thread, frame, false);
+  StackWalker st(&thread, frame, true /* skip c frames */,
+    MAX_STACK_DEPTH * 2 /* maximum number of c frames to skip */);
   u4 count = 0;
   _reached_root = true;
   _hash = 1;
@@ -198,35 +174,20 @@ bool JfrStackTrace::record_thread(JavaThread& thread, frame& frame) {
       _reached_root = false;
       break;
     }
-    const Method* method = st.method();
-    if (!Method::is_valid_method(method) || is_full(enqueue_buffer)) {
-      // we throw away everything we've gathered in this sample since
-      // none of it is safe
+    if (st.at_error() || is_full(enqueue_buffer)) {
       return false;
     }
+    const Method* method = st.method();
     const traceid mid = JfrTraceId::load(method);
-    int type = st.is_interpreted_frame() ? JfrStackFrame::FRAME_INTERPRETER : JfrStackFrame::FRAME_JIT;
-    int bci = 0;
-    if (method->is_native()) {
-      type = JfrStackFrame::FRAME_NATIVE;
-    } else {
-      bci = st.bci();
-    }
-
-    intptr_t* frame_id = st.frame_id();
-    st.samples_next();
-    if (type == JfrStackFrame::FRAME_JIT && !st.at_end() && frame_id == st.frame_id()) {
-      // This frame and the caller frame are both the same physical
-      // frame, so this frame is inlined into the caller.
-      type = JfrStackFrame::FRAME_INLINE;
-    }
-
+    int type, bci;
+    process_stackwalker_frame_state(st, &type, &bci);
     const int lineno = method->line_number_from_bci(bci);
     _hash = (_hash * 31) + mid;
     _hash = (_hash * 31) + bci;
     _hash = (_hash * 31) + type;
     _frames[count] = JfrStackFrame(mid, bci, type, lineno, method->method_holder());
     count++;
+    st.next();
   }
 
   _lineno = true;
@@ -252,40 +213,25 @@ void JfrStackTrace::resolve_linenos() const {
 
 bool JfrStackTrace::record_safe(JavaThread* thread, int skip) {
   assert(thread == Thread::current(), "Thread stack needs to be walkable");
-  vframeStream vfs(thread, false /* stop_at_java_call_stub */, false /* process_frames */);
+  StackWalker st(thread, true /* skip native frames */,
+    MAX_STACK_DEPTH * 2 /* maximum number of c frames to skip */);
   u4 count = 0;
   _reached_root = true;
-  for (int i = 0; i < skip; i++) {
-    if (vfs.at_end()) {
-      break;
-    }
-    vfs.next();
-  }
+  st.skip_frames(skip);
 
   _hash = 1;
-  while (!vfs.at_end()) {
+  while (!st.at_end()) {
     if (count >= _max_frames) {
       _reached_root = false;
       break;
     }
-    const Method* method = vfs.method();
+    if (st.at_error()) {
+      return false;
+    }
+    const Method* method = st.method();
     const traceid mid = JfrTraceId::load(method);
-    int type = vfs.is_interpreted_frame() ? JfrStackFrame::FRAME_INTERPRETER : JfrStackFrame::FRAME_JIT;
-    int bci = 0;
-    if (method->is_native()) {
-      type = JfrStackFrame::FRAME_NATIVE;
-    }
-    else {
-      bci = vfs.bci();
-    }
-    intptr_t* frame_id = vfs.frame_id();
-    vfs.next();
-    if (type == JfrStackFrame::FRAME_JIT && !vfs.at_end() && frame_id == vfs.frame_id()) {
-      // This frame and the caller frame are both the same physical
-      // frame, so this frame is inlined into the caller.
-      type = JfrStackFrame::FRAME_INLINE;
-    }
-
+    int type, bci;
+    process_stackwalker_frame_state(st, &type, &bci);
     _hash = (_hash * 31) + mid;
     _hash = (_hash * 31) + bci;
     _hash = (_hash * 31) + type;

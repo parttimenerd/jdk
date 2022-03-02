@@ -39,28 +39,12 @@
 #include "runtime/vframe_hp.hpp"
 #include "compiler/compilerDefinitions.hpp"
 
-static bool is_decipherable_compiled_frame(JavaThread* thread, frame* fr, CompiledMethod* nm);
-static bool is_decipherable_interpreted_frame(JavaThread* thread,
-                                              frame* fr,
-                                              Method** method_p,
-                                              int* bci_p);
-
-
-class compiledFrameStreamForte : public vframeStreamCommon {
-  bool forte_next_into_inlined = false;
- public:
-  // constructor that starts with sender of frame fr (top_frame)
-  compiledFrameStreamForte(JavaThread *jt, frame fr, bool stop_at_java_call_stub);
-  void forte_next();
-  bool forte_next_did_go_into_inlined() { return forte_next_into_inlined; }
-  bool inlined() { return _sender_decode_offset != 0; }
-};
 
 // the following code was originally present in the forte.cpp file
 // it is moved in to this file to allow reuse in JFR
 
 
-compiledFrameStreamForte::compiledFrameStreamForte(JavaThread *jt,
+compiledFrameStream::compiledFrameStream(JavaThread *jt,
                                      frame fr,
                                      bool stop_at_java_call_stub) : vframeStreamCommon(jt, false /* process_frames */) {
 
@@ -86,7 +70,8 @@ compiledFrameStreamForte::compiledFrameStreamForte(JavaThread *jt,
 // the current vframeStream as at the end.
 //
 // returns true if inlined
-void compiledFrameStreamForte::forte_next() {
+void compiledFrameStream::forte_next() {
+  assert(!_invalid, "invalid stream used");
   // handle frames with inlining
   forte_next_into_inlined = false;
   if (_mode == compiled_mode &&
@@ -239,9 +224,40 @@ static bool is_decipherable_interpreted_frame(JavaThread* thread,
   return false;
 }
 
+static bool is_decipherable_native_frame(JavaThread* thread, frame* fr, CompiledMethod* nm) {
+  assert(nm->is_native_method(), "invariant");
+  CompiledMethod* _nm = fr->cb()->as_compiled_method();
+  return fr->cb()->frame_size() >= 0;
+}
 
-StackWalker::StackWalker(JavaThread* thread): thread(thread),
-  supports_os_get_frame(os::current_frame().pc() != NULL) {
+StackWalker::StackWalker(JavaThread* thread, frame top_frame, bool skip_c_frames, bool max_c_frames_skip):
+  _thread(thread),
+  _skip_c_frames(skip_c_frames), _max_c_frames_skip(max_c_frames_skip), _frame(top_frame),
+  supports_os_get_frame(!skip_c_frames && os::current_frame().pc() != NULL),
+  _state(STACKWALKER_START), _map(thread, false, false) {
+  init();
+}
+
+StackWalker::StackWalker(JavaThread* thread, bool skip_c_frames, bool max_c_frames_skip):
+  _thread(thread), _skip_c_frames(skip_c_frames), _max_c_frames_skip(max_c_frames_skip),
+  supports_os_get_frame(!skip_c_frames && os::current_frame().pc() != NULL),
+  _state(STACKWALKER_START), _map(thread, false, false) {
+  if (!thread->has_last_Java_frame()) {
+    set_state(STACKWALKER_END);
+    return;
+  }
+
+  _frame = _thread->last_frame();
+  init();
+}
+
+void StackWalker::init() {
+  if (checkFrame()) {
+    process();
+    if (_skip_c_frames) {
+      skip_c_frames();
+    }
+  }
 }
 
 /**
@@ -259,16 +275,16 @@ StackWalker::StackWalker(JavaThread* thread): thread(thread),
   // Compiled code may use EBP register on x86 so it looks like
   // non-walkable C frame. Use frame.sender() for java frames.
   frame invalid;
-  // Catch very first native frame by using stack address.
+  // Catch very first native / c frame by using stack address.
   // For JavaThread stack_base and stack_size should be set.
-  if (!thread->is_in_full_stack((address)(fr.real_fp() + 1))) {
+  if (!_thread->is_in_full_stack((address)(fr.real_fp() + 1))) {
     return invalid;
   }
   if (fr.is_java_frame() || fr.is_native_frame() || fr.is_runtime_frame() || !supports_os_get_frame) {
-    if (!fr.safe_for_sender(thread)) {
+    if (!fr.safe_for_sender(_thread)) {
       return invalid;
     }
-    RegisterMap map(thread, false, false); // No update
+    RegisterMap map(_thread, false, false); // No update
     return fr.sender(&map);
   } else {
     // is_first_C_frame() does only simple checks for frame pointer,
@@ -280,111 +296,154 @@ StackWalker::StackWalker(JavaThread* thread): thread(thread),
   }
 }
 
-int StackWalker::walk(frame top_frame) {
-  RegisterMap map(thread, false, false);
-  int count = 0;
-  int raw_count = 0;
-  do {
-    if (abort()) {
-      return count;
-    }
-    if (!top_frame.safe_for_sender(thread)) {
-      if (next_c_frame(top_frame).pc() != NULL) {
-        // we are still able to walk the C stack
-        break;
-      }
-      if (count > 0) {
-        return count;
-      } else {
-        return STACKWALKER_INDECIPHERABLE_FRAME;
-      }
-    }
-    top_frame = top_frame.sender(&map);
-    this->handle_frame(top_frame);
-    count++;
-
-    if (top_frame.is_java_frame()) { // another validity check
-      Method *method_p = NULL;
-      int bci_p = 0;
-
-      if (top_frame.is_interpreted_frame()) {
-        if (!top_frame.is_interpreted_frame_valid(thread) || !is_decipherable_interpreted_frame(thread, &top_frame, &method_p, &bci_p)) {
-          return STACKWALKER_INDECIPHERABLE_FRAME;
-        }
-        if (!Method::is_valid_method(method_p)) {
-          // we throw away everything we've gathered in this sample since
-          // none of it is safe
-          return STACKWALKER_GC_ACTIVE; // -2
-        }
-        this->handle_java_frame(top_frame);
-        this->handle_interpreted_frame(top_frame, method_p, bci_p);
-      } else if (top_frame.is_compiled_frame()) {
-        frame enclosing_frame = top_frame;
-        CompiledMethod* nm = enclosing_frame.cb()->as_compiled_method();
-        method_p = nm->method();
-        bci_p = -1;
-        if (!is_decipherable_compiled_frame(thread, &enclosing_frame, nm)){
-          return STACKWALKER_INDECIPHERABLE_FRAME;
-        }
-        this->handle_java_frame(top_frame);
-
-        compiledFrameStreamForte st(thread, top_frame, false);
-
-        for (; !st.at_end(); st.forte_next()) {
-          Method* method = st.method();
-          int bci = st.bci();
-
-          if (!Method::is_valid_method(method)) {
-            // we throw away everything we've gathered in this sample since
-            // none of it is safe
-            return STACKWALKER_GC_ACTIVE;
-          }
-          this->handle_compiled_frame(top_frame, method, bci, st.inlined());
-          if (!st.inlined()) {
-            break;
-          }
-        }
-      } else {
-        this->handle_misc_frame(top_frame);
-      }
-    } else {
-      this->handle_misc_frame(top_frame);
-    }
-  } while (!top_frame.is_first_frame());
-  while ((top_frame = next_c_frame(top_frame)).pc() != NULL) {
-    this->handle_misc_frame(top_frame);
-    count++;
-  }
-  return count;
+void StackWalker::reset() {
+  _inlined = false;
+  _method = NULL;
+  _bci = -1;
 }
 
-// finds the top java frame using the stackwalker
-class TopJavaFrameFinder : private StackWalker {
-  frame top_java_frame;
-  const int max_depth;
-  int cur_depth;
-public:
-
-TopJavaFrameFinder(JavaThread* thread, int max_depth = -1): StackWalker(thread),
-  max_depth(max_depth), cur_depth(0) {}
-
-  void handle_frame(const frame& frame) { cur_depth++; }
-
-  void handle_java_frame(const frame& frame) {
-    top_java_frame = frame;
+void StackWalker::set_state(int state) {
+  _state = state;
+  if (_state != STACKWALKER_INTERPRETED_FRAME &&
+      _state != STACKWALKER_COMPILED_FRAME &&
+      _state != STACKWALKER_NATIVE_FRAME) {
+    reset();
   }
+}
 
-  bool abort() const { return top_java_frame.pc() != NULL || (max_depth != -1 && cur_depth > max_depth); }
+void StackWalker::advance() {
+  if (!has_frame()) {
+    return;
+  }
+  if (in_c_on_top) {
+    advance_fully_c();
+  } else {
+    advance_normal();
+    process();
+  }
+}
 
-  frame find(frame top_frame, int *err_code = NULL) {
-    int ret = walk(top_frame);
-    if (err_code != NULL) {
-      *err_code = ret < 0 ? ret : 0;
+bool StackWalker::checkFrame() {
+  if (_frame.is_first_frame() || !_frame.safe_for_sender(_thread)) {
+    if (_skip_c_frames) {
+      set_state(STACKWALKER_END);
+      return false;
+    } else {
+      in_c_on_top = true;
     }
-    return top_java_frame;
   }
-};
+  return true;
+}
 
-frame StackWalker::find_top_java_frame(frame top_frame, int max_depth, int* err_code) {
-  return TopJavaFrameFinder(thread).find(top_frame, err_code);
+void StackWalker::advance_normal() {
+  if (checkFrame()) {
+    if (in_c_on_top) {
+      advance_fully_c();
+    } else if (!_inlined) {
+      _frame = _frame.sender(&_map);
+    }
+  }
+}
+
+void StackWalker::process() {
+  if (in_c_on_top){ // nothing to do
+    return;
+  }
+  if (_st.invalid()) {
+    process_normal();
+  } else {
+    process_in_compiled();
+  }
+}
+
+// assumes that _frame has been advanced and not already in compiled stream
+// leaves the _frame unchanged
+void StackWalker::process_normal() {
+  if (_frame.is_java_frame()) { // another validity check
+    reset();
+    if (_frame.is_interpreted_frame()) {
+      if (!_frame.is_interpreted_frame_valid(_thread) || !is_decipherable_interpreted_frame(_thread, &_frame, &_method, &_bci)) {
+        set_state(STACKWALKER_INDECIPHERABLE_FRAME);
+        return;
+      }
+      if (!Method::is_valid_method(_method)) {
+        // we throw away everything we've gathered in this sample since
+        // none of it is safe
+        set_state(STACKWALKER_GC_ACTIVE); // -2
+        return;
+      }
+      set_state(STACKWALKER_INTERPRETED_FRAME);
+      return;
+    } else if (_frame.is_compiled_frame()) {
+      CompiledMethod* nm = _frame.cb()->as_compiled_method();
+      _method = nm->method();
+      _bci = -1;
+      _inlined = false;
+      if (is_decipherable_native_frame(_thread, &_frame, nm)) {
+        set_state(STACKWALKER_NATIVE_FRAME);
+        return;
+      }
+      if (!is_decipherable_compiled_frame(_thread, &_frame, nm)){
+        set_state(STACKWALKER_INDECIPHERABLE_FRAME);
+        return;
+      }
+      compiledFrameStream _st(_thread, _frame, false);
+      set_state(STACKWALKER_COMPILED_FRAME);
+      process_in_compiled();
+      return;
+    }
+  }
+  set_state(STACKWALKER_C_FRAME);
+}
+
+// assumes that work has to be done with compiledFrameStream
+// leaves the _frame unchanged
+// only changes the compiledFrameStream (advances it after copying the data)
+void StackWalker::process_in_compiled() {
+  if (_st.at_end()) {
+    advance_normal();
+    _st = {};
+    return;
+  }
+  Method* _method = _st.method();
+  _bci = _st.bci();
+
+  if (!Method::is_valid_method(_method)) {
+    // we throw away everything we've gathered in this sample since
+    // none of it is safe
+    set_state(STACKWALKER_GC_ACTIVE);
+    return;
+  }
+  _inlined = _st.inlined();
+}
+
+void StackWalker::advance_fully_c() {
+  if ((_frame = next_c_frame(_frame)).pc() != NULL) {
+    set_state(STACKWALKER_C_FRAME);
+  } else {
+    set_state(STACKWALKER_END);
+  }
+}
+
+bool StackWalker::skip_c_frames() {
+  for (int i = 0; (i < _max_c_frames_skip || _max_c_frames_skip == -1) && is_c_frame(); i++) {
+    advance();
+  }
+  if (is_c_frame()) {
+    set_state(STACKWALKER_TOO_MANY_C_FRAMES);
+    return false;
+  }
+  return is_java_frame();
+}
+
+void StackWalker::skip_frames(int skip) {
+  for (int i = 0; i < skip && !at_end(); i++) {
+    advance();
+  }
+}
+
+int StackWalker::next(){
+  advance();
+  skip_c_frames();
+  return _state;
 }
