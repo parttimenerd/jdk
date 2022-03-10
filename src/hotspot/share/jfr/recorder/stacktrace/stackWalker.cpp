@@ -225,7 +225,7 @@ static bool is_decipherable_interpreted_frame(JavaThread* thread,
   return false;
 }
 
-static bool is_decipherable_native_frame(JavaThread* thread, frame* fr, CompiledMethod* nm) {
+static bool is_decipherable_native_frame(frame* fr, CompiledMethod* nm) {
   assert(nm->is_native_method(), "invariant");
   return fr->cb()->frame_size() >= 0;
 }
@@ -340,12 +340,12 @@ bool StackWalker::checkFrame() {
 }
 
 void StackWalker::advance_normal() {
+  assert(!_inlined || in_c_on_top || !_st.invalid(), "have to advance somehow");
   if (checkFrame()) {
     if (in_c_on_top) {
       advance_fully_c();
     } else if (!_inlined) {
       _frame = _frame.sender(&_map);
-      _st = {};
     }
   }
 }
@@ -373,7 +373,7 @@ void StackWalker::process() {
 void StackWalker::process_normal() {
   if (_frame.is_native_frame()) {
     CompiledMethod* nm = _frame.cb()->as_compiled_method();
-    if (!is_decipherable_native_frame(_thread, &_frame, nm)) {
+    if (!is_decipherable_native_frame(&_frame, nm)) {
       set_state(STACKWALKER_INDECIPHERABLE_FRAME);
       return;
     }
@@ -384,6 +384,7 @@ void StackWalker::process_normal() {
     return;
   } else if (_frame.is_java_frame()) { // another validity check
     if (_frame.is_interpreted_frame()) {
+      _inlined = false;
       if (!_frame.is_interpreted_frame_valid(_thread) || !is_decipherable_interpreted_frame(_thread, &_frame, &_method, &_bci)) {
         set_state(STACKWALKER_INDECIPHERABLE_FRAME);
         return;
@@ -396,6 +397,7 @@ void StackWalker::process_normal() {
         return;
       }
       set_state(STACKWALKER_INTERPRETED_FRAME);
+      assert(!_inlined || in_c_on_top || !_st.invalid(), "have to advance somehow 2");
       return;
     } else if (_frame.is_compiled_frame()) {
       CompiledMethod* nm = _frame.cb()->as_compiled_method();
@@ -433,6 +435,11 @@ void StackWalker::process_in_compiled() {
     return;
   }
   _inlined = _st.inlined();
+  if (!_inlined) {
+    _st = {};
+    advance_normal();
+    return;
+  }
   _st.cf_next();
 }
 
