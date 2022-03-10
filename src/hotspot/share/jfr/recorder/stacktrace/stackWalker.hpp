@@ -31,14 +31,14 @@
 
 // a helper stream
 class compiledFrameStream : public vframeStreamCommon {
-  bool forte_next_into_inlined = false;
-  bool _invalid = false;
+  bool cf_next_into_inlined;
+  bool _invalid;
  public:
-  compiledFrameStream(): vframeStreamCommon(NULL, false), _invalid(true) {};
+  compiledFrameStream(): vframeStreamCommon(NULL, false), cf_next_into_inlined(false), _invalid(true) {};
   // constructor that starts with sender of frame fr (top_frame)
   compiledFrameStream(JavaThread *jt, frame fr, bool stop_at_java_call_stub);
-  void forte_next();
-  bool forte_next_did_go_into_inlined() const { return forte_next_into_inlined; }
+  void cf_next();
+  bool cf_next_did_go_into_inlined() const { return cf_next_into_inlined; }
   bool inlined() const { return _sender_decode_offset != 0; }
   bool invalid() const { return _invalid; }
 };
@@ -56,7 +56,7 @@ enum StackWalkerReturn {
   STACKWALKER_INTERPRETED_FRAME = 1,
   STACKWALKER_COMPILED_FRAME = 2,
   STACKWALKER_NATIVE_FRAME = 3,
-  STACKWALKER_C_FRAME = 4,
+  STACKWALKER_C_FRAME = 4, // might be runtime, stub or real C frame
   STACKWALKER_START = 5
 };
 
@@ -71,7 +71,7 @@ class StackWalker {
 
   bool _skip_c_frames;
 
-  int _max_c_frames_skip = -1;
+  int _max_c_frames_skip;
 
   // current frame (surrounding frame if inlined)
   frame _frame;

@@ -87,23 +87,101 @@ typedef struct {
     ASGCT_CallFrame2 *frames;          // frames
 } ASGCT_CallTrace2;
 
+bool print_function_and_library_name(address addr,
+                                         char* buf, int buflen) {
+  // If no scratch buffer given, allocate one here on stack.
+  // (used during error handling; its a coin toss, really, if on-stack allocation
+  //  is worse than (raw) C-heap allocation in that case).
+  char* p = buf;
+  if (p == NULL) {
+    p = (char*)::alloca(O_BUFLEN);
+    buflen = O_BUFLEN;
+  }
+  int offset = 0;
+  bool have_function_name = os::dll_address_to_function_name(addr, p, buflen,
+                                                         &offset, true);
+  bool is_function_descriptor = false;
+#ifdef HAVE_FUNCTION_DESCRIPTORS
+  // When we deal with a function descriptor instead of a real code pointer, try to
+  // resolve it. There is a small chance that a random pointer given to this function
+  // may just happen to look like a valid descriptor, but this is rare and worth the
+  // risk to see resolved function names. But we will print a little suffix to mark
+  // this as a function descriptor for the reader (see below).
+  if (!have_function_name && os::is_readable_pointer(addr)) {
+    address addr2 = (address)os::resolve_function_descriptor(addr);
+    if (have_function_name = is_function_descriptor =
+        dll_address_to_function_name(addr2, p, buflen, &offset, demangle)) {
+      addr = addr2;
+    }
+  }
+#endif // HAVE_FUNCTION_DESCRIPTORS
+
+  if (have_function_name) {
+    // Print function name, optionally demangled
+    if (true && true) {
+      char* args_start = strchr(p, '(');
+      if (args_start != NULL) {
+        *args_start = '\0';
+      }
+    }
+    // Print offset. Omit printing if offset is zero, which makes the output
+    // more readable if we print function pointers.
+    if (offset == 0) {
+      printf("%s", p);
+    } else {
+      printf("%s+%d", p, offset);
+    }
+  } else {
+    printf(PTR_FORMAT, p2i(addr));
+  }
+  offset = 0;
+
+  const bool have_library_name = os::dll_address_to_library_name(addr, p, buflen, &offset);
+  if (have_library_name) {
+    // Cut path parts
+    if (true) {
+      char* p2 = strrchr(p, os::file_separator()[0]);
+      if (p2 != NULL) {
+        p = p2 + 1;
+      }
+    }
+    printf(" in %s", p);
+    if (!have_function_name) { // Omit offset if we already printed the function offset
+      printf("+%d", offset);
+    }
+  }
+
+  // Write a trailing marker if this was a function descriptor
+  if (have_function_name && is_function_descriptor) {
+    printf(" (FD)");
+  }
+
+  return have_function_name || have_library_name;
+}
+
+#define LOG 0
+#define ST_LOG(...) LOG ? printf(__VA_ARGS__) : 1
+
 static void fill_call_trace_given_top(JavaThread* thd,
                                       ASGCT_CallTrace2* trace,
                                       int depth,
                                       frame top_frame) {
   NoHandleMark nhm;
+  ST_LOG("start\n");
   assert(trace->frames != NULL, "trace->frames must be non-NULL");
 
   StackWalker st(thd, top_frame, false /* do not skip c frames */);
 
   int count = 0;
-  for (; !st.at_end() && count < depth; st.next(), count++) {
+  for (; count < depth && !st.at_end(); st.next(), count++) {
     if (st.at_error()) {
       trace->num_frames = st.state();
       return;
     }
+    ST_LOG("state in switch %d\n", st.state());
     switch (st.state()) {
       case STACKWALKER_INTERPRETED_FRAME:
+      ST_LOG("1: %s\n", st.method()->name_and_sig_as_C_string());
         trace->frames[count] = {
           st.bci(),
           st.method()->find_jmethod_id_or_null(),
@@ -112,6 +190,7 @@ static void fill_call_trace_given_top(JavaThread* thd,
         };
         break;
       case STACKWALKER_COMPILED_FRAME:
+        ST_LOG("2: %s\n", st.method()->name_and_sig_as_C_string());
         trace->frames[count] = {
           st.bci(),
           st.method()->find_jmethod_id_or_null(),
@@ -120,6 +199,7 @@ static void fill_call_trace_given_top(JavaThread* thd,
         };
         break;
       case STACKWALKER_NATIVE_FRAME:
+        ST_LOG("native %s\n", st.method()->name_and_sig_as_C_string());
         trace->frames[count] = {
           -3,
           st.method()->find_jmethod_id_or_null(),
@@ -128,6 +208,15 @@ static void fill_call_trace_given_top(JavaThread* thd,
         };
         break;
       case STACKWALKER_C_FRAME:
+        char cs[100];
+        if (LOG) print_function_and_library_name(st.base_frame()->pc(), cs, 100);
+        if (st.base_frame()->cb() != NULL) {
+          ST_LOG("cb %s ", st.base_frame()->cb()->name());
+        }
+        if (st.base_frame()->is_native_frame()) {
+          ST_LOG("native method %s ", st.base_frame()->cb()->name());
+        }
+        ST_LOG("c frame stub frame %d  native frame %d safe point frame %d compiled frame %d java frame %d\n", st.base_frame()->is_stub_frame(), st.base_frame()->is_native_frame(), st.base_frame()->is_safepoint_blob_frame(), st.base_frame()->is_compiled_frame(), st.base_frame()->is_java_frame());
         trace->frames[count] = {
           -4,
           0,
@@ -136,10 +225,12 @@ static void fill_call_trace_given_top(JavaThread* thd,
         };
         break;
       default:
+        ST_LOG("unknown state %d\n", st.state());
         assert(false, "should never happen");
         trace->num_frames = ticks_unknown_Java;
     }
   }
+  //printf("count: %d\n", count);
   trace->num_frames = count;
   return;
 }
