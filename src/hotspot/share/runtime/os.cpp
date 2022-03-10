@@ -649,18 +649,14 @@ void* os::malloc(size_t size, MEMFLAGS memflags, const NativeCallStack& stack) {
     return NULL;
   }
 
-  const NMT_TrackingLevel level = MemTracker::tracking_level();
-  const size_t nmt_overhead =
-      MemTracker::malloc_header_size(level) + MemTracker::malloc_footer_size(level);
+  const size_t outer_size = size + MemTracker::overhead_per_malloc();
 
-  const size_t outer_size = size + nmt_overhead;
-
-  void* const outer_ptr = (u_char*)::malloc(outer_size);
+  void* const outer_ptr = ::malloc(outer_size);
   if (outer_ptr == NULL) {
     return NULL;
   }
 
-  void* inner_ptr = MemTracker::record_malloc((address)outer_ptr, size, memflags, stack, level);
+  void* const inner_ptr = MemTracker::record_malloc((address)outer_ptr, size, memflags, stack);
 
   DEBUG_ONLY(::memset(inner_ptr, uninitBlockPad, size);)
   DEBUG_ONLY(break_if_ptr_caught(inner_ptr);)
@@ -696,19 +692,17 @@ void* os::realloc(void *memblock, size_t size, MEMFLAGS memflags, const NativeCa
     return NULL;
   }
 
-  const NMT_TrackingLevel level = MemTracker::tracking_level();
-  const size_t nmt_overhead =
-      MemTracker::malloc_header_size(level) + MemTracker::malloc_footer_size(level);
-
-  const size_t new_outer_size = size + nmt_overhead;
+  const size_t new_outer_size = size + MemTracker::overhead_per_malloc();
 
   // If NMT is enabled, this checks for heap overwrites, then de-accounts the old block.
-  void* const old_outer_ptr = MemTracker::record_free(memblock, level);
+  void* const old_outer_ptr = MemTracker::record_free(memblock);
 
   void* const new_outer_ptr = ::realloc(old_outer_ptr, new_outer_size);
+  if (new_outer_ptr == NULL) {
+    return NULL;
+  }
 
-  // If NMT is enabled, this checks for heap overwrites, then de-accounts the old block.
-  void* const new_inner_ptr = MemTracker::record_malloc(new_outer_ptr, size, memflags, stack, level);
+  void* const new_inner_ptr = MemTracker::record_malloc(new_outer_ptr, size, memflags, stack);
 
   DEBUG_ONLY(break_if_ptr_caught(new_inner_ptr);)
 
@@ -728,10 +722,9 @@ void  os::free(void *memblock) {
 
   DEBUG_ONLY(break_if_ptr_caught(memblock);)
 
-  const NMT_TrackingLevel level = MemTracker::tracking_level();
-
   // If NMT is enabled, this checks for heap overwrites, then de-accounts the old block.
-  void* const old_outer_ptr = MemTracker::record_free(memblock, level);
+  void* const old_outer_ptr = MemTracker::record_free(memblock);
+
   ::free(old_outer_ptr);
 }
 
@@ -1398,7 +1391,7 @@ char** os::split_path(const char* path, size_t* elements, size_t file_name_lengt
 // pages, false otherwise.
 bool os::stack_shadow_pages_available(Thread *thread, const methodHandle& method, address sp) {
   if (!thread->is_Java_thread()) return false;
-  // Check if we have StackShadowPages above the yellow zone.  This parameter
+  // Check if we have StackShadowPages above the guard zone. This parameter
   // is dependent on the depth of the maximum VM call stack possible from
   // the handler for stack overflow.  'instanceof' in the stack overflow
   // handler or a println uses at least 8k stack of VM and native code
@@ -1406,9 +1399,7 @@ bool os::stack_shadow_pages_available(Thread *thread, const methodHandle& method
   const int framesize_in_bytes =
     Interpreter::size_top_interpreter_activation(method()) * wordSize;
 
-  address limit = JavaThread::cast(thread)->stack_end() +
-                  (StackOverflow::stack_guard_zone_size() + StackOverflow::stack_shadow_zone_size());
-
+  address limit = JavaThread::cast(thread)->stack_overflow_state()->shadow_zone_safe_limit();
   return sp > (limit + framesize_in_bytes);
 }
 
