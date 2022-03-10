@@ -43,10 +43,11 @@
 // the following code was originally present in the forte.cpp file
 // it is moved in to this file to allow reuse in JFR
 
+#define LOG 0
+#define ST_LOG(...) LOG ? printf(__VA_ARGS__) : 1
 
-compiledFrameStream::compiledFrameStream(JavaThread *jt,
-                                     frame fr,
-                                     bool stop_at_java_call_stub) : vframeStreamCommon(jt, false /* process_frames */) {
+compiledFrameStream::compiledFrameStream(JavaThread *jt, frame fr, bool stop_at_java_call_stub) :
+  vframeStreamCommon(jt, false /* process_frames */),cf_next_into_inlined(false), _invalid(false) {
 
   _stop_at_java_call_stub = stop_at_java_call_stub;
   _frame = fr;
@@ -70,13 +71,13 @@ compiledFrameStream::compiledFrameStream(JavaThread *jt,
 // the current vframeStream as at the end.
 //
 // returns true if inlined
-void compiledFrameStream::forte_next() {
+void compiledFrameStream::cf_next() {
   assert(!_invalid, "invalid stream used");
   // handle frames with inlining
-  forte_next_into_inlined = false;
+  cf_next_into_inlined = false;
   if (_mode == compiled_mode &&
       vframeStreamCommon::fill_in_compiled_inlined_sender()) {
-    forte_next_into_inlined = true;
+    cf_next_into_inlined = true;
     return;
   }
 
@@ -226,7 +227,6 @@ static bool is_decipherable_interpreted_frame(JavaThread* thread,
 
 static bool is_decipherable_native_frame(JavaThread* thread, frame* fr, CompiledMethod* nm) {
   assert(nm->is_native_method(), "invariant");
-  CompiledMethod* _nm = fr->cb()->as_compiled_method();
   return fr->cb()->frame_size() >= 0;
 }
 
@@ -234,14 +234,15 @@ StackWalker::StackWalker(JavaThread* thread, frame top_frame, bool skip_c_frames
   _thread(thread),
   _skip_c_frames(skip_c_frames), _max_c_frames_skip(max_c_frames_skip), _frame(top_frame),
   supports_os_get_frame(!skip_c_frames && os::current_frame().pc() != NULL),
-  _state(STACKWALKER_START), _map(thread, false, false) {
+  _state(STACKWALKER_START), _map(thread, false, false), in_c_on_top(false) {
   init();
 }
 
 StackWalker::StackWalker(JavaThread* thread, bool skip_c_frames, bool max_c_frames_skip):
   _thread(thread), _skip_c_frames(skip_c_frames), _max_c_frames_skip(max_c_frames_skip),
   supports_os_get_frame(!skip_c_frames && os::current_frame().pc() != NULL),
-  _state(STACKWALKER_START), _map(thread, false, false) {
+  _state(STACKWALKER_START), _map(thread, false, false),
+  in_c_on_top(false) {
   if (!thread->has_last_Java_frame()) {
     set_state(STACKWALKER_END);
     return;
@@ -324,12 +325,15 @@ void StackWalker::advance() {
 }
 
 bool StackWalker::checkFrame() {
+  ST_LOG("_frame.is_first_frame() %d !_frame.safe_for_sender(_thread) %d\n", _frame.is_first_frame(), !_frame.safe_for_sender(_thread));
   if (_frame.is_first_frame() || !_frame.safe_for_sender(_thread)) {
     if (_skip_c_frames) {
       set_state(STACKWALKER_END);
       return false;
     } else {
       in_c_on_top = true;
+      ST_LOG("set in_c_on_top to true\n");
+      set_state(STACKWALKER_C_FRAME);
     }
   }
   return true;
@@ -341,26 +345,44 @@ void StackWalker::advance_normal() {
       advance_fully_c();
     } else if (!_inlined) {
       _frame = _frame.sender(&_map);
+      _st = {};
     }
   }
 }
 
 void StackWalker::process() {
+  ST_LOG("state %d c_on_top %d\n", _state, in_c_on_top);
   if (in_c_on_top){ // nothing to do
     return;
   }
+    ST_LOG("%d\n", __LINE__);
   if (_st.invalid()) {
+      ST_LOG("%d\n", __LINE__);
     process_normal();
+
+  ST_LOG("state %d line %d\n", _state, __LINE__);
   } else {
+      ST_LOG("%d\n", __LINE__);
     process_in_compiled();
+    ST_LOG("state %d line %d\n", _state, __LINE__);
   }
 }
 
 // assumes that _frame has been advanced and not already in compiled stream
 // leaves the _frame unchanged
 void StackWalker::process_normal() {
-  if (_frame.is_java_frame()) { // another validity check
-    reset();
+  if (_frame.is_native_frame()) {
+    CompiledMethod* nm = _frame.cb()->as_compiled_method();
+    if (!is_decipherable_native_frame(_thread, &_frame, nm)) {
+      set_state(STACKWALKER_INDECIPHERABLE_FRAME);
+      return;
+    }
+    _method = nm->method();
+    _bci = -1;
+    _inlined = false;
+    set_state(STACKWALKER_NATIVE_FRAME);
+    return;
+  } else if (_frame.is_java_frame()) { // another validity check
     if (_frame.is_interpreted_frame()) {
       if (!_frame.is_interpreted_frame_valid(_thread) || !is_decipherable_interpreted_frame(_thread, &_frame, &_method, &_bci)) {
         set_state(STACKWALKER_INDECIPHERABLE_FRAME);
@@ -369,6 +391,7 @@ void StackWalker::process_normal() {
       if (!Method::is_valid_method(_method)) {
         // we throw away everything we've gathered in this sample since
         // none of it is safe
+        ST_LOG("interpreted method not valid\n");
         set_state(STACKWALKER_GC_ACTIVE); // -2
         return;
       }
@@ -376,18 +399,11 @@ void StackWalker::process_normal() {
       return;
     } else if (_frame.is_compiled_frame()) {
       CompiledMethod* nm = _frame.cb()->as_compiled_method();
-      _method = nm->method();
-      _bci = -1;
-      _inlined = false;
-      if (is_decipherable_native_frame(_thread, &_frame, nm)) {
-        set_state(STACKWALKER_NATIVE_FRAME);
-        return;
-      }
       if (!is_decipherable_compiled_frame(_thread, &_frame, nm)){
         set_state(STACKWALKER_INDECIPHERABLE_FRAME);
         return;
       }
-      compiledFrameStream _st(_thread, _frame, false);
+      _st = compiledFrameStream(_thread, _frame, false);
       set_state(STACKWALKER_COMPILED_FRAME);
       process_in_compiled();
       return;
@@ -400,21 +416,24 @@ void StackWalker::process_normal() {
 // leaves the _frame unchanged
 // only changes the compiledFrameStream (advances it after copying the data)
 void StackWalker::process_in_compiled() {
+  assert(!_st.invalid(), "st is invalid");
   if (_st.at_end()) {
     advance_normal();
     _st = {};
     return;
   }
-  Method* _method = _st.method();
+  _method = _st.method();
   _bci = _st.bci();
 
   if (!Method::is_valid_method(_method)) {
     // we throw away everything we've gathered in this sample since
     // none of it is safe
+    ST_LOG("compiled method not valid\n");
     set_state(STACKWALKER_GC_ACTIVE);
     return;
   }
   _inlined = _st.inlined();
+  _st.cf_next();
 }
 
 void StackWalker::advance_fully_c() {
@@ -444,6 +463,8 @@ void StackWalker::skip_frames(int skip) {
 
 int StackWalker::next(){
   advance();
-  skip_c_frames();
+  if (_skip_c_frames) {
+    skip_c_frames();
+  }
   return _state;
 }
