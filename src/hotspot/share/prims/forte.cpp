@@ -75,10 +75,6 @@ enum {
 
 #if !defined(IA64)
 
-static int wrap_error_state(int stackwalker_state) {
-  return stackwalker_state == STACKWALKER_TOO_MANY_C_FRAMES ? ticks_no_Java_frame : stackwalker_state;
-}
-
 static void forte_fill_call_trace_given_top(JavaThread* thd,
                                             ASGCT_CallTrace* trace,
                                             int depth,
@@ -92,7 +88,7 @@ static void forte_fill_call_trace_given_top(JavaThread* thd,
 
   for (; !st.at_end() && count < depth; st.next(), count++) {
     if (st.at_error()) {
-      trace->num_frames = wrap_error_state(st.state());
+      trace->num_frames = st.state();
       return;
     }
 

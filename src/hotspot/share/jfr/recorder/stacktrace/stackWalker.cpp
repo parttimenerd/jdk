@@ -22,6 +22,7 @@
  *
  */
 
+#include "precompiled.hpp"
 #include "stackWalker.hpp"
 #include "precompiled.hpp"
 #include "code/debugInfoRec.hpp"
@@ -456,7 +457,7 @@ bool StackWalker::skip_c_frames() {
     advance();
   }
   if (is_c_frame()) {
-    set_state(STACKWALKER_TOO_MANY_C_FRAMES);
+    set_state(STACKWALKER_NO_JAVA_FRAME);
     return false;
   }
   return is_java_frame();
