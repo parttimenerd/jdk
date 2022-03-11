@@ -22,7 +22,6 @@
  *
  */
 
-#include "precompiled.hpp"
 #include "stackWalker.hpp"
 #include "precompiled.hpp"
 #include "code/debugInfoRec.hpp"
