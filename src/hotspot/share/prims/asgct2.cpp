@@ -87,85 +87,11 @@ typedef struct {
     ASGCT_CallFrame2 *frames;          // frames
 } ASGCT_CallTrace2;
 
-bool print_function_and_library_name(address addr,
-                                         char* buf, int buflen) {
-  // If no scratch buffer given, allocate one here on stack.
-  // (used during error handling; its a coin toss, really, if on-stack allocation
-  //  is worse than (raw) C-heap allocation in that case).
-  char* p = buf;
-  if (p == NULL) {
-    p = (char*)::alloca(O_BUFLEN);
-    buflen = O_BUFLEN;
-  }
-  int offset = 0;
-  bool have_function_name = os::dll_address_to_function_name(addr, p, buflen,
-                                                         &offset, true);
-  bool is_function_descriptor = false;
-#ifdef HAVE_FUNCTION_DESCRIPTORS
-  // When we deal with a function descriptor instead of a real code pointer, try to
-  // resolve it. There is a small chance that a random pointer given to this function
-  // may just happen to look like a valid descriptor, but this is rare and worth the
-  // risk to see resolved function names. But we will print a little suffix to mark
-  // this as a function descriptor for the reader (see below).
-  if (!have_function_name && os::is_readable_pointer(addr)) {
-    address addr2 = (address)os::resolve_function_descriptor(addr);
-    if (have_function_name = is_function_descriptor =
-        dll_address_to_function_name(addr2, p, buflen, &offset, demangle)) {
-      addr = addr2;
-    }
-  }
-#endif // HAVE_FUNCTION_DESCRIPTORS
-
-  if (have_function_name) {
-    // Print function name, optionally demangled
-    if (true && true) {
-      char* args_start = strchr(p, '(');
-      if (args_start != NULL) {
-        *args_start = '\0';
-      }
-    }
-    // Print offset. Omit printing if offset is zero, which makes the output
-    // more readable if we print function pointers.
-    if (offset == 0) {
-      printf("%s", p);
-    } else {
-      printf("%s+%d", p, offset);
-    }
-  } else {
-    printf(PTR_FORMAT, p2i(addr));
-  }
-  offset = 0;
-
-  const bool have_library_name = os::dll_address_to_library_name(addr, p, buflen, &offset);
-  if (have_library_name) {
-    // Cut path parts
-    if (true) {
-      char* p2 = strrchr(p, os::file_separator()[0]);
-      if (p2 != NULL) {
-        p = p2 + 1;
-      }
-    }
-    printf(" in %s", p);
-    if (!have_function_name) { // Omit offset if we already printed the function offset
-      printf("+%d", offset);
-    }
-  }
-
-  // Write a trailing marker if this was a function descriptor
-  if (have_function_name && is_function_descriptor) {
-    printf(" (FD)");
-  }
-
-  return have_function_name || have_library_name;
-}
-
 #define LOG 0
 #define ST_LOG(...) LOG ? printf(__VA_ARGS__) : 1
 
 
 ASGCT_CallFrame2 process_c_frame(const frame *fr) {
-  char cs[100];
-  if (LOG) print_function_and_library_name(fr->pc(), cs, 100);
   if (fr->cb() != NULL) {
     ST_LOG("cb %s ", fr->cb()->name());
   }
@@ -187,7 +113,7 @@ static void fill_call_trace_given_top(JavaThread* thd,
                                       int depth,
                                       frame top_frame) {
   NoHandleMark nhm;
-  //printf("start\n");
+  ST_LOG("start\n");
   assert(trace->frames != NULL, "trace->frames must be non-NULL");
 
   StackWalker st(thd, top_frame, false /* do not skip c frames */);
@@ -250,7 +176,6 @@ frame next_c_frame(frame fr) {
 
 // we just walk the c stack...
 void process_c_trace(ASGCT_CallTrace2 *trace, jint depth, void* ucontext) {
-  //printf("process c trace\n");
   if (trace->env_id != NULL && JavaThread::is_thread_from_jni_environment_terminated(trace->env_id)) {
     trace->num_frames = ticks_thread_exit; // -8
     return;
@@ -271,7 +196,6 @@ void process_c_trace(ASGCT_CallTrace2 *trace, jint depth, void* ucontext) {
     count++;
   } while ((ret_frame = next_c_frame(ret_frame)).pc() != 0);
   trace->num_frames = count;
-  //printf("count = %d\n", count);
 }
 
 
@@ -406,7 +330,6 @@ void AsyncGetCallTrace2(ASGCT_CallTrace2 *trace, jint depth, void* ucontext) {
     break;
   default:
     // Unknown thread state
-    printf("unknown thread state\n");
     trace->num_frames = ticks_unknown_state; // -7
     break;
   }

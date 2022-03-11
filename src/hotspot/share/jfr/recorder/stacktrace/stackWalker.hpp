@@ -45,19 +45,19 @@ class compiledFrameStream : public vframeStreamCommon {
 
 // errors, subset of forte errors
 enum StackWalkerError {
+  STACKWALKER_NO_JAVA_FRAME        =  0,  // too many c frames to skip and no java frame found
   STACKWALKER_INDECIPHERABLE_FRAME = -1,
   STACKWALKER_GC_ACTIVE            = -2,
-  STACKWALKER_NOT_WALKABLE         = -6,
-  STACKWALKER_TOO_MANY_C_FRAMES    = -7 // too many c frames to skip
+  STACKWALKER_NOT_WALKABLE         = -6
 };
 
 enum StackWalkerReturn {
-  STACKWALKER_END = 0,
-  STACKWALKER_INTERPRETED_FRAME = 1,
-  STACKWALKER_COMPILED_FRAME = 2,
-  STACKWALKER_NATIVE_FRAME = 3,
-  STACKWALKER_C_FRAME = 4, // might be runtime, stub or real C frame
-  STACKWALKER_START = 5
+  STACKWALKER_END = 1,
+  STACKWALKER_INTERPRETED_FRAME = 2,
+  STACKWALKER_COMPILED_FRAME = 3,
+  STACKWALKER_NATIVE_FRAME = 4,
+  STACKWALKER_C_FRAME = 5, // might be runtime, stub or real C frame
+  STACKWALKER_START = 6
 };
 
 
@@ -140,7 +140,7 @@ public:
 
   bool at_end() const { return _state == STACKWALKER_END; }
 
-  bool at_error() const { return _state < 0; }
+  bool at_error() const { return _state <= 0; }
 
   // not at and and not at error
   bool has_frame() const { return !at_end() && !at_error(); }
