@@ -48,22 +48,23 @@ enum {
   ticks_safepoint             = -10
 };
 
+enum FrameTypeId {
+    FRAME_INTERPRETED = 0,
+    FRAME_JIT         = 1,
+    FRAME_INLINE      = 2,
+    FRAME_NATIVE      = 3,
+    FRAME_CPP         = 4
+};
 typedef struct {
-   jint bci;
-   jmethodID method_id;
-   void *machinepc;
-  // first one bytes: FrameTypeId, then one byte for the CompLevel
-   int16_t type;
+   jint bci;                   // bci for Java frames
+   jmethodID method_id;        // method ID for Java frames
+   // new information
+   void *machine_pc;            // program counter, for C and native frames (frames of native methods)
+   FrameTypeId type : 8;       // frame type (single byte)
+   CompLevel comp_level: 8;    // highest compilation level of a method related to a Java frame
 } ASGCT_CallFrame2;
 
-enum FrameTypeId {
-    FRAME_INTERPRETED  = 0,
-    FRAME_JIT_COMPILED = 1,
-    FRAME_INLINED      = 2,
-    FRAME_NATIVE       = 3,
-    FRAME_CPP          = 4,
-    FRAME_KERNEL       = 5
-};
+
 
 // Enumeration to distinguish tiers of compilation, only >= 0 are used
 /*enum CompLevel {
@@ -75,11 +76,6 @@ enum FrameTypeId {
   CompLevel_full_profile      = 3,         // C1, invocation & backedge counters + mdo
   CompLevel_full_optimization = 4          // C2 or JVMCI
 };*/
-
-int16_t encode_type(int frame_type, int comp_level) {
-  return frame_type + (comp_level << 8);
-}
-
 
 typedef struct {
     JNIEnv *env_id;                   // Env where trace was recorded
@@ -103,7 +99,8 @@ ASGCT_CallFrame2 process_c_frame(const frame *fr) {
     -4,
     0,
     fr->pc(),
-    encode_type(FRAME_CPP, fr->is_stub_frame() ? CompLevel_all : CompLevel_none)
+    FRAME_CPP,
+    fr->is_stub_frame() ? CompLevel_all : CompLevel_none
   };
 }
 
@@ -132,7 +129,8 @@ static void fill_call_trace_given_top(JavaThread* thd,
           st.bci(),
           st.method()->find_jmethod_id_or_null(),
           0,
-          encode_type(FRAME_INTERPRETED, CompLevel_none)
+          FRAME_INTERPRETED,
+          CompLevel_none
         };
         break;
       case STACKWALKER_COMPILED_FRAME:
@@ -141,7 +139,8 @@ static void fill_call_trace_given_top(JavaThread* thd,
           st.bci(),
           st.method()->find_jmethod_id_or_null(),
           0,
-          encode_type(st.is_inlined() ? FRAME_INLINED : FRAME_JIT_COMPILED, st.method()->highest_comp_level())
+          st.is_inlined() ? FRAME_INLINE : FRAME_JIT,
+          (CompLevel)st.method()->highest_comp_level()
         };
         break;
       case STACKWALKER_NATIVE_FRAME:
@@ -150,7 +149,8 @@ static void fill_call_trace_given_top(JavaThread* thd,
           -3,
           st.method()->find_jmethod_id_or_null(),
           0,
-          FRAME_NATIVE
+          FRAME_NATIVE,
+          CompLevel_none
         };
         break;
       case STACKWALKER_C_FRAME:
@@ -231,13 +231,14 @@ void process_c_trace(ASGCT_CallTrace2 *trace, jint depth, void* ucontext) {
 //   frames     - the ASGCT_CallFrames that make up this trace. Callee followed by callers.
 //
 //  ASGCT_CallFrame:
-//    typedef struct {
-//        jint lineno;
-//        jmethodID method_id;
-//        void *machinepc;
-//        jint type;
-//        void *nativeFrameAddress;
-//    } ASGCT_CallFrame2;
+// typedef struct {
+//   jint bci;                   // bci for Java frames
+//   jmethodID method_id;        // method ID for Java frames
+//   // new information
+//   void *machine_pc;            // program counter, for C and native frames (frames of native methods)
+//   FrameTypeId type : 8;       // frame type (single byte)
+//   CompLevel comp_level: 8;    // highest compilation level of a method related to a Java frame (one byte)
+// } ASGCT_CallFrame2;
 //
 //  Fields:
 //    1) For Java frame (interpreted and compiled),
@@ -252,7 +253,7 @@ void process_c_trace(ASGCT_CallTrace2 *trace, jint depth, void* ucontext) {
 //       method_id - (0)
 //       type      - (0)
 //    4) For all frames
-//       machinepc - pc of the called method
+//       machine_pc - pc of the called method
 //       nativeFrameAddress - frame pointer
 
 extern "C" {
