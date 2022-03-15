@@ -54,7 +54,7 @@ enum class FrameTypeId : uint8_t {
     FRAME_JIT         = 1,
     FRAME_INLINE      = 2,
     FRAME_NATIVE      = 3,
-    FRAME_CPP         = 4
+    FRAME_CPP         = 4   // stubs are C frames with CompLevel_all
 };
 
 typedef struct {
