@@ -3440,6 +3440,7 @@ cmsBool ReadSeqID(struct _cms_typehandler_struct* self,
 static
 void *Type_ProfileSequenceId_Read(struct _cms_typehandler_struct* self, cmsIOHANDLER* io, cmsUInt32Number* nItems, cmsUInt32Number SizeOfTag)
 {
+    (void*)SizeOfTag;
     cmsSEQ* OutSeq;
     cmsUInt32Number Count;
     cmsUInt32Number BaseOffset;

@@ -60,12 +60,12 @@ enum class FrameTypeId : uint8_t {
 };
 
 typedef struct {
-   jint bci;                    // bci for Java frames
-   jmethodID method_id;         // method ID for Java frames
-   // new information
-   void *machine_pc;            // program counter, for C and native frames (frames of native methods)
-   FrameTypeId type : 8;        // frame type (single byte)
-   uint8_t comp_level;          // highest compilation level of a method related to a Java frame
+  void *machine_pc;           // program counter, for C and native frames (frames of native methods)
+  uint8_t type;               // frame type (single byte)
+  uint8_t comp_level;         // highest compilation level of a method related to a Java frame
+  // information from original CallFrame
+  jint bci;                   // bci for Java frames
+  jmethodID method_id;        // method ID for Java frames
 } CallFrame;
 
 
@@ -73,7 +73,7 @@ typedef struct {
 // Enumeration to distinguish tiers of compilation, only >= 0 are used
 /*enum CompLevel {
   CompLevel_any               = -1,        // Used for querying the state
-  CompLevel_all               = -1,        // Used for changing the state  // used here for marking inlined
+  CompLevel_all               = -1,        // Used for changing the state  // unused
   CompLevel_none              = 0,         // Interpreter
   CompLevel_simple            = 1,         // C1
   CompLevel_limited_profile   = 2,         // C1, invocation & backedge counters
@@ -93,7 +93,7 @@ typedef struct {
 
 // AsyncGetCallTrace2() entry point.
 //
-// Extension of AsyncGetCallTrace()
+// New version of of AsyncGetCallTrace()
 //
 // void (*AsyncGetCallTrace2)(CallTrace *trace, jint depth, void* ucontext)
 //
@@ -111,9 +111,10 @@ typedef struct {
 //
 // CallTrace:
 //   typedef struct {
-//       JNIEnv *env_id;
-//       jint num_frames;
-//       CallFrame *frames;
+//     JNIEnv *env_id;                   // Env where trace was recorded
+//     jint num_frames;                  // number of frames in this trace
+//     CallFrame *frames;                // frames
+//     void* frame_info;                 // more information on frames
 //   } CallTrace;
 //
 // Fields:
@@ -124,29 +125,13 @@ typedef struct {
 //
 // ASGCT_CallFrame:
 // typedef struct {
+//   void *machine_pc;           // program counter, for C and native frames (frames of native methods)
+//   uint8_t type;               // frame type (single byte)
+//   uint8_t comp_level;         // highest compilation level of a method related to a Java frame
+//   // information from original CallFrame
 //   jint bci;                   // bci for Java frames
 //   jmethodID method_id;        // method ID for Java frames
-//   // new information
-//   void *machine_pc;            // program counter, for C and native frames (frames of native methods)
-//   FrameTypeId type : 8;       // frame type (single byte)
-//   CompLevel comp_level: 8;    // highest compilation level of a method related to a Java frame (one byte)
 // } CallFrame;
-//
-//  Fields:
-//    1) For Java frame (interpreted and compiled),
-//       lineno    - bci of the method being executed or -1 if bci is not available
-//       method_id - jmethodID of the method being executed
-//    2) For native method
-//       lineno    - (-3)
-//       method_id - jmethodID of the method being executed
-//       type      - (0)
-//    3) For native frame
-//       lineno    - (-4)
-//       method_id - (0)
-//       type      - (0)
-//    4) For all frames
-//       machine_pc - pc of the called method
-//       nativeFrameAddress - frame pointer
 extern "C" {
 JNIEXPORT
 void AsyncGetCallTrace2(asgct2::CallTrace *trace, jint depth, void* ucontext);

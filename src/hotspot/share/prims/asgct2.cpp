@@ -51,38 +51,38 @@ static void fill_call_trace_given_top(JavaThread* thd,
     switch (st.state()) {
       case STACKWALKER_INTERPRETED_FRAME:
         trace->frames[count] = {
-          st.bci(),
-          st.method()->find_jmethod_id_or_null(),
           0,
-          FrameTypeId::FRAME_INTERPRETED,
-          static_cast<uint8_t>(CompLevel_none)
+          static_cast<uint8_t>(FrameTypeId::FRAME_INTERPRETED),
+          static_cast<uint8_t>(CompLevel_none),
+          st.bci(),
+          st.method()->find_jmethod_id_or_null()
         };
         break;
       case STACKWALKER_COMPILED_FRAME:
         trace->frames[count] = {
-          st.bci(),
-          st.method()->find_jmethod_id_or_null(),
           0,
-          st.is_inlined() ? FrameTypeId::FRAME_INLINE : FrameTypeId::FRAME_JIT,
-          (uint8_t)st.method()->highest_comp_level()
+          static_cast<uint8_t>(st.is_inlined() ? FrameTypeId::FRAME_INLINE : FrameTypeId::FRAME_JIT),
+          static_cast<uint8_t>(st.method()->highest_comp_level()),
+          st.bci(),
+          st.method()->find_jmethod_id_or_null()
         };
         break;
       case STACKWALKER_NATIVE_FRAME:
         trace->frames[count] = {
-          -3,
-          st.method()->find_jmethod_id_or_null(),
           0,
-          FrameTypeId::FRAME_NATIVE,
-          static_cast<uint8_t>(CompLevel_none)
+          static_cast<uint8_t>(FrameTypeId::FRAME_NATIVE),
+          static_cast<uint8_t>(CompLevel_none),
+          -3,
+          st.method()->find_jmethod_id_or_null()
         };
         break;
       case STACKWALKER_C_FRAME:
         trace->frames[count] = {
-          -4,
-          0,
           st.base_frame()->pc(),
-          FrameTypeId::FRAME_CPP,
-          static_cast<uint8_t>(st.base_frame()->is_stub_frame() ? CompLevel_all : CompLevel_none)
+          static_cast<uint8_t>(FrameTypeId::FRAME_CPP),
+          static_cast<uint8_t>(st.base_frame()->is_stub_frame() ? CompLevel_all : CompLevel_none),
+          -4,
+          0
         };
         break;
       default:
