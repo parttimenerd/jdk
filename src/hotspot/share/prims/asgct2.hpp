@@ -64,8 +64,8 @@ typedef struct {
    jmethodID method_id;         // method ID for Java frames
    // new information
    void *machine_pc;            // program counter, for C and native frames (frames of native methods)
-   FrameTypeId type : 8;  // frame type (single byte)
-   CompLevel comp_level: 8;     // highest compilation level of a method related to a Java frame
+   FrameTypeId type : 8;        // frame type (single byte)
+   uint8_t comp_level;          // highest compilation level of a method related to a Java frame
 } CallFrame;
 
 
@@ -73,7 +73,7 @@ typedef struct {
 // Enumeration to distinguish tiers of compilation, only >= 0 are used
 /*enum CompLevel {
   CompLevel_any               = -1,        // Used for querying the state
-  CompLevel_all               = -1,        // Used for changing the state
+  CompLevel_all               = -1,        // Used for changing the state  // used here for marking inlined
   CompLevel_none              = 0,         // Interpreter
   CompLevel_simple            = 1,         // C1
   CompLevel_limited_profile   = 2,         // C1, invocation & backedge counters
@@ -84,7 +84,8 @@ typedef struct {
 typedef struct {
     JNIEnv *env_id;                   // Env where trace was recorded
     jint num_frames;                  // number of frames in this trace
-    CallFrame *frames;          // frames
+    CallFrame *frames;                // frames
+    void *frame_info;
 } CallTrace;
 
 }
