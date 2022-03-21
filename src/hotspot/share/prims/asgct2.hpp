@@ -51,7 +51,7 @@ enum class Error : jint {
   // SAFEPOINT             = -10 // not used
 };
 
-enum class FrameTypeId : uint8_t {
+enum FrameTypeId {
     FRAME_INTERPRETED = 0,
     FRAME_JIT         = 1,
     FRAME_INLINE      = 2,

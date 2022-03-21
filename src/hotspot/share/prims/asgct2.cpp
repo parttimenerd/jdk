@@ -52,7 +52,7 @@ static void fill_call_trace_given_top(JavaThread* thd,
       case STACKWALKER_INTERPRETED_FRAME:
         trace->frames[count] = {
           0,
-          (uint8_t)FrameTypeId::FRAME_INTERPRETED,
+          (uint8_t)FRAME_INTERPRETED,
           (uint8_t)CompLevel_none,
           st.bci(),
           st.method()->find_jmethod_id_or_null()
@@ -61,7 +61,7 @@ static void fill_call_trace_given_top(JavaThread* thd,
       case STACKWALKER_COMPILED_FRAME:
         trace->frames[count] = {
           0,
-          (uint8_t)(st.is_inlined() ? FrameTypeId::FRAME_INLINE : FrameTypeId::FRAME_JIT),
+          (uint8_t)(st.is_inlined() ? FRAME_INLINE : FRAME_JIT),
           (uint8_t)(st.method()->highest_comp_level()),
           st.bci(),
           st.method()->find_jmethod_id_or_null()
@@ -70,7 +70,7 @@ static void fill_call_trace_given_top(JavaThread* thd,
       case STACKWALKER_NATIVE_FRAME:
         trace->frames[count] = {
           0,
-          (uint8_t)FrameTypeId::FRAME_NATIVE,
+          (uint8_t)FRAME_NATIVE,
           (uint8_t)CompLevel_none,
           -3,
           st.method()->find_jmethod_id_or_null()
@@ -79,7 +79,7 @@ static void fill_call_trace_given_top(JavaThread* thd,
       case STACKWALKER_C_FRAME:
         trace->frames[count] = {
           st.base_frame()->pc(),
-          (uint8_t)FrameTypeId::FRAME_CPP,
+          (uint8_t)FRAME_CPP,
           (uint8_t)(st.base_frame()->is_stub_frame() ? CompLevel_all : CompLevel_none),
           -4,
           0
