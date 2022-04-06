@@ -35,12 +35,15 @@ namespace asgct2 {
 static void fill_call_trace_given_top(JavaThread* thd,
                                       CallTrace* trace,
                                       int depth,
-                                      frame top_frame) {
+                                      frame top_frame,
+                                      bool skip_c_frames,
+                                      next_frame_fn next_frame) {
   NoHandleMark nhm;
   assert(trace->frames != NULL, "trace->frames must be non-NULL");
   trace->frame_info = NULL;
 
-  StackWalker st(thd, top_frame, false /* do not skip c frames */);
+  StackWalker st(thd, top_frame, skip_c_frames /* do not skip c frames */,
+    MaxJavaStackTraceDepth * 2, (sw_next_frame_fn) next_frame);
 
   int count = 0;
   for (; count < depth && !st.at_end(); st.next(), count++) {
@@ -48,46 +51,29 @@ static void fill_call_trace_given_top(JavaThread* thd,
       trace->num_frames = st.state();
       return;
     }
-    switch (st.state()) {
-      case STACKWALKER_INTERPRETED_FRAME:
-        trace->frames[count] = {
-          0,
-          (uint8_t)FRAME_INTERPRETED,
-          (uint8_t)CompLevel_none,
-          st.bci(),
+    if (st.is_java_frame()) {
+      int type = FRAME_JAVA;
+      if (st.is_native_frame()) {
+        type = FRAME_NATIVE;
+      } else if (st.is_inlined()) {
+        type = FRAME_JAVA_INLINED;
+      }
+      int comp_level = 0;
+      if (st.state() == STACKWALKER_COMPILED_FRAME) {
+        comp_level = st.method()->highest_comp_level();
+      }
+      trace->frames[count] = {.java_frame = {
+          (uint8_t)type, (uint8_t)comp_level,
+          st.is_native_frame() ? (uint16_t)0 : (uint16_t)st.bci(),
           st.method()->find_jmethod_id_or_null()
-        };
-        break;
-      case STACKWALKER_COMPILED_FRAME:
-        trace->frames[count] = {
-          0,
-          (uint8_t)(st.is_inlined() ? FRAME_INLINE : FRAME_JIT),
-          (uint8_t)(st.method()->highest_comp_level()),
-          st.bci(),
-          st.method()->find_jmethod_id_or_null()
-        };
-        break;
-      case STACKWALKER_NATIVE_FRAME:
-        trace->frames[count] = {
-          0,
-          (uint8_t)FRAME_NATIVE,
-          (uint8_t)CompLevel_none,
-          -3,
-          st.method()->find_jmethod_id_or_null()
-        };
-        break;
-      case STACKWALKER_C_FRAME:
-        trace->frames[count] = {
-          st.base_frame()->pc(),
-          (uint8_t)FRAME_CPP,
-          (uint8_t)(st.base_frame()->is_stub_frame() ? CompLevel_all : CompLevel_none),
-          -4,
-          0
-        };
-        break;
-      default:
-        assert(false, "should never happen");
-        trace->num_frames = static_cast<jint>(Error::UNKNOWN_JAVA);
+        }
+      };
+    } else {
+      trace->frames[count] = {.non_java_frame = {
+          (uint8_t)st.base_frame()->is_stub_frame() ? FRAME_STUB : FRAME_CPP,
+          st.base_frame()->pc()
+        }
+      };
     }
   }
   trace->num_frames = count;
@@ -96,10 +82,12 @@ static void fill_call_trace_given_top(JavaThread* thd,
 
 extern "C" {
 JNIEXPORT
-void AsyncGetCallTrace2(asgct2::CallTrace *trace, jint depth, void* ucontext) {
+void AsyncGetCallTrace2(asgct2::CallTrace *trace, jint depth,
+                        void* ucontext,
+                        int32_t options, asgct2::next_frame_fn next_frame) {
   if (trace->env_id == NULL || JavaThread::is_thread_from_jni_environment_terminated(trace->env_id)) {
     // bad env_id, thread has exited or thread is exiting
-    trace->num_frames = static_cast<jint>(asgct2::Error::THREAD_EXIT); // -8;
+    trace->num_frames = (jint)asgct2::Error::THREAD_EXIT; // -8;
     return;
   }
 
@@ -107,7 +95,7 @@ void AsyncGetCallTrace2(asgct2::CallTrace *trace, jint depth, void* ucontext) {
 
   if (thread->in_deopt_handler()) {
     // thread is in the deoptimization handler so return no frames
-    trace->num_frames = static_cast<jint>(asgct2::Error::DEOPT); // -9
+    trace->num_frames = (jint)asgct2::Error::DEOPT; // -9
     return;
   }
 
@@ -115,12 +103,12 @@ void AsyncGetCallTrace2(asgct2::CallTrace *trace, jint depth, void* ucontext) {
          "AsyncGetCallTrace2 must be called by the current interrupted thread");
 
   if (!JvmtiExport::should_post_class_load()) {
-    trace->num_frames = static_cast<jint>(asgct2::Error::NO_CLASS_LOAD); // -1
+    trace->num_frames = (jint)asgct2::Error::NO_CLASS_LOAD; // -1
     return;
   }
 
   if (Universe::heap()->is_gc_active()) {
-    trace->num_frames = static_cast<jint>(asgct2::Error::GC_ACTIVE); // -2
+    trace->num_frames = (jint)asgct2::Error::GC_ACTIVE; // -2
     return;
   }
 
@@ -143,15 +131,16 @@ void AsyncGetCallTrace2(asgct2::CallTrace *trace, jint depth, void* ucontext) {
     {
       frame ret_frame;
       if (!thread->pd_get_top_frame_for_signal_handler(&ret_frame, ucontext, true)) {
-        trace->num_frames = static_cast<jint>(asgct2::Error::UNKNOWN_NOT_JAVA);  // -3 unknown frame
+        trace->num_frames = (jint)asgct2::Error::UNKNOWN_NOT_JAVA;  // -3 unknown frame
         return;
       }
-      fill_call_trace_given_top(thread, trace, depth, ret_frame);
+      fill_call_trace_given_top(thread, trace, depth, ret_frame,
+        (options & asgct2::INCLUDE_C_FRAMES) == 0, next_frame);
     }
     break;
   default:
     // Unknown thread state
-    trace->num_frames = static_cast<jint>(asgct2::Error::UNKNOWN_STATE); // -7
+    trace->num_frames = (jint)asgct2::Error::UNKNOWN_STATE; // -7
     break;
   }
 }
