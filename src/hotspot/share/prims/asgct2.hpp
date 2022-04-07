@@ -38,15 +38,16 @@
 namespace asgct2 {
 // error codes, equivalent to the forte error code for AsyncGetCallTrace
 enum Error {
-  NO_JAVA_FRAME         =  0,
-  NO_CLASS_LOAD         = -1,
-  GC_ACTIVE             = -2,
-  UNKNOWN_NOT_JAVA      = -3,
-  NOT_WALKABLE_NOT_JAVA = -4,
-  UNKNOWN_JAVA          = -5,
-  UNKNOWN_STATE         = -7,
-  THREAD_EXIT           = -8,
-  DEOPT                 = -9
+  NO_JAVA_FRAME         =   0,
+  NO_CLASS_LOAD         =  -1,
+  GC_ACTIVE             =  -2,
+  UNKNOWN_NOT_JAVA      =  -3,
+  NOT_WALKABLE_NOT_JAVA =  -4,
+  UNKNOWN_JAVA          =  -5,
+  UNKNOWN_STATE         =  -7,
+  THREAD_EXIT           =  -8,
+  DEOPT                 =  -9,
+  THREAD_NOT_JAVA       = -10
 };
 
 enum FrameTypeId {
@@ -89,7 +90,6 @@ typedef union {
 };*/
 
 typedef struct {
-  JNIEnv *env_id;                 // environment to record trace for or null for current thread environment
   jint num_frames;                // number of frames in this trace
   CallFrame *frames;              // frames
   void* frame_info;               // more information on frames

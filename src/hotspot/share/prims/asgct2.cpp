@@ -25,6 +25,7 @@
 #include "asgct2.hpp"
 #include "gc/shared/collectedHeap.inline.hpp"
 #include "runtime/frame.inline.hpp"
+#include "runtime/thread.hpp"
 #include "runtime/thread.inline.hpp"
 #include "runtime/vframe.inline.hpp"
 #include "runtime/vframeArray.hpp"
@@ -83,22 +84,24 @@ static void fill_call_trace_given_top(JavaThread* thd,
 extern "C" {
 JNIEXPORT
 void AsyncGetCallTrace2(asgct2::CallTrace *trace, jint depth, void* ucontext, int32_t options) {
-  if (trace->env_id == NULL || JavaThread::is_thread_from_jni_environment_terminated(trace->env_id)) {
-    // bad env_id, thread has exited or thread is exiting
+  assert(trace->frames != NULL, "");
+  JavaThread* thread = JavaThread::current();
+  if (thread->is_terminated()) {
+    thread->block_if_vm_exited();
+    // thread has exited or thread is exiting
     trace->num_frames = (jint)asgct2::Error::THREAD_EXIT; // -8;
     return;
   }
-
-  JavaThread* thread = JavaThread::thread_from_jni_environment(trace->env_id);
+  if (!thread->is_Java_thread()) {
+    trace->num_frames = (jint)asgct2::Error::THREAD_NOT_JAVA; // -10
+    return;
+  }
 
   if (thread->in_deopt_handler()) {
     // thread is in the deoptimization handler so return no frames
     trace->num_frames = (jint)asgct2::Error::DEOPT; // -9
     return;
   }
-
-  assert(JavaThread::current() == thread,
-         "AsyncGetCallTrace2 must be called by the current interrupted thread");
 
   if (!JvmtiExport::should_post_class_load()) {
     trace->num_frames = (jint)asgct2::Error::NO_CLASS_LOAD; // -1
