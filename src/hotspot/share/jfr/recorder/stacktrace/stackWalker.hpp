@@ -60,14 +60,6 @@ enum StackWalkerReturn {
   STACKWALKER_START = 6
 };
 
-struct StackWalkerFrame {
-  intptr_t* sp; // stack pointer
-  void* pc;     // program counter
-};
-
-typedef StackWalkerFrame (*sw_next_frame_fn)(StackWalkerFrame current);
-
-
 // walk the stack of a thread from any given frame
 // includes all c frames and lot's of checks
 // borrowed from forte.hpp
@@ -79,9 +71,6 @@ class StackWalker {
   bool _skip_c_frames;
 
   int _max_c_frames_skip;
-
-  // might be NULL
-  sw_next_frame_fn _next_frame_callback;
 
   // current frame (surrounding frame if inlined)
   frame _frame;
@@ -131,11 +120,9 @@ class StackWalker {
 
 public:
 
-  StackWalker(JavaThread* thread, frame top_frame, bool skip_c_frames = true, int max_c_frames_skip = -1,
-    sw_next_frame_fn next_frame_callback = NULL);
+  StackWalker(JavaThread* thread, frame top_frame, bool skip_c_frames = true, int max_c_frames_skip = -1);
 
-  StackWalker(JavaThread* thread, bool skip_c_frames = true, int max_c_frames_skip = -1,
-    sw_next_frame_fn next_frame_callback = NULL);
+  StackWalker(JavaThread* thread, bool skip_c_frames = true, int max_c_frames_skip = -1);
 
   // returns an error code < 0 on error and StackWalkerReturn code otherwise.
   // 0 == ended,

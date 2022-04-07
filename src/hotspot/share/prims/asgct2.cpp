@@ -30,20 +30,20 @@
 #include "runtime/vframeArray.hpp"
 #include "runtime/vframe_hp.hpp"
 #include "jfr/recorder/stacktrace/stackWalker.hpp"
+#include <sys/_types/_int32_t.h>
 namespace asgct2 {
 
 static void fill_call_trace_given_top(JavaThread* thd,
                                       CallTrace* trace,
                                       int depth,
                                       frame top_frame,
-                                      bool skip_c_frames,
-                                      next_frame_fn next_frame) {
+                                      bool skip_c_frames) {
   NoHandleMark nhm;
   assert(trace->frames != NULL, "trace->frames must be non-NULL");
   trace->frame_info = NULL;
 
   StackWalker st(thd, top_frame, skip_c_frames /* do not skip c frames */,
-    MaxJavaStackTraceDepth * 2, (sw_next_frame_fn) next_frame);
+    MaxJavaStackTraceDepth * 2);
 
   int count = 0;
   for (; count < depth && !st.at_end(); st.next(), count++) {
@@ -82,9 +82,7 @@ static void fill_call_trace_given_top(JavaThread* thd,
 
 extern "C" {
 JNIEXPORT
-void AsyncGetCallTrace2(asgct2::CallTrace *trace, jint depth,
-                        void* ucontext,
-                        int32_t options, asgct2::next_frame_fn next_frame) {
+void AsyncGetCallTrace2(asgct2::CallTrace *trace, jint depth, void* ucontext, int32_t options) {
   if (trace->env_id == NULL || JavaThread::is_thread_from_jni_environment_terminated(trace->env_id)) {
     // bad env_id, thread has exited or thread is exiting
     trace->num_frames = (jint)asgct2::Error::THREAD_EXIT; // -8;
@@ -135,7 +133,7 @@ void AsyncGetCallTrace2(asgct2::CallTrace *trace, jint depth,
         return;
       }
       fill_call_trace_given_top(thread, trace, depth, ret_frame,
-        (options & asgct2::INCLUDE_C_FRAMES) == 0, next_frame);
+        (options & asgct2::INCLUDE_C_FRAMES) == 0);
     }
     break;
   default:

@@ -57,13 +57,6 @@ enum FrameTypeId {
   FRAME_CPP          = 5  // C/C++/... frames
 };
 
-struct nf_frame {
-  intptr_t* sp; // stack pointer
-  void* pc;     // program counter
-};
-
-typedef nf_frame (*next_frame_fn)(nf_frame current);
-
 typedef struct {
   uint8_t type;            // frame type
   uint8_t comp_level;      // compilation level, 0 is interpreted
@@ -115,8 +108,7 @@ enum Options {
 // See JEP draft https://bugs.openjdk.java.net/browse/JDK-8284289 for more information
 extern "C" {
 JNIEXPORT
-void AsyncGetCallTrace2(asgct2::CallTrace *trace, jint depth, void* ucontext,
-                        int32_t options, asgct2::next_frame_fn next_frame);
+void AsyncGetCallTrace2(asgct2::CallTrace *trace, jint depth, void* ucontext, int32_t options);
 }
 
 #endif // SHARE_PRIMS_ASGCT2

@@ -229,20 +229,16 @@ static bool is_decipherable_native_frame(frame* fr, CompiledMethod* nm) {
   return fr->cb()->frame_size() >= 0;
 }
 
-StackWalker::StackWalker(JavaThread* thread, frame top_frame, bool skip_c_frames, int max_c_frames_skip,
-  sw_next_frame_fn next_frame_callback):
+StackWalker::StackWalker(JavaThread* thread, frame top_frame, bool skip_c_frames, int max_c_frames_skip):
   _thread(thread),
   _skip_c_frames(skip_c_frames), _max_c_frames_skip(max_c_frames_skip), _frame(top_frame),
-  _next_frame_callback(next_frame_callback),
   supports_os_get_frame(!skip_c_frames && os::current_frame().pc() != NULL),
   _state(STACKWALKER_START), _map(thread, false, false), in_c_on_top(false) {
   init();
 }
 
-StackWalker::StackWalker(JavaThread* thread, bool skip_c_frames, int max_c_frames_skip,
-  sw_next_frame_fn next_frame_callback):
+StackWalker::StackWalker(JavaThread* thread, bool skip_c_frames, int max_c_frames_skip):
   _thread(thread), _skip_c_frames(skip_c_frames), _max_c_frames_skip(max_c_frames_skip),
-  _next_frame_callback(next_frame_callback),
   supports_os_get_frame(!skip_c_frames && os::current_frame().pc() != NULL),
   _state(STACKWALKER_START), _map(thread, false, false),
   in_c_on_top(false) {
