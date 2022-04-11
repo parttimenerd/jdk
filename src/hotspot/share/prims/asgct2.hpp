@@ -50,7 +50,7 @@ enum Error {
   THREAD_NOT_JAVA       = -10
 };
 
-enum FrameTypeId {
+enum FrameTypeId : uint8_t {
   FRAME_JAVA         = 1, // JIT compiled and interpreted
   FRAME_JAVA_INLINED = 2, // inlined JIT compiled
   FRAME_NATIVE       = 3, // native wrapper to call C methods from Java
@@ -59,7 +59,7 @@ enum FrameTypeId {
 };
 
 typedef struct {
-  uint8_t type;            // frame type
+  FrameTypeId type;            // frame type
   uint8_t comp_level;      // compilation level, 0 is interpreted
   uint16_t bci;            // 0 < bci < 65536
   jmethodID method_id;
