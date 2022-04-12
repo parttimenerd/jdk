@@ -30,6 +30,7 @@
 #define SUPPORTS_NATIVE_CX8
 #endif
 
+#define FFI_GO_CLOSURES 0
 #include <ffi.h>
 
 // Indicates whether the C calling conventions require that
