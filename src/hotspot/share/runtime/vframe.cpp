@@ -155,7 +155,7 @@ bool vframe::sender(vframe* sender) const {
   RegisterMap temp_map = *register_map();
   assert(is_top(), "just checking");
   if (_fr.is_entry_frame() && _fr.is_first_frame()) return false;
-  frame s = _fr.sender_raw(&temp_map);
+  frame s = _fr.real_sender(&temp_map);
   if (s.is_first_frame()) return false;
   vframe::new_vframe(&s, &temp_map, thread(), sender);
   return true;

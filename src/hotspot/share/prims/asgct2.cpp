@@ -53,7 +53,7 @@ static void fill_call_trace_given_top(JavaThread* thd,
       return;
     }
     if (st.is_java_frame()) {
-      int type = FRAME_JAVA;
+      FrameTypeId type = FRAME_JAVA;
       if (st.is_native_frame()) {
         type = FRAME_NATIVE;
       } else if (st.is_inlined()) {
@@ -64,14 +64,14 @@ static void fill_call_trace_given_top(JavaThread* thd,
         comp_level = st.method()->highest_comp_level();
       }
       trace->frames[count] = {.java_frame = {
-          (uint8_t)type, (uint8_t)comp_level,
+          type, (uint8_t)comp_level,
           st.is_native_frame() ? (uint16_t)0 : (uint16_t)st.bci(),
           st.method()->find_jmethod_id_or_null()
         }
       };
     } else {
       trace->frames[count] = {.non_java_frame = {
-          (uint8_t)st.base_frame()->is_stub_frame() ? FRAME_STUB : FRAME_CPP,
+          st.base_frame()->is_stub_frame() ? FRAME_STUB : FRAME_CPP,
           st.base_frame()->pc()
         }
       };
