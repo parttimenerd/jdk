@@ -176,15 +176,15 @@ void HandleMark::operator delete[](void* p) {
 
 NoHandleMark::NoHandleMark() {
   HandleArea* area = Thread::current()->handle_area();
-  area->_no_handle_mark_nesting++;
-  assert(area->_no_handle_mark_nesting > 0, "must stack allocate NoHandleMark" );
+  //area->_no_handle_mark_nesting++;
+  //assert(area->_no_handle_mark_nesting > 0, "must stack allocate NoHandleMark" );
 }
 
 
 NoHandleMark::~NoHandleMark() {
   HandleArea* area = Thread::current()->handle_area();
-  assert(area->_no_handle_mark_nesting > 0, "must stack allocate NoHandleMark" );
-  area->_no_handle_mark_nesting--;
+  //assert(area->_no_handle_mark_nesting > 0, "must stack allocate NoHandleMark" );
+  //area->_no_handle_mark_nesting--;
 }
 
 

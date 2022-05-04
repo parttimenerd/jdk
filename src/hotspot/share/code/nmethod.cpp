@@ -237,7 +237,7 @@ static java_nmethod_stats_struct unknown_java_nmethod_stats;
 static native_nmethod_stats_struct native_nmethod_stats;
 static pc_nmethod_stats_struct pc_nmethod_stats;
 
-static void note_java_nmethod(nmethod* nm) {
+/*static void note_java_nmethod(nmethod* nm) {
 #ifdef COMPILER1
   if (nm->is_compiled_by_c1()) {
     c1_java_nmethod_stats.note_nmethod(nm);
@@ -256,7 +256,7 @@ static void note_java_nmethod(nmethod* nm) {
   {
     unknown_java_nmethod_stats.note_nmethod(nm);
   }
-}
+}*/
 #endif // !PRODUCT
 
 //---------------------------------------------------------------------------------
@@ -333,7 +333,7 @@ void ExceptionCache::set_next(ExceptionCache *ec) {
 
 // Helper used by both find_pc_desc methods.
 static inline bool match_desc(PcDesc* pc, int pc_offset, bool approximate) {
-  NOT_PRODUCT(++pc_nmethod_stats.pc_desc_tests);
+  //NOT_PRODUCT(++pc_nmethod_stats.pc_desc_tests);
   if (!approximate)
     return pc->pc_offset() == pc_offset;
   else
@@ -345,7 +345,7 @@ void PcDescCache::reset_to(PcDesc* initial_pc_desc) {
     _pc_descs[0] = NULL; // native method; no PcDescs at all
     return;
   }
-  NOT_PRODUCT(++pc_nmethod_stats.pc_desc_resets);
+  //NOT_PRODUCT(++pc_nmethod_stats.pc_desc_resets);
   // reset the cache by filling it with benign (non-null) values
   assert(initial_pc_desc->pc_offset() < 0, "must be sentinel");
   for (int i = 0; i < cache_size; i++)
@@ -353,8 +353,8 @@ void PcDescCache::reset_to(PcDesc* initial_pc_desc) {
 }
 
 PcDesc* PcDescCache::find_pc_desc(int pc_offset, bool approximate) {
-  NOT_PRODUCT(++pc_nmethod_stats.pc_desc_queries);
-  NOT_PRODUCT(if (approximate) ++pc_nmethod_stats.pc_desc_approx);
+  //NOT_PRODUCT(++pc_nmethod_stats.pc_desc_queries);
+  //NOT_PRODUCT(if (approximate) ++pc_nmethod_stats.pc_desc_approx);
 
   // Note: one might think that caching the most recently
   // read value separately would be a win, but one would be
@@ -370,7 +370,7 @@ PcDesc* PcDescCache::find_pc_desc(int pc_offset, bool approximate) {
   res = _pc_descs[0];
   if (res == NULL) return NULL;  // native method; no PcDescs at all
   if (match_desc(res, pc_offset, approximate)) {
-    NOT_PRODUCT(++pc_nmethod_stats.pc_desc_repeats);
+    //NOT_PRODUCT(++pc_nmethod_stats.pc_desc_repeats);
     return res;
   }
 
@@ -379,7 +379,7 @@ PcDesc* PcDescCache::find_pc_desc(int pc_offset, bool approximate) {
     res = _pc_descs[i];
     if (res->pc_offset() < 0) break;  // optimization: skip empty cache
     if (match_desc(res, pc_offset, approximate)) {
-      NOT_PRODUCT(++pc_nmethod_stats.pc_desc_hits);
+      //NOT_PRODUCT(++pc_nmethod_stats.pc_desc_hits);
       return res;
     }
   }
@@ -389,7 +389,7 @@ PcDesc* PcDescCache::find_pc_desc(int pc_offset, bool approximate) {
 }
 
 void PcDescCache::add_pc_desc(PcDesc* pc_desc) {
-  NOT_PRODUCT(++pc_nmethod_stats.pc_desc_adds);
+  //NOT_PRODUCT(++pc_nmethod_stats.pc_desc_adds);
   // Update the LRU cache by shifting pc_desc forward.
   for (int i = 0; i < cache_size; i++)  {
     PcDesc* next = _pc_descs[i];
@@ -478,7 +478,7 @@ nmethod* nmethod::new_native_nmethod(const methodHandle& method,
             basic_lock_owner_sp_offset,
             basic_lock_sp_offset,
             oop_maps);
-    NOT_PRODUCT(if (nm != NULL)  native_nmethod_stats.note_native_nmethod(nm));
+    //NOT_PRODUCT(if (nm != NULL)  native_nmethod_stats.note_native_nmethod(nm));
   }
 
   if (nm != NULL) {
@@ -579,7 +579,7 @@ nmethod* nmethod::new_nmethod(const methodHandle& method,
           InstanceKlass::cast(klass)->add_dependent_nmethod(nm);
         }
       }
-      NOT_PRODUCT(if (nm != NULL)  note_java_nmethod(nm));
+      //NOT_PRODUCT(if (nm != NULL)  note_java_nmethod(nm));
     }
   }
   // Do verification and logging outside CodeCache_lock.
@@ -2131,7 +2131,7 @@ static PcDesc* linear_search(const PcDescSearch& search, int pc_offset, bool app
   lower += 1; // exclude initial sentinel
   PcDesc* res = NULL;
   for (PcDesc* p = lower; p < upper; p++) {
-    NOT_PRODUCT(--pc_nmethod_stats.pc_desc_tests);  // don't count this call to match_desc
+    //NOT_PRODUCT(--pc_nmethod_stats.pc_desc_tests);  // don't count this call to match_desc
     if (match_desc(p, pc_offset, approximate)) {
       if (res == NULL)
         res = p;
@@ -2178,7 +2178,7 @@ PcDesc* PcDescContainer::find_pc_desc_internal(address pc, bool approximate, con
 
   // Use the last successful return as a split point.
   PcDesc* mid = _pc_desc_cache.last_pc_desc();
-  NOT_PRODUCT(++pc_nmethod_stats.pc_desc_searches);
+  //NOT_PRODUCT(++pc_nmethod_stats.pc_desc_searches);
   if (mid->pc_offset() < pc_offset) {
     lower = mid;
   } else {
@@ -2191,7 +2191,7 @@ PcDesc* PcDescContainer::find_pc_desc_internal(address pc, bool approximate, con
   for (int step = (1 << (LOG2_RADIX*3)); step > 1; step >>= LOG2_RADIX) {
     while ((mid = lower + step) < upper) {
       assert_LU_OK;
-      NOT_PRODUCT(++pc_nmethod_stats.pc_desc_searches);
+      //NOT_PRODUCT(++pc_nmethod_stats.pc_desc_searches);
       if (mid->pc_offset() < pc_offset) {
         lower = mid;
       } else {
@@ -2206,7 +2206,7 @@ PcDesc* PcDescContainer::find_pc_desc_internal(address pc, bool approximate, con
   while (true) {
     assert_LU_OK;
     mid = lower + 1;
-    NOT_PRODUCT(++pc_nmethod_stats.pc_desc_searches);
+    //NOT_PRODUCT(++pc_nmethod_stats.pc_desc_searches);
     if (mid->pc_offset() < pc_offset) {
       lower = mid;
     } else {

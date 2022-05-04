@@ -171,9 +171,9 @@ void ThreadService::remove_thread(JavaThread* thread, bool daemon) {
 
   // Counts are incremented at the same time, but atomic counts are
   // decremented earlier than perf counts.
-  assert(_live_threads_count->get_value() > count,
+  /*assert(_live_threads_count->get_value() > count,
     "thread count mismatch %d : %d",
-    (int)_live_threads_count->get_value(), count);
+    (int)_live_threads_count->get_value(), count);*/
 
   _live_threads_count->dec(1);
   if (daemon) {
@@ -186,7 +186,7 @@ void ThreadService::remove_thread(JavaThread* thread, bool daemon) {
 
   // Counts are incremented at the same time, but atomic counts are
   // decremented earlier than perf counts.
-  assert(_daemon_threads_count->get_value() >= daemon_count,
+  /*assert(_daemon_threads_count->get_value() >= daemon_count,
     "thread count mismatch %d : %d",
     (int)_daemon_threads_count->get_value(), daemon_count);
   assert(_live_threads_count->get_value() >= count,
@@ -201,7 +201,7 @@ void ThreadService::remove_thread(JavaThread* thread, bool daemon) {
   assert(_daemon_threads_count->get_value() > 0 ||
     (_daemon_threads_count->get_value() == 0 && daemon_count == 0),
     "thread counts should reach 0 at the same time, daemon %d,%d",
-    (int)_daemon_threads_count->get_value(), daemon_count);
+    (int)_daemon_threads_count->get_value(), daemon_count);*/
 }
 
 void ThreadService::current_thread_exiting(JavaThread* jt, bool daemon) {

@@ -578,8 +578,8 @@ void AsyncGetCallTrace(ASGCT_CallTrace *trace, jint depth, void* ucontext) {
     return;
   }
 
-  assert(JavaThread::current() == thread,
-         "AsyncGetCallTrace must be called by the current interrupted thread");
+//  assert(JavaThread::current() == thread,
+//         "AsyncGetCallTrace must be called by the current interrupted thread");
 
   if (!JvmtiExport::should_post_class_load()) {
     trace->num_frames = ticks_no_class_load; // -1
