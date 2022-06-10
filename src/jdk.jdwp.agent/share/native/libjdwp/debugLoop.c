@@ -31,6 +31,9 @@
 #include "inStream.h"
 #include "outStream.h"
 #include "threadControl.h"
+#include <stdio.h>
+#include <sys/time.h>
+
 
 
 static void JNICALL reader(jvmtiEnv* jvmti_env, JNIEnv* jni_env, void* arg);
@@ -97,7 +100,7 @@ debugLoop_run(void)
 
     standardHandlers_onConnect();
     threadControl_onConnect();
-
+    FILE* costFile = fopen("/tmp/jdwp_cost.csv", "a");
     /* Okay, start reading cmds! */
     while (shouldListen) {
         if (!dequeue(&p)) {
@@ -142,6 +145,8 @@ debugLoop_run(void)
             func = debugDispatch_getHandler(cmd->cmdSet, cmd->cmd, &cmdSetName, &cmdName);
             LOG_MISC(("Command set %s(%d), command %s(%d)",
                       cmdSetName, cmd->cmdSet, cmdName, cmd->cmd));
+            struct timespec start, end;
+            clock_gettime(CLOCK_MONOTONIC_RAW, &start);
             if (func == NULL) {
                 /* we've never heard of this, so I guess we
                  * haven't implemented it.
@@ -168,7 +173,9 @@ debugLoop_run(void)
                 }
                 outStream_sendReply(&out);
             }
-
+            clock_gettime(CLOCK_MONOTONIC_RAW, &end);
+            uint64_t delta_us = (end.tv_sec - start.tv_sec) * 1000000 + (end.tv_nsec - start.tv_nsec) / 1000;
+            fprintf(costFile, "%d,%d,%f\n", cmd->cmdSet, cmd->cmd, delta_us / 1000.0);
             /*
              * Release the vmDeathLock as the reply has been posted.
              */
@@ -180,6 +187,7 @@ debugLoop_run(void)
             shouldListen = !lastCommand(cmd);
         }
     }
+    fclose(costFile);
     threadControl_onDisconnect();
     standardHandlers_onDisconnect();
 
