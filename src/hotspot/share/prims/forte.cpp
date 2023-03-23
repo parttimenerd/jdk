@@ -606,6 +606,8 @@ void AsyncGetCallTrace(ASGCT_CallTrace *trace, jint depth, void* ucontext) {
     return;
   }
 
+  ThreadInAsgct tia(thread);
+
   switch (thread->thread_state()) {
   case _thread_new:
   case _thread_uninitialized:
