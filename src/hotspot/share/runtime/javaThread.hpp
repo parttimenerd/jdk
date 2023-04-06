@@ -839,6 +839,11 @@ private:
     return current;
   }
 
+  // like thread_from_jni_environment but does not block if the thread is terminated
+  static JavaThread* thread_from_jni_environment_raw(JNIEnv* env) {
+    return reinterpret_cast<JavaThread*>(((intptr_t)env - in_bytes(jni_environment_offset())));
+  }
+
   // JNI critical regions. These can nest.
   bool in_critical()    { return _jni_active_critical > 0; }
   bool in_last_critical()  { return _jni_active_critical == 1; }

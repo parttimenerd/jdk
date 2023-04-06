@@ -35,6 +35,7 @@
 #include "runtime/javaThread.inline.hpp"
 #include "runtime/vframe.inline.hpp"
 #include "runtime/vframeArray.hpp"
+#include <cstddef>
 
 // call frame copied from old .h file and renamed
 typedef struct {
@@ -551,7 +552,7 @@ static void forte_fill_call_trace_given_top(JavaThread* thd,
 //   } ASGCT_CallTrace;
 //
 // Fields:
-//   env_id     - ID of thread which executed this trace.
+//   env_id     - ID of thread which executed this trace, or NULL if the current thread should be used.
 //   num_frames - number of frames in the trace.
 //                (< 0 indicates the frame is not walkable).
 //   frames     - the ASGCT_CallFrames that make up this trace. Callee followed by callers.
@@ -576,7 +577,12 @@ void AsyncGetCallTrace(ASGCT_CallTrace *trace, jint depth, void* ucontext) {
 
   // Can't use thread_from_jni_environment as it may also perform a VM exit check that is unsafe to
   // do from this context.
-  Thread* raw_thread = Thread::current_or_null_safe();
+  Thread* raw_thread;
+  if (trace->env_id == nullptr) {
+    raw_thread = Thread::current_or_null_safe();
+  } else {
+    raw_thread = JavaThread::thread_from_jni_environment_raw(trace->env_id);
+  }
   JavaThread* thread;
 
   if (trace->env_id == nullptr || raw_thread == nullptr || !raw_thread->is_Java_thread() ||
@@ -586,15 +592,13 @@ void AsyncGetCallTrace(ASGCT_CallTrace *trace, jint depth, void* ucontext) {
     return;
   }
 
+  trace->env_id = thread->jni_environment();
+
   if (thread->in_deopt_handler()) {
     // thread is in the deoptimization handler so return no frames
     trace->num_frames = ticks_deopt; // -9
     return;
   }
-
-  // This is safe now as the thread has not terminated and so no VM exit check occurs.
-  assert(thread == JavaThread::thread_from_jni_environment(trace->env_id),
-         "AsyncGetCallTrace must be called by the current interrupted thread");
 
   if (!JvmtiExport::should_post_class_load()) {
     trace->num_frames = ticks_no_class_load; // -1
