@@ -35,6 +35,7 @@
 #include "runtime/javaThread.inline.hpp"
 #include "runtime/vframe.inline.hpp"
 #include "runtime/vframeArray.hpp"
+#include "runtime/threadCrashProtection.hpp"
 #include <cstddef>
 
 // call frame copied from old .h file and renamed
@@ -516,64 +517,7 @@ static void forte_fill_call_trace_given_top(JavaThread* thd,
   return;
 }
 
-
-// Forte Analyzer AsyncGetCallTrace() entry point. Currently supported
-// on Linux X86, Solaris SPARC and Solaris X86.
-//
-// Async-safe version of GetCallTrace being called from a signal handler
-// when a LWP gets interrupted by SIGPROF but the stack traces are filled
-// with different content (see below).
-//
-// This function must only be called when JVM/TI
-// CLASS_LOAD events have been enabled since agent startup. The enabled
-// event will cause the jmethodIDs to be allocated at class load time.
-// The jmethodIDs cannot be allocated in a signal handler because locks
-// cannot be grabbed in a signal handler safely.
-//
-// void (*AsyncGetCallTrace)(ASGCT_CallTrace *trace, jint depth, void* ucontext)
-//
-// Called by the profiler to obtain the current method call stack trace for
-// a given thread. The thread is identified by the env_id field in the
-// ASGCT_CallTrace structure. The profiler agent should allocate a ASGCT_CallTrace
-// structure with enough memory for the requested stack depth. The VM fills in
-// the frames buffer and the num_frames field.
-//
-// Arguments:
-//
-//   trace    - trace data structure to be filled by the VM.
-//   depth    - depth of the call stack trace.
-//   ucontext - ucontext_t of the LWP
-//
-// ASGCT_CallTrace:
-//   typedef struct {
-//       JNIEnv *env_id;
-//       jint num_frames;
-//       ASGCT_CallFrame *frames;
-//   } ASGCT_CallTrace;
-//
-// Fields:
-//   env_id     - ID of thread which executed this trace, or NULL if the current thread should be used.
-//   num_frames - number of frames in the trace.
-//                (< 0 indicates the frame is not walkable).
-//   frames     - the ASGCT_CallFrames that make up this trace. Callee followed by callers.
-//
-//  ASGCT_CallFrame:
-//    typedef struct {
-//        jint lineno;
-//        jmethodID method_id;
-//    } ASGCT_CallFrame;
-//
-//  Fields:
-//    1) For Java frame (interpreted and compiled),
-//       lineno    - bci of the method being executed or -1 if bci is not available
-//       method_id - jmethodID of the method being executed
-//    2) For native method
-//       lineno    - (-3)
-//       method_id - jmethodID of the method being executed
-
-extern "C" {
-JNIEXPORT
-void AsyncGetCallTrace(ASGCT_CallTrace *trace, jint depth, void* ucontext) {
+void asyncGetCallTraceImpl(ASGCT_CallTrace *trace, jint depth, void* ucontext) {
 
   // Can't use thread_from_jni_environment as it may also perform a VM exit check that is unsafe to
   // do from this context.
@@ -669,6 +613,95 @@ void AsyncGetCallTrace(ASGCT_CallTrace *trace, jint depth, void* ucontext) {
     // Unknown thread state
     trace->num_frames = ticks_unknown_state; // -7
     break;
+  }
+}
+
+class AsyncGetCallTraceCallBack : public CrashProtectionCallback {
+public:
+  AsyncGetCallTraceCallBack(ASGCT_CallTrace *trace, jint depth, void* ucontext) :
+    _trace(trace), _depth(depth), _ucontext(ucontext) {
+  }
+  virtual void call() {
+    asyncGetCallTraceImpl(_trace, _depth, _ucontext);
+  }
+ private:
+  ASGCT_CallTrace* _trace;
+  jint _depth;
+  void* _ucontext;
+};
+
+// Forte Analyzer AsyncGetCallTrace() entry point. Currently supported
+// on Linux X86, Solaris SPARC and Solaris X86.
+//
+// Async-safe version of GetCallTrace being called from a signal handler
+// when a LWP gets interrupted by SIGPROF but the stack traces are filled
+// with different content (see below).
+//
+// This function must only be called when JVM/TI
+// CLASS_LOAD events have been enabled since agent startup. The enabled
+// event will cause the jmethodIDs to be allocated at class load time.
+// The jmethodIDs cannot be allocated in a signal handler because locks
+// cannot be grabbed in a signal handler safely.
+//
+// void (*AsyncGetCallTrace)(ASGCT_CallTrace *trace, jint depth, void* ucontext)
+//
+// Called by the profiler to obtain the current method call stack trace for
+// a given thread. The thread is identified by the env_id field in the
+// ASGCT_CallTrace structure. The profiler agent should allocate a ASGCT_CallTrace
+// structure with enough memory for the requested stack depth. The VM fills in
+// the frames buffer and the num_frames field.
+//
+// Arguments:
+//
+//   trace    - trace data structure to be filled by the VM.
+//   depth    - depth of the call stack trace.
+//   ucontext - ucontext_t of the LWP
+//
+// ASGCT_CallTrace:
+//   typedef struct {
+//       JNIEnv *env_id;
+//       jint num_frames;
+//       ASGCT_CallFrame *frames;
+//   } ASGCT_CallTrace;
+//
+// Fields:
+//   env_id     - ID of thread which executed this trace, or NULL if the current thread should be used.
+//   num_frames - number of frames in the trace.
+//                (< 0 indicates the frame is not walkable).
+//   frames     - the ASGCT_CallFrames that make up this trace. Callee followed by callers.
+//
+//  ASGCT_CallFrame:
+//    typedef struct {
+//        jint lineno;
+//        jmethodID method_id;
+//    } ASGCT_CallFrame;
+//
+//  Fields:
+//    1) For Java frame (interpreted and compiled),
+//       lineno    - bci of the method being executed or -1 if bci is not available
+//       method_id - jmethodID of the method being executed
+//    2) For native method
+//       lineno    - (-3)
+//       method_id - jmethodID of the method being executed
+
+extern "C" {
+JNIEXPORT
+void AsyncGetCallTrace(ASGCT_CallTrace *trace, jint depth, void* ucontext) {
+
+  if (Thread::current_or_null_safe() == NULL) {
+    // we need the current Thread object for crash protection
+    fprintf(stderr, "AsyncGetCallTrace: no current thread\n");
+    trace->num_frames = ticks_thread_exit;
+    return;
+  }
+  trace->num_frames = ticks_unknown_state;
+  AsyncGetCallTraceCallBack cb(trace, depth, ucontext);
+  ThreadCrashProtection crash_protection;
+  if (!crash_protection.call(cb)) {
+    fprintf(stderr, "AsyncGetCallTrace: catched crash\n");
+    if (trace->num_frames >= 0) {
+      trace->num_frames = ticks_unknown_state;
+    }
   }
 }
 
