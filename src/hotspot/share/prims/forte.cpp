@@ -36,6 +36,7 @@
 #include "runtime/vframe.inline.hpp"
 #include "runtime/vframeArray.hpp"
 #include <cstddef>
+#include "runtime/threadSMR.inline.hpp"
 
 // call frame copied from old .h file and renamed
 typedef struct {
@@ -530,19 +531,22 @@ static void forte_fill_call_trace_given_top(JavaThread* thd,
 // The jmethodIDs cannot be allocated in a signal handler because locks
 // cannot be grabbed in a signal handler safely.
 //
-// void (*AsyncGetCallTrace)(ASGCT_CallTrace *trace, jint depth, void* ucontext)
+// void (*AsyncGetCallTrace)(ASGCT_CallTrace *trace, jint depth, void* ucontext, jlong os_thread_id)
 //
 // Called by the profiler to obtain the current method call stack trace for
-// a given thread. The thread is identified by the env_id field in the
-// ASGCT_CallTrace structure. The profiler agent should allocate a ASGCT_CallTrace
+// a given thread. The thread is indentified by the os_thread_id. If the
+// os_thread_id is -1, the current thread is used. 
+// The profiler agent should allocate a ASGCT_CallTrace
 // structure with enough memory for the requested stack depth. The VM fills in
 // the frames buffer and the num_frames field.
 //
 // Arguments:
 //
-//   trace    - trace data structure to be filled by the VM.
-//   depth    - depth of the call stack trace.
-//   ucontext - ucontext_t of the LWP
+//   trace        - trace data structure to be filled by the VM.
+//   depth        - depth of the call stack trace.
+//   ucontext     - ucontext_t of the LWP
+//   os_thread_id - OS thread id of the thread which executed this trace, 
+//                  or -1 if the current thread should be used.
 //
 // ASGCT_CallTrace:
 //   typedef struct {
@@ -552,9 +556,10 @@ static void forte_fill_call_trace_given_top(JavaThread* thd,
 //   } ASGCT_CallTrace;
 //
 // Fields:
-//   env_id     - ID of thread which executed this trace, or NULL if the current thread should be used.
+//   env_id     - ID of thread which executed this trace, the API sets this field if it is NULL.
 //   num_frames - number of frames in the trace.
-//                (< 0 indicates the frame is not walkable).
+//                (< 0 indicates the frame is not walkable and -42 that the thread indicated via
+//                 os_thread_id is not a JVM registered thread).
 //   frames     - the ASGCT_CallFrames that make up this trace. Callee followed by callers.
 //
 //  ASGCT_CallFrame:
@@ -573,15 +578,27 @@ static void forte_fill_call_trace_given_top(JavaThread* thd,
 
 extern "C" {
 JNIEXPORT
-void AsyncGetCallTrace(ASGCT_CallTrace *trace, jint depth, void* ucontext) {
+void AsyncGetCallTrace(ASGCT_CallTrace *trace, jint depth, void* ucontext, jlong os_thread_id) {
 
   // Can't use thread_from_jni_environment as it may also perform a VM exit check that is unsafe to
   // do from this context.
   Thread* raw_thread;
-  if (trace->env_id == nullptr) {
+  if (os_thread_id == -1 || os_thread_id == os::current_thread_id()) {
     raw_thread = Thread::current_or_null_safe();
   } else {
-    raw_thread = JavaThread::thread_from_jni_environment_raw(trace->env_id);
+    // improve this to do caching and to aquire the thread list
+    // properly, making it safer
+    ThreadsList *tl = ThreadsSMRSupport::get_java_thread_list();
+    if (tl == nullptr) {
+      trace->num_frames = -42;
+      return;
+    }
+    raw_thread = tl->find_JavaThread_from_tid(os_thread_id);
+    if (raw_thread == nullptr) {
+      // bad thread
+      trace->num_frames = -42;
+      return;
+    }
   }
   JavaThread* thread;
 
@@ -591,6 +608,8 @@ void AsyncGetCallTrace(ASGCT_CallTrace *trace, jint depth, void* ucontext) {
     trace->num_frames = ticks_thread_exit; // -8
     return;
   }
+
+  assert(trace->env_id == nullptr || trace->env_id == thread->jni_environment(), "env_id mismatch");
 
   trace->env_id = thread->jni_environment();
 

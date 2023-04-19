@@ -731,6 +731,21 @@ JavaThread* ThreadsList::find_JavaThread_from_java_tid(jlong java_tid) const {
   return nullptr;
 }
 
+
+JavaThread* ThreadsList::find_JavaThread_from_tid(jlong tid) const {
+  for (uint i = 0; i < length(); i++) {
+    JavaThread* thread = thread_at(i);
+    if (thread == nullptr) {
+      continue;
+    }
+    OSThread* osthread = thread->osthread();
+    if (osthread != nullptr && tid == osthread->thread_id()) {
+      return thread;
+    }
+  }
+  return nullptr;
+}
+
 void ThreadsList::inc_nested_handle_cnt() {
   Atomic::inc(&_nested_handle_cnt);
 }
