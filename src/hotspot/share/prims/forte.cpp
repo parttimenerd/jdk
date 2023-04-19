@@ -518,7 +518,26 @@ static void forte_fill_call_trace_given_top(JavaThread* thd,
   return;
 }
 
-void asyncGetCallTraceImpl(ASGCT_CallTrace *trace, jint depth, void* ucontext, Thread *raw_thread) {
+void asyncGetCallTraceImpl(ASGCT_CallTrace *trace, jint depth, void* ucontext, jlong os_thread_id) {
+  Thread* raw_thread;
+  if (os_thread_id == -1 || os_thread_id == os::current_thread_id()) {
+    raw_thread = Thread::current_or_null_safe();
+  } else {
+    // improve this to do caching and to aquire the thread list
+    // properly, making it safer
+    ThreadsList *tl = ThreadsSMRSupport::get_java_thread_list();
+    if (tl == nullptr) {
+      trace->num_frames = ticks_unknown_not_Java;
+      return;
+    }
+    raw_thread = tl->find_JavaThread_from_tid(os_thread_id);
+    if (raw_thread == nullptr) {
+      // bad thread
+      trace->num_frames = ticks_unknown_not_Java;
+      return;
+    }
+  }
+
   JavaThread* thread;
 
   if (trace->env_id == nullptr || raw_thread == nullptr || !raw_thread->is_Java_thread() ||
@@ -547,9 +566,6 @@ void asyncGetCallTraceImpl(ASGCT_CallTrace *trace, jint depth, void* ucontext, T
     trace->num_frames = ticks_GC_active; // -2
     return;
   }
-
-  // signify to other code in the VM that we're in ASGCT
-  ThreadInAsgct tia(thread);
 
   switch (thread->thread_state()) {
   case _thread_new:
@@ -612,17 +628,17 @@ void asyncGetCallTraceImpl(ASGCT_CallTrace *trace, jint depth, void* ucontext, T
 
 class AsyncGetCallTraceCallBack : public CrashProtectionCallback {
 public:
-  AsyncGetCallTraceCallBack(ASGCT_CallTrace *trace, jint depth, void* ucontext, Thread *raw_thread) :
-    _trace(trace), _depth(depth), _ucontext(ucontext), _raw_thread(raw_thread) {
+  AsyncGetCallTraceCallBack(ASGCT_CallTrace *trace, jint depth, void* ucontext, jlong os_thread_id) :
+    _trace(trace), _depth(depth), _ucontext(ucontext), _os_thread_id(os_thread_id) {
   }
   virtual void call() {
-    asyncGetCallTraceImpl(_trace, _depth, _ucontext, _raw_thread);
+    asyncGetCallTraceImpl(_trace, _depth, _ucontext, _os_thread_id);
   }
  private:
   ASGCT_CallTrace* _trace;
   jint _depth;
   void* _ucontext;
-  Thread* _raw_thread;
+  jlong _os_thread_id;
 };
 
 // Forte Analyzer AsyncGetCallTrace() entry point. Currently supported
@@ -665,8 +681,8 @@ public:
 // Fields:
 //   env_id     - ID of thread which executed this trace, the API sets this field if it is NULL.
 //   num_frames - number of frames in the trace.
-//                (< 0 indicates the frame is not walkable and -42 that the thread indicated via
-//                 os_thread_id is not a JVM registered thread).
+//                (< 0 indicates the frame is not walkable and ticks_unknown_not_Java (-3)
+//                 that the thread indicated via os_thread_id is not a JVM registered thread).
 //   frames     - the ASGCT_CallFrames that make up this trace. Callee followed by callers.
 //
 //  ASGCT_CallFrame:
@@ -685,27 +701,9 @@ public:
 extern "C" {
 JNIEXPORT
 void AsyncGetCallTrace(ASGCT_CallTrace *trace, jint depth, void* ucontext, jlong os_thread_id) {
-  Thread* raw_thread;
-  if (os_thread_id == -1 || os_thread_id == os::current_thread_id()) {
-    raw_thread = Thread::current_or_null_safe();
-  } else {
-    // improve this to do caching and to aquire the thread list
-    // properly, making it safer
-    ThreadsList *tl = ThreadsSMRSupport::get_java_thread_list();
-    if (tl == nullptr) {
-      trace->num_frames = -42;
-      return;
-    }
-    raw_thread = tl->find_JavaThread_from_tid(os_thread_id);
-    if (raw_thread == nullptr) {
-      // bad thread
-      trace->num_frames = -42;
-      return;
-    }
-  }
   trace->num_frames = ticks_unknown_state;
-  AsyncGetCallTraceCallBack cb(trace, depth, ucontext, raw_thread);
-  ThreadCrashProtection crash_protection(raw_thread);
+  AsyncGetCallTraceCallBack cb(trace, depth, ucontext, os_thread_id);
+  ThreadCrashProtection crash_protection;
   if (!crash_protection.call(cb)) {
     fprintf(stderr, "AsyncGetCallTrace: catched crash\n");
     if (trace->num_frames >= 0) {

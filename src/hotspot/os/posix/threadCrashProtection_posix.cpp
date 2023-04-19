@@ -29,9 +29,8 @@
 Thread* ThreadCrashProtection::_protected_thread = nullptr;
 ThreadCrashProtection* ThreadCrashProtection::_crash_protection = nullptr;
 
-ThreadCrashProtection::ThreadCrashProtection(Thread* protected_thread) {
-  _protected_thread = protected_thread == nullptr ? Thread::current() : protected_thread;
-  assert(_protected_thread->is_JfrSampler_thread(), "should be JFRSampler");
+ThreadCrashProtection::ThreadCrashProtection() {
+  _protected_thread = Thread::current();
 }
 
 /*
