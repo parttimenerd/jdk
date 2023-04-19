@@ -44,7 +44,7 @@ public:
     return _crash_protection != nullptr && _protected_thread == thr;
   }
 
-  ThreadCrashProtection();
+  ThreadCrashProtection(Thread* protected_thread = nullptr);
   bool call(CrashProtectionCallback& cb);
 private:
   static Thread* _protected_thread;
