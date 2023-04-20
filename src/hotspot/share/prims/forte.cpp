@@ -540,7 +540,7 @@ void asyncGetCallTraceImpl(ASGCT_CallTrace *trace, jint depth, void* ucontext, j
 
   JavaThread* thread;
 
-  if (trace->env_id == nullptr || raw_thread == nullptr || !raw_thread->is_Java_thread() ||
+  if (raw_thread == nullptr || !raw_thread->is_Java_thread() ||
       (thread = JavaThread::cast(raw_thread))->is_exiting()) {
     // bad env_id, thread has exited or thread is exiting
     trace->num_frames = ticks_thread_exit; // -8
