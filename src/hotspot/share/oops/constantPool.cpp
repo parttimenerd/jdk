@@ -636,6 +636,24 @@ Klass* ConstantPool::klass_at_if_loaded(const constantPoolHandle& this_cp, int w
   }
 }
 
+// Limited version of klass_at_if_loaded that does not throw exceptions or seg
+Klass* ConstantPool::klass_at_if_loaded_safe(const constantPoolHandle& this_cp, int which) {
+  CPKlassSlot kslot = this_cp->klass_slot_at_safe(which);
+  // TODO: do
+  int resolved_klass_index = kslot.resolved_klass_index_safe();
+  int name_index = kslot.name_index_safe();
+  assert(this_cp->tag_at_safe(name_index).is_symbol(), "sanity");
+
+  if (this_cp->tag_at_safe(which).is_klass()) {
+    Klass** kp = this_cp->resolved_klasses()->adr_at_safe(resolved_klass_index);
+    if (kp == nullptr) return nullptr;
+    Klass* k = (Klass*)SafeFetchN((intptr_t*)kp, (intptr_t)nullptr);
+    assert(k != nullptr && SafeFetchN((intptr_t*)kp, (intptr_t)-1) != -1, "should be resolved");
+    return k;
+  }
+  return nullptr;
+}
+
 Method* ConstantPool::method_at_if_loaded(const constantPoolHandle& cpool,
                                                    int which) {
   if (cpool->cache() == nullptr)  return nullptr;  // nothing to load yet

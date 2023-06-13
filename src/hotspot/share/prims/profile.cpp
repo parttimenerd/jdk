@@ -22,6 +22,10 @@
  *
  */
 
+#include "classfile/classLoader.hpp"
+#include "jni.h"
+#include "oops/constantPool.hpp"
+#include "oops/oopsHierarchy.hpp"
 #include "precompiled.hpp"
 
 #include "profile.h"
@@ -29,7 +33,10 @@
 #include <algorithm>
 #include "gc/shared/collectedHeap.inline.hpp"
 #include "runtime/frame.inline.hpp"
+#include "runtime/handles.hpp"
+#include "runtime/javaThread.hpp"
 #include "runtime/safefetch.hpp"
+#include "runtime/signature.hpp"
 #include "runtime/thread.hpp"
 #include "runtime/thread.inline.hpp"
 #include "runtime/vframe.inline.hpp"
@@ -40,8 +47,10 @@
 #include "prims/stackWalker.hpp"
 #include "prims/jvmtiExport.hpp"
 #include "prims/jvmtiEnvBase.hpp"
+#include "runtime/jniHandles.inline.hpp"
 #include <limits>
 #include <profile.h>
+
 
 #define PRINT_C_FRAME_INFO 0
 
@@ -71,7 +80,8 @@ void fill_call_trace_given_top(JavaThread* thd,
       trace->frames[count] = {.java_frame = {
           type, (int8_t) st.compilation_level(),
           st.is_native_frame() ? (uint16_t)-1 : (uint16_t)std::min(st.bci(), (int)std::numeric_limits<uint16_t>::max()),
-          st.method()->find_jmethod_id_or_null()
+          st.method()->find_jmethod_id_or_null(),
+          (ASGST_Method)st.method()
         }
       };
     } else {
@@ -407,4 +417,47 @@ void AsyncGetStackTrace(ASGST_CallTrace *trace, jint depth, void* ucontext, int3
   if (thread != NULL) {
     thread->set_in_async_stack_walking(false);
   }
+}
+
+jmethodID ASGST_MethodToJMethodID(ASGST_Method method) {
+  return (jmethodID)((Method*)method)->find_jmethod_id_or_null();
+}
+
+void writeField(Symbol* symbol, char** char_field, jint* length_field) {
+  int& length = *length_field;
+  if (length == 0) {
+    return;
+  }
+  if (symbol == nullptr) {
+    if (length > 0) {
+      **char_field = 0;
+      length = 0;
+    }
+  } else {
+    symbol->as_C_string(*char_field, length);
+    length = symbol->utf8_length_safe();
+  }
+}
+
+void ASGST_GetMethodInfo(ASGST_Method method, ASGST_MethodInfo* info) {
+  Method *m = (Method*)method;
+  InstanceKlass *klass = m->method_holder_safe();
+  if (klass != nullptr) {
+    writeField(klass->name_safe(), &info->class_name, &info->class_name_len);
+    writeField(klass->generic_signature_safe(), &info->generic_class_name, &info->generic_class_name_len);
+  }
+  writeField(m->name_safe(), &info->method_name, &info->method_name_len);
+  writeField(m->signature_safe(), &info->signature, &info->signature_len);
+  writeField(m->generic_signature_safe(), &info->generic_signature, &info->generic_signature_len);
+  info->modifiers = m->access_flags_int_safe();
+}
+
+jclass ASGST_GetClass(ASGST_Method method) {
+  Method *m = (Method*)method;
+  InstanceKlass *klass = m->method_holder_safe();
+  Thread* thread = Thread::current_or_null_safe();
+  if (thread == nullptr || !thread->is_Java_thread()) {
+    return nullptr;
+  }
+  return klass != nullptr ? (jclass)JNIHandles::make_local(JavaThread::cast(thread), klass->java_mirror()) : nullptr;
 }
