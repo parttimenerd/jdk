@@ -22,6 +22,7 @@
  *
  */
 
+#include "jni.h"
 #include "precompiled.hpp"
 #include "cds/archiveUtils.hpp"
 #include "cds/cdsConfig.hpp"
@@ -86,6 +87,7 @@
 #include "runtime/orderAccess.hpp"
 #include "runtime/os.inline.hpp"
 #include "runtime/reflectionUtils.hpp"
+#include "runtime/safefetch.hpp"
 #include "runtime/threads.hpp"
 #include "services/classLoadingService.hpp"
 #include "services/finalizerService.hpp"
@@ -2465,6 +2467,19 @@ jmethodID InstanceKlass::jmethod_id_or_null(Method* method) {
   if (jmeths != nullptr &&                      // If there is a cache
       (length = (size_t)jmeths[0]) > idnum) {   // and if it is long enough,
     id = jmeths[idnum+1];                       // Look up the id (may be null)
+  }
+  return id;
+}
+
+// Lookup a jmethodID, null if not found.  Do no blocking, no allocations, no handles
+jmethodID InstanceKlass::jmethod_id_or_null_safe(Method* method) {
+  size_t idnum = (size_t)method->method_idnum_safe();
+  jmethodID* jmeths = methods_jmethod_ids_acquire_safe();
+  size_t length;                                // length assigned as debugging crumb
+  jmethodID id = nullptr;
+  if (jmeths != nullptr &&                      // If there is a cache
+      (length = (size_t)SafeFetchN((intptr_t*)jmeths[0], (intptr_t)nullptr)) > idnum) {   // and if it is long enough,
+    id = (jmethodID)SafeFetchN((intptr_t*)(jmeths + idnum + 1), (intptr_t)nullptr);                       // Look up the id (may be null)
   }
   return id;
 }

@@ -1239,10 +1239,7 @@ void Method::link_method(const methodHandle& h_method, TRAPS) {
   // Setup compiler entrypoint.  This is made eagerly, so we do not need
   // special handling of vtables.  An alternative is to make adapters more
   // lazily by calling make_adapter() from from_compiled_entry() for the
-  // normal calls.  For vtable calls life gets more complicated.  When a
-  // call-site goes mega-morphic we need adapters in all methods which can be
-  // called from the vtable.  We need adapters on such methods that get loaded
-  // later.  Ditto for mega-morphic itable calls.  If this proves to be a
+  // normal calls.  For vtable calls life gets more compfrom_interis proves to be a
   // problem we'll make these lazily later.
   (void) make_adapters(h_method, CHECK);
 
@@ -2438,4 +2435,34 @@ void Method::verify_on(outputStream* st) {
   MethodData* md = method_data();
   guarantee(md == nullptr ||
       md->is_methodData(), "should be method data");
+}
+
+Symbol* Method::name_safe() const {
+  ConstMethod* constMethod = constMethod_safe();
+  if (constMethod == nullptr) return nullptr;
+  ConstantPool* constants = constMethod->constants_safe();
+  if (constants == nullptr) return nullptr;
+  int name_index = constMethod->name_index_safe();
+  if (name_index == -1) return nullptr;
+  return constants->symbol_at_safe(name_index);
+}
+
+Symbol* Method::signature_safe() const {
+  ConstMethod* constMethod = constMethod_safe();
+  if (constMethod == nullptr) return nullptr;
+  ConstantPool* constants = constMethod->constants_safe();
+  if (constants == nullptr) return nullptr;
+  int signature_index = constMethod->signature_index_safe();
+  if (signature_index == -1) return nullptr;
+  return constants->symbol_at_safe(signature_index);
+}
+
+Symbol* Method::generic_signature_safe() const {
+  ConstMethod* constMethod = constMethod_safe();
+  if (constMethod == nullptr) return nullptr;
+  ConstantPool* constants = constMethod->constants_safe();
+  if (constants == nullptr) return nullptr;
+  int generic_signature_index = constMethod->generic_signature_index_safe();
+  if (generic_signature_index <= 0) return nullptr;
+  return constants->symbol_at_safe(generic_signature_index);
 }

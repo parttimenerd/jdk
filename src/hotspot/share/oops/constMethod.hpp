@@ -26,9 +26,12 @@
 #define SHARE_OOPS_CONSTMETHOD_HPP
 
 #include "oops/constMethodFlags.hpp"
+#include "oops/constantPool.hpp"
 #include "oops/oop.hpp"
+#include "runtime/safefetch.hpp"
 #include "utilities/align.hpp"
 #include "utilities/checkedCast.hpp"
+#include "utilities/globalDefinitions.hpp"
 
 // An ConstMethod represents portions of a Java method which are not written to after
 // the classfile is parsed(*see below).  This part of the method can be shared across
@@ -249,6 +252,8 @@ public:
 
   // constant pool
   ConstantPool* constants() const        { return _constants; }
+  // constant pool or null
+  ConstantPool* constants_safe() const   { return (ConstantPool*)SafeFetchN((intptr_t*)&_constants, (intptr_t)nullptr); }
   void set_constants(ConstantPool* c)    { _constants = c; }
 
   Method* method() const;
@@ -337,6 +342,7 @@ public:
   // see class CompressedLineNumberReadStream.
   u_char* compressed_linenumber_table() const;         // not preserved by gc
   u2* generic_signature_index_addr() const;
+  u2* generic_signature_index_addr_safe() const;
   u2* checked_exceptions_length_addr() const;
   u2* localvariable_table_length_addr() const;
   u2* exception_table_length_addr() const;
@@ -442,6 +448,11 @@ public:
   static const u2 MAX_IDNUM;
   static const u2 UNSET_IDNUM;
   u2 method_idnum() const                        { return _method_idnum; }
+  // -1 on error
+  int method_idnum_safe() const                  {
+    int idnum = SafeFetch32((int*)&_method_idnum, -1);
+    return idnum == -1 ? idnum : (int)(u2)idnum;
+  }
   void set_method_idnum(u2 idnum)                { _method_idnum = idnum; }
 
   u2 orig_method_idnum() const                   { return _orig_method_idnum; }
@@ -484,8 +495,17 @@ private:
   address constMethod_end() const
                           { return (address)((intptr_t*)this + _constMethod_size); }
 
+  // First byte after ConstMethod* or null
+  address constMethod_end_safe() const {
+    int size = SafeFetch32((int*)&_constMethod_size, 0);
+    if (size == 0) return nullptr;
+    return (address)((intptr_t*)this + size);
+  }
+
+
   // Last short in ConstMethod*
   u2* last_u2_element() const;
+  u2* last_u2_element_safe() const;
 
  public:
   // Printing
