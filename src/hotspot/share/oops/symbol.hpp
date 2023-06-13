@@ -26,6 +26,7 @@
 #define SHARE_OOPS_SYMBOL_HPP
 
 #include "memory/allocation.hpp"
+#include "runtime/safefetch.hpp"
 #include "utilities/exceptions.hpp"
 #include "utilities/macros.hpp"
 #include "utilities/vmEnums.hpp"
@@ -136,7 +137,9 @@ class Symbol : public MetaspaceObj {
   static int extract_refcount(uint32_t value) { return value & 0xffff; }
   static uint32_t pack_hash_and_refcount(short hash, int refcount);
 
-  int length() const   { return _length; }
+  int length() const      { return _length; }
+  // 0 on error
+  int length_safe() const { return SafeFetch32((int*)&_length, 0); }
 
  public:
   Symbol(const Symbol& s1);
@@ -191,9 +194,16 @@ class Symbol : public MetaspaceObj {
     return (char)base()[index];
   }
 
+  char char_at_safe(int index) const {
+    assert(index >=0 && index < length(), "symbol index overflow");
+    return (char)SafeFetch32((int*)((char*)_body + index), 0);
+  }
+
   const u1* bytes() const { return base(); }
 
   int utf8_length() const { return length(); }
+  // 0 on error
+  int utf8_length_safe() const { return length_safe(); }
 
   // Compares the symbol with a string.
   bool equals(const char* str, int len) const {
@@ -252,6 +262,10 @@ class Symbol : public MetaspaceObj {
   // allocated in resource area, or in the char buffer provided by caller.
   char* as_C_string() const;
   char* as_C_string(char* buf, int size) const;
+
+  // same as as_C_string, but is segfault safe
+  // returns nullptr on error, and the buf else
+  char* as_C_string_safe(char* buf, int size) const;
 
   // Returns an escaped form of a Java string.
   char* as_quoted_ascii() const;

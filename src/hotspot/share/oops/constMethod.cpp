@@ -22,6 +22,7 @@
  *
  */
 
+#include "oops/constMethodFlags.hpp"
 #include "precompiled.hpp"
 #include "interpreter/interpreter.hpp"
 #include "memory/metadataFactory.hpp"
@@ -29,6 +30,7 @@
 #include "memory/resourceArea.hpp"
 #include "oops/constMethod.hpp"
 #include "oops/method.hpp"
+#include "runtime/safefetch.hpp"
 #include "runtime/safepointVerifiers.hpp"
 #include "utilities/align.hpp"
 
@@ -173,10 +175,33 @@ u2* ConstMethod::last_u2_element() const {
   return (u2*)((AnnotationArray**)constMethod_end() - offset) - 1;
 }
 
+// Last short in ConstMethod* before annotations
+u2* ConstMethod::last_u2_element_safe() const {
+  int offset = 0;
+  int anns = _flags.safe_has_method_annotations();
+  int params = _flags.safe_has_parameter_annotations();
+  int types = _flags.safe_has_type_annotations();
+  int defs = _flags.safe_has_default_annotations();
+  if (anns == -1 || params == -1 || types == -1 || defs == -1) {
+    return nullptr;
+  }
+  if (anns) offset++;
+  if (params) offset++;
+  if (types) offset++;
+  if (defs) offset++;
+  return (u2*)((AnnotationArray**)constMethod_end_safe() - offset) - 1;
+}
+
 u2* ConstMethod::generic_signature_index_addr() const {
   // Located at the end of the constMethod.
   assert(has_generic_signature(), "called only if generic signature exists");
   return last_u2_element();
+}
+
+u2* ConstMethod::generic_signature_index_addr_safe() const {
+  // Located at the end of the constMethod.
+  assert(has_generic_signature(), "called only if generic signature exists");
+  return last_u2_element_safe();
 }
 
 u2* ConstMethod::method_parameters_length_addr() const {

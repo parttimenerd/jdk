@@ -33,6 +33,7 @@
 #include "oops/instanceKlassFlags.hpp"
 #include "oops/instanceOop.hpp"
 #include "runtime/handles.hpp"
+#include "runtime/safefetch.hpp"
 #include "utilities/accessFlags.hpp"
 #include "utilities/align.hpp"
 #include "utilities/macros.hpp"
@@ -632,6 +633,7 @@ public:
 
   // constant pool
   ConstantPool* constants() const        { return _constants; }
+  ConstantPool* constants_safe() const   { return (ConstantPool*)SafeFetchN((intptr_t*)&_constants, (intptr_t)nullptr); }
   void set_constants(ConstantPool* c)    { _constants = c; }
 
   // protection domain
@@ -772,6 +774,10 @@ public:
 
   // generics support
   Symbol* generic_signature() const                   { return _constants->generic_signature(); }
+  Symbol* generic_signature_safe() const                   {
+    ConstantPool *cp = constants_safe();
+    return cp != nullptr ? _constants->generic_signature_safe() : nullptr;
+  }
   u2 generic_signature_index() const                  { return _constants->generic_signature_index(); }
   void set_generic_signature_index(u2 sig_index)      { _constants->set_generic_signature_index(sig_index); }
 
@@ -795,6 +801,7 @@ public:
                 size_t *length_p, jmethodID* id_p);
   void ensure_space_for_methodids(int start_offset = 0);
   jmethodID jmethod_id_or_null(Method* method);
+  jmethodID jmethod_id_or_null_safe(Method* method);
 
   // annotations support
   Annotations* annotations() const          { return _annotations; }
@@ -1075,6 +1082,7 @@ public:
   // going from null to non-null.
   bool idnum_can_increment() const      { return has_been_redefined(); }
   inline jmethodID* methods_jmethod_ids_acquire() const;
+  inline jmethodID* methods_jmethod_ids_acquire_safe() const;
   inline void release_set_methods_jmethod_ids(jmethodID* jmeths);
 
   // Lock during initialization

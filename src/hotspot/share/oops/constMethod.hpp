@@ -26,8 +26,11 @@
 #define SHARE_OOPS_CONSTMETHOD_HPP
 
 #include "oops/constMethodFlags.hpp"
+#include "oops/constantPool.hpp"
 #include "oops/oop.hpp"
+#include "runtime/safefetch.hpp"
 #include "utilities/align.hpp"
+#include "utilities/globalDefinitions.hpp"
 
 // An ConstMethod represents portions of a Java method which are not written to after
 // the classfile is parsed(*see below).  This part of the method can be shared across
@@ -243,6 +246,8 @@ public:
 
   // constant pool
   ConstantPool* constants() const        { return _constants; }
+  // constant pool or null
+  ConstantPool* constants_safe() const   { return (ConstantPool*)SafeFetchN((intptr_t*)&_constants, (intptr_t)nullptr); }
   void set_constants(ConstantPool* c)    { _constants = c; }
 
   Method* method() const;
@@ -284,10 +289,14 @@ public:
 
   // name
   int name_index() const                         { return _name_index; }
+  // name or -1
+  int name_index_safe()                          { return (u2)SafeFetch32((int*)&_name_index, -1); }
   void set_name_index(int index)                 { _name_index = index; }
 
   // signature
   int signature_index() const                    { return _signature_index; }
+  // signature or -1
+  int signature_index_safe() const               { return (u2)SafeFetch32((int*)&_signature_index, -1); }
   void set_signature_index(int index)            { _signature_index = index; }
 
   // generics support
@@ -298,6 +307,15 @@ public:
       return 0;
     }
   }
+
+  int generic_signature_index_safe() const        {
+    if (_flags.safe_has_generic_signature() == 1) {
+      return SafeFetch32((int*)generic_signature_index_addr_safe(), -1);
+    } else {
+      return 0;
+    }
+  }
+
   void set_generic_signature_index(u2 index)    {
     assert(has_generic_signature(), "");
     u2* addr = generic_signature_index_addr();
@@ -331,6 +349,7 @@ public:
   // see class CompressedLineNumberReadStream.
   u_char* compressed_linenumber_table() const;         // not preserved by gc
   u2* generic_signature_index_addr() const;
+  u2* generic_signature_index_addr_safe() const;
   u2* checked_exceptions_length_addr() const;
   u2* localvariable_table_length_addr() const;
   u2* exception_table_length_addr() const;
@@ -436,6 +455,11 @@ public:
   static const u2 MAX_IDNUM;
   static const u2 UNSET_IDNUM;
   u2 method_idnum() const                        { return _method_idnum; }
+  // -1 on error
+  int method_idnum_safe() const                  {
+    int idnum = SafeFetch32((int*)&_method_idnum, -1);
+    return idnum == -1 ? idnum : (int)(u2)idnum;
+  }
   void set_method_idnum(u2 idnum)                { _method_idnum = idnum; }
 
   u2 orig_method_idnum() const                   { return _orig_method_idnum; }
@@ -461,6 +485,10 @@ public:
   BasicType result_type() const                  { assert(_result_type >= T_BOOLEAN, "Must be set");
                                                    return (BasicType)_result_type; }
 
+  BasicType result_type_safe() const             { int t = (BasicType)SafeFetch32((int*)&_result_type, 0);
+                                                   assert(t >= T_BOOLEAN, "Must be set");
+                                                   return (BasicType)t; }
+
   void set_result_type(BasicType rt)             { assert(rt < 16, "result type too large");
                                                    _result_type = (u1)rt; }
   // Deallocation for RedefineClasses
@@ -479,8 +507,17 @@ private:
   address constMethod_end() const
                           { return (address)((intptr_t*)this + _constMethod_size); }
 
+  // First byte after ConstMethod* or null
+  address constMethod_end_safe() const {
+    int size = SafeFetch32((int*)&_constMethod_size, 0);
+    if (size == 0) return nullptr;
+    return (address)((intptr_t*)this + size);
+  }
+
+
   // Last short in ConstMethod*
   u2* last_u2_element() const;
+  u2* last_u2_element_safe() const;
 
  public:
   // Printing

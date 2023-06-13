@@ -32,6 +32,9 @@
 
 #include "jni.h"
 
+struct _ASGST_Method;
+typedef struct _ASGST_Method *ASGST_Method;
+
 
 // error codes, equivalent to the forte error codes for AsyncGetCallTrace
 enum ASGST_Error {
@@ -64,6 +67,7 @@ typedef struct {
   int8_t comp_level;      // compilation level, 0 is interpreted, -1 is undefined, > 1 is JIT compiled
   uint16_t bci;            // 0 <= bci < 65536, 65535 (= -1) if the bci is >= 65535 or not available (like in native frames)
   jmethodID method_id;
+  ASGST_Method method;
 } ASGST_JavaFrame;         // used for FRAME_JAVA, FRAME_JAVA_INLINED and FRAME_NATIVE
 
 typedef struct {
@@ -140,5 +144,34 @@ enum ASGST_Options {
 //   options  - bit flags for additional configuration
 extern "C" JNIEXPORT
 void AsyncGetStackTrace(ASGST_CallTrace *trace, jint depth, void* ucontext, int32_t options);
+
+// Returns the jmethodID for a given ASGST_Method, null if the method has
+// no corresponding jmethodID.
+extern "C" JNIEXPORT
+jmethodID ASGST_MethodToJMethodID(ASGST_Method method);
+
+struct ASGST_MethodInfo {
+  char* class_name;
+  jint class_name_len;
+  char* generic_class_name;
+  jint generic_class_name_len;
+  char* method_name;
+  jint method_name_len;
+  char* signature;
+  jint signature_len;
+  char* generic_signature;
+  jint generic_signature_len;
+  jint modifiers;
+};
+
+// Obtain the method information for a given ASGST_Method and store it in the pre-allocated info struct.
+// It stores the actual length in the _len fields and at a null terminated string in the string fields.
+// Safe to call from signal handlers.
+// A field is set to null if the information is not available.
+extern "C" JNIEXPORT
+void ASGST_GetMethodInfo(ASGST_Method method, ASGST_MethodInfo* info);
+
+extern "C" JNIEXPORT
+jclass ASGST_GetClass(ASGST_Method method);
 
 #endif // JVM_PROFILE_H

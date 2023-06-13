@@ -34,7 +34,9 @@
 #include "oops/methodFlags.hpp"
 #include "oops/instanceKlass.hpp"
 #include "oops/oop.hpp"
+#include "oops/symbol.hpp"
 #include "oops/typeArrayOop.hpp"
+#include "runtime/safefetch.hpp"
 #include "utilities/accessFlags.hpp"
 #include "utilities/align.hpp"
 #include "utilities/growableArray.hpp"
@@ -129,6 +131,7 @@ class Method : public Metadata {
   // accessors for instance variables
 
   ConstMethod* constMethod() const             { return _constMethod; }
+  ConstMethod* constMethod_safe() const         { return (ConstMethod*)SafeFetchN((intptr_t*)&_constMethod, (intptr_t)nullptr); }
   void set_constMethod(ConstMethod* xconst)    { _constMethod = xconst; }
 
 
@@ -138,20 +141,26 @@ class Method : public Metadata {
 
   // access flag
   AccessFlags access_flags() const               { return _access_flags;  }
+  jint access_flags_int_safe() const             { return _access_flags.get_flags_safe(); }
   void set_access_flags(AccessFlags flags)       { _access_flags = flags; }
 
   // name
   Symbol* name() const                           { return constants()->symbol_at(name_index()); }
+  // name or nullptr on error
+  Symbol* name_safe() const;
   int name_index() const                         { return constMethod()->name_index();         }
   void set_name_index(int index)                 { constMethod()->set_name_index(index);       }
 
   // signature
   Symbol* signature() const                      { return constants()->symbol_at(signature_index()); }
+  Symbol* signature_safe() const;
   int signature_index() const                    { return constMethod()->signature_index();         }
   void set_signature_index(int index)            { constMethod()->set_signature_index(index);       }
 
   // generics support
   Symbol* generic_signature() const              { int idx = generic_signature_index(); return ((idx != 0) ? constants()->symbol_at(idx) : nullptr); }
+  Symbol* generic_signature_safe() const;
+
   int generic_signature_index() const            { return constMethod()->generic_signature_index(); }
   void set_generic_signature_index(int index)    { constMethod()->set_generic_signature_index(index); }
 
@@ -249,6 +258,11 @@ class Method : public Metadata {
   // index into InstanceKlass methods() array
   // note: also used by jfr
   u2 method_idnum() const           { return constMethod()->method_idnum(); }
+  // -1 on error
+  int method_idnum_safe() const           {
+    ConstMethod* cm = constMethod_safe();
+    return (cm == nullptr) ? -1 : cm->method_idnum_safe();
+  }
   void set_method_idnum(u2 idnum)   { constMethod()->set_method_idnum(idnum); }
 
   u2 orig_method_idnum() const           { return constMethod()->orig_method_idnum(); }
@@ -262,6 +276,7 @@ class Method : public Metadata {
 
   // constant pool for Klass* holding this method
   ConstantPool* constants() const              { return constMethod()->constants(); }
+  ConstantPool* constants_safe() const         { return (ConstantPool*)SafeFetchN((intptr_t*)constMethod(), (intptr_t)nullptr); }
   void set_constants(ConstantPool* c)          { constMethod()->set_constants(c); }
 
   // max stack
@@ -548,6 +563,13 @@ public:
 
   // method holder (the Klass* holding this method)
   InstanceKlass* method_holder() const         { return constants()->pool_holder(); }
+  InstanceKlass* method_holder_safe() const    {
+    ConstantPool *cons = constants_safe();
+    if (cons == nullptr) {
+      return nullptr;
+    }
+    return cons->pool_holder_safe();
+  }
 
   Symbol* klass_name() const;                    // returns the name of the method holder
   BasicType result_type() const                  { return constMethod()->result_type(); }
@@ -791,6 +813,10 @@ public:
   // needs to be async-safe. No allocation should be done and
   // so handles are not used to avoid deadlock.
   jmethodID find_jmethod_id_or_null()               { return method_holder()->jmethod_id_or_null(this); }
+  jmethodID find_jmethod_id_or_null_safe()          {
+    InstanceKlass *holder = method_holder_safe();
+    return holder != nullptr ? holder->jmethod_id_or_null_safe(this) : nullptr;
+  }
 
   // Support for inlining of intrinsic methods
   vmIntrinsicID intrinsic_id() const          { return (vmIntrinsicID) _intrinsic_id;           }

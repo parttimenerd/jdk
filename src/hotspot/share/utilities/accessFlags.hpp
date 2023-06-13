@@ -26,6 +26,7 @@
 #define SHARE_UTILITIES_ACCESSFLAGS_HPP
 
 #include "jvm_constants.h"
+#include "runtime/safefetch.hpp"
 #include "utilities/debug.hpp"
 #include "utilities/globalDefinitions.hpp"
 #include "utilities/macros.hpp"
@@ -85,6 +86,8 @@ class AccessFlags {
 
   // get .class file flags
   jint get_flags               () const { return (_flags & JVM_ACC_WRITTEN_FLAGS); }
+
+  jint get_flags_safe          () const { return (jint)SafeFetch32((int*)&_flags, 0) & JVM_ACC_WRITTEN_FLAGS; }
 
   // Initialization
   void set_field_flags(jint flags)      {

@@ -80,6 +80,13 @@ inline jmethodID* InstanceKlass::methods_jmethod_ids_acquire() const {
   return Atomic::load_acquire(&_methods_jmethod_ids);
 }
 
+inline jmethodID* InstanceKlass::methods_jmethod_ids_acquire_safe() const {
+  if (!os::is_readable_pointer((void**)&_methods_jmethod_ids)) {
+    return nullptr;
+  }
+  return Atomic::load_acquire(&_methods_jmethod_ids);
+}
+
 inline void InstanceKlass::release_set_methods_jmethod_ids(jmethodID* jmeths) {
   Atomic::release_store(&_methods_jmethod_ids, jmeths);
 }

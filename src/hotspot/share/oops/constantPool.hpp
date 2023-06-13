@@ -30,10 +30,12 @@
 #include "oops/cpCache.hpp"
 #include "oops/objArrayOop.hpp"
 #include "oops/oopHandle.hpp"
+#include "oops/oopsHierarchy.hpp"
 #include "oops/symbol.hpp"
 #include "oops/typeArrayOop.hpp"
 #include "runtime/handles.hpp"
 #include "runtime/javaThread.hpp"
+#include "runtime/safefetch.hpp"
 #include "utilities/align.hpp"
 #include "utilities/bytes.hpp"
 #include "utilities/constantTag.hpp"
@@ -70,10 +72,23 @@ public:
   int name_index() const {
     return _name_index;
   }
+  // -1 on error
+  int name_index_safe() const {
+    return SafeFetch32((int*)&_name_index, -1);
+  }
   int resolved_klass_index() const {
     assert(_resolved_klass_index != _temp_resolved_klass_index, "constant pool merging was incomplete");
     return _resolved_klass_index;
   }
+
+  // -1 at error
+  int resolved_klass_index_safe() const {
+    int index = SafeFetch32((int*)&_resolved_klass_index, -1);
+    assert(index != _temp_resolved_klass_index, "constant pool merging was incomplete");
+    return index;
+  }
+
+  int invalid() { return _name_index == -1; }
 };
 
 class ConstantPool : public Metadata {
@@ -188,6 +203,15 @@ class ConstantPool : public Metadata {
     return (_generic_signature_index == 0) ?
       nullptr : symbol_at(_generic_signature_index);
   }
+  Symbol* generic_signature_safe() const {
+    int index = SafeFetch32((int*)&_generic_signature_index, -1);
+    if (index == -1) {
+      return nullptr;
+    }
+    u2 idx = (u2)index;
+    return (idx == 0) ?
+      nullptr : symbol_at_safe(idx);
+  }
   u2 generic_signature_index() const                   { return _generic_signature_index; }
   void set_generic_signature_index(u2 sig_index)       { _generic_signature_index = sig_index; }
 
@@ -217,6 +241,7 @@ class ConstantPool : public Metadata {
 
   // Klass holding pool
   InstanceKlass* pool_holder() const      { return _pool_holder; }
+  InstanceKlass* pool_holder_safe() const { return (InstanceKlass*)SafeFetchN((intptr_t*)&_pool_holder, (intptr_t)nullptr); }
   void set_pool_holder(InstanceKlass* k)  { _pool_holder = k; }
   InstanceKlass** pool_holder_addr()      { return &_pool_holder; }
 
@@ -384,6 +409,13 @@ class ConstantPool : public Metadata {
 
   constantTag tag_at(int which) const { return (constantTag)tags()->at_acquire(which); }
 
+  constantTag tag_at_safe(int which) const {
+    if (!os::is_readable_pointer(tags()->adr_at(which))) {
+      return {};
+    }
+    return (constantTag)tags()->at_acquire(which);
+  }
+
   // Fetching constants
 
   Klass* klass_at(int which, TRAPS) {
@@ -395,6 +427,18 @@ class ConstantPool : public Metadata {
     assert(tag_at(which).is_unresolved_klass() || tag_at(which).is_klass(),
            "Corrupted constant pool");
     int value = *int_at_addr(which);
+    int name_index = extract_high_short_from_int(value);
+    int resolved_klass_index = extract_low_short_from_int(value);
+    return CPKlassSlot(name_index, resolved_klass_index);
+  }
+
+  CPKlassSlot klass_slot_at_safe(int which) const {
+    assert(tag_at_safe(which).is_unresolved_klass() || tag_at_safe(which).is_klass(),
+           "Corrupted constant pool");
+    int value = SafeFetch32(int_at_addr(which), -1);
+    if (value == -1 && SafeFetch32(int_at_addr(which), -2) == -2) {
+      return CPKlassSlot(-1, -1);
+    }
     int name_index = extract_high_short_from_int(value);
     int resolved_klass_index = extract_low_short_from_int(value);
     return CPKlassSlot(name_index, resolved_klass_index);
@@ -441,6 +485,11 @@ class ConstantPool : public Metadata {
   Symbol* symbol_at(int which) const {
     assert(tag_at(which).is_utf8(), "Corrupted constant pool");
     return *symbol_at_addr(which);
+  }
+
+  Symbol* symbol_at_safe(int which) const {
+    assert(tag_at(which).is_utf8(), "Corrupted constant pool");
+    return (Symbol*)SafeFetchN((intptr_t*)symbol_at_addr(which), (intptr_t)nullptr);
   }
 
   oop string_at(int which, int obj_index, TRAPS) {
@@ -765,6 +814,7 @@ class ConstantPool : public Metadata {
   static oop            appendix_at_if_loaded      (const constantPoolHandle& this_cp, int which);
   static bool has_local_signature_at_if_loaded     (const constantPoolHandle& this_cp, int which);
   static Klass*            klass_at_if_loaded      (const constantPoolHandle& this_cp, int which);
+  static Klass*            klass_at_if_loaded_safe (const constantPoolHandle& this_cp, int which);
 
   // Routines currently used for annotations (only called by jvm.cpp) but which might be used in the
   // future by other Java code. These take constant pool indices rather than
