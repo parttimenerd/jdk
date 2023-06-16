@@ -83,7 +83,7 @@ class StackWalker {
 
   // is os::get_sender_for_C_frame currently supported?
   // invariant: true if _thread is null
-  const bool supports_os_get_frame;
+  bool supports_os_get_frame;
 
   // StackWalkerError + StackWalkerReturn
   int _state;
@@ -172,6 +172,8 @@ public:
   bool is_c_frame() const { return _state == STACKWALKER_C_FRAME; }
 
   bool is_java_frame() const { return is_interpreted_frame() || is_compiled_frame() || is_native_frame(); }
+
+  bool is_bytecode_based_frame() const { return is_interpreted_frame() || is_compiled_frame(); }
 
   // inlined, returns true only for inlined compiled frames, otherwise false
   bool is_inlined() const { return _inlined; }
