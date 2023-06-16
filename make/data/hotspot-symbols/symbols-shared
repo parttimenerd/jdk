@@ -34,3 +34,9 @@ JNI_GetDefaultJavaVMInitArgs
 JVM_IsForeignLinkerSupported
 JVM_FindClassFromBootLoader
 JVM_InitAgentProperties
+ASGST_Capabilities
+ASGST_CreateIter
+ASGST_NextFrame
+ASGST_State
+ASGST_DestroyIter
+ASGST_ThreadState
