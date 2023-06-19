@@ -38,9 +38,8 @@ enum ASGST_Capabilities {
 };
 
 int ASGST_Capabilities();
-
-struct _ASGST_Iter;
-typedef struct _ASGST_Iter ASGST_Iter;
+struct _ASGST_Iterator;
+typedef struct _ASGST_Iterator ASGST_Iterator;
 
 enum ASGST_FrameTypeId {
   ASGST_FRAME_JAVA         = 1, // JIT compiled and interpreted
@@ -65,8 +64,8 @@ enum ASGST_Options {
 };
 
 enum ASGST_TRACE_KIND {
- ASGST_JAVA_TRACE = 1,
- ASGST_NON_JAVA_TRACE = 2
+  ASGST_JAVA_TRACE = 1,
+  ASGST_NON_JAVA_TRACE = 2
 };
 
 enum ASGST_Error {
@@ -78,22 +77,22 @@ enum ASGST_Error {
   ASGST_NO_TOP_JAVA_FRAME = -5,
 };
 
-// Returns error code, or else kind
-// if return <= 0, sets iter to nullptr
-// you have to call ASGST_DestroyIter() on iter directly after using the iterator
+// Why not ASGST_CreateIterator? Because we then would have to
+// - allocate memory for the iterator at the caller, exposing the size of the iterator
+// - free the iterator at the caller, making the API more cumbersome to use
 extern "C" JNIEXPORT
-int ASGST_CreateIter(ASGST_Iter** iter, void* ucontext, int32_t options);
+int ASGST_RunWithIterator(void* ucontext, int32_t options, void (*fun)(ASGST_Iterator*, void*), void* argument);
 
 // returns 1 if successful, else error code
 extern "C" JNIEXPORT
-int ASGST_NextFrame(ASGST_Iter* iter, ASGST_Frame* frame);
+int ASGST_NextFrame(ASGST_Iterator* iter, ASGST_Frame* frame);
 
 // returns error code or 1 if no error
 extern "C" JNIEXPORT
-int ASGST_State(ASGST_Iter* iter);
+int ASGST_State(ASGST_Iterator* iter);
 
 extern "C" JNIEXPORT
-void ASGST_DestroyIter(ASGST_Iter** iter);
+int ASGST_ThreadState();
 
 extern "C" JNIEXPORT
 int ASGST_ThreadState();
