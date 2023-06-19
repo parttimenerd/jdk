@@ -35,8 +35,7 @@ JVM_IsForeignLinkerSupported
 JVM_FindClassFromBootLoader
 JVM_InitAgentProperties
 ASGST_Capabilities
-ASGST_CreateIter
+ASGST_RunWithIterator
 ASGST_NextFrame
 ASGST_State
-ASGST_DestroyIter
 ASGST_ThreadState

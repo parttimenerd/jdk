@@ -37,14 +37,13 @@ int ASGST_Capabilities() {
   return ASGST_REGISTER_QUEUE | ASGST_MARK_FRAME;
 }
 
-struct _ASGST_Iter {
+struct _ASGST_Iterator {
   StackWalker walker;
   JavaThread *thread;
   int32_t options;
 };
 
-static int initStackWalker(_ASGST_Iter **iter, void *ucontext, int options, frame &ret_frame) {
-  _ASGST_Iter *iterator = *iter;
+static int initStackWalker(_ASGST_Iterator *iterator, void *ucontext, int options, frame &ret_frame) {
   if (iterator->thread != nullptr) {
       iterator->thread->set_in_async_stack_walking(true);
   }
@@ -79,15 +78,14 @@ static bool frame_from_context(frame* fr, void* ucontext) {
   return true;
 }
 
-static int initNonJavaStackWalker(_ASGST_Iter** iter, void* ucontext, int32_t options) {
+static int initNonJavaStackWalker(_ASGST_Iterator* iter, void* ucontext, int32_t options) {
   bool include_non_java_frames = (options & ASGST_INCLUDE_NON_JAVA_FRAMES) != 0;
 
   frame ret_frame;
   if (!include_non_java_frames || !frame_from_context(&ret_frame, ucontext)) {
-    *iter = nullptr;
     return ASGST_NO_FRAME;
   }
-  (*iter)->thread = nullptr;
+  iter->thread = nullptr;
   int ret = initStackWalker(iter, ucontext, options, ret_frame);
   return ret > 0 ? ASGST_NON_JAVA_TRACE : ret;
 }
@@ -113,25 +111,21 @@ static int ASGST_Check(JavaThread** thread) {
   return ASGST_JAVA_TRACE;
 }
 
-int ASGST_CreateIter(ASGST_Iter** iter, void* ucontext, int32_t options) {
-  *iter = (_ASGST_Iter*)os::malloc(sizeof(ASGST_Iter), mtServiceability);
-  ASGST_Iter *iterator = *iter;
+int ASGST_CreateIter(_ASGST_Iterator* iterator, void* ucontext, int32_t options) {
 
   iterator->options = options;
   bool include_non_java_frames = (options & ASGST_INCLUDE_NON_JAVA_FRAMES) != 0;
 
 
   int kindOrError = ASGST_Check(&iterator->thread);
-  printf("ASGST_CreateIter kindOrError: %d\n", kindOrError);
   // handle error case
   if (kindOrError <= 0) {
-    *iter = nullptr;
     return kindOrError;
   }
 
   // handle non-java case
   if (kindOrError > ASGST_JAVA_TRACE) {
-    return initNonJavaStackWalker(iter, ucontext, options);
+    return initNonJavaStackWalker(iterator, ucontext, options);
   }
 
   // handle java case
@@ -144,7 +138,7 @@ int ASGST_CreateIter(ASGST_Iter** iter, void* ucontext, int32_t options) {
   case _thread_new_trans:
     // We found the thread on the threads list above, but it is too
     // young to be useful so return that there are no Java frames.
-    return initNonJavaStackWalker(iter, ucontext, options);
+    return initNonJavaStackWalker(iterator, ucontext, options);
   case _thread_in_native:
   case _thread_in_native_trans:
   case _thread_blocked:
@@ -161,12 +155,11 @@ int ASGST_CreateIter(ASGST_Iter** iter, void* ucontext, int32_t options) {
       } else {
         if (!thread->has_last_Java_frame()) {
           if (!include_non_java_frames) {
-            *iter = nullptr;
             return ASGST_NO_TOP_JAVA_FRAME;
           }
         }
       }
-      return initStackWalker(iter, ucontext, options, ret_frame);
+      return initStackWalker(iterator, ucontext, options, ret_frame);
     }
     break;
   case _thread_in_Java:
@@ -176,11 +169,10 @@ int ASGST_CreateIter(ASGST_Iter** iter, void* ucontext, int32_t options) {
       if (!thread->pd_get_top_frame_for_profiling(&ret_frame, ucontext, true, include_non_java_frames)) {
         // check without forced ucontext again
         if (!include_non_java_frames || !thread->pd_get_top_frame_for_profiling(&ret_frame, ucontext, true, false)) {
-          *iter = nullptr;
           return ASGST_NO_TOP_JAVA_FRAME;
         }
       }
-      return initStackWalker(iter, ucontext, options, ret_frame);
+      return initStackWalker(iterator, ucontext, options, ret_frame);
     }
     break;
   default:
@@ -190,7 +182,7 @@ int ASGST_CreateIter(ASGST_Iter** iter, void* ucontext, int32_t options) {
   return 0;
 }
 
-int ASGST_NextFrame(ASGST_Iter *iter, ASGST_Frame *frame) {
+int ASGST_NextFrame(ASGST_Iterator *iter, ASGST_Frame *frame) {
   int state = ASGST_State(iter);
   if (state <= 0) {
     frame->type = 0;
@@ -220,7 +212,7 @@ int ASGST_NextFrame(ASGST_Iter *iter, ASGST_Frame *frame) {
   return 1;
 }
 
-int ASGST_State(ASGST_Iter *iter) {
+int ASGST_State(ASGST_Iterator *iter) {
   if (iter == nullptr) {
     return ASGST_NO_FRAME;
   }
@@ -230,15 +222,31 @@ int ASGST_State(ASGST_Iter *iter) {
   return std::min(iter->walker.state(), 1);
 }
 
-void ASGST_DestroyIter(ASGST_Iter** iter) {
-  if (iter == nullptr) {
-    return;
+void ASGST_DestroyIter(ASGST_Iterator* iter) {
+  if (iter->thread != nullptr) {
+    iter->thread->set_in_async_stack_walking(false);
   }
-  if ((**iter).thread != nullptr) {
-    (**iter).thread->set_in_async_stack_walking(false);
+}
+
+class IterRAII {
+  ASGST_Iterator* iter;
+public:
+  IterRAII(ASGST_Iterator* iter) : iter(iter) {}
+  ~IterRAII() {
+    ASGST_DestroyIter(iter);
   }
-  os::free(*iter);
-  *iter = nullptr;
+};
+
+int ASGST_RunWithIterator(void* ucontext, int options, void (*fun)(ASGST_Iterator*, void*), void* argument) {
+  int8_t iter[sizeof(ASGST_Iterator)]; // no need for default constructor
+  ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
+  IterRAII raii(iterator); // destroy iterator on exit
+  int ret = ASGST_CreateIter(iterator, ucontext, options);
+  if (ret <= 0) {
+    return ret;
+  }
+  fun(iterator, argument);
+  return 1;
 }
 
 // state or -1
