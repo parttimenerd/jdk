@@ -80,21 +80,21 @@ enum ASGST_Error {
 // Why not ASGST_CreateIterator? Because we then would have to
 // - allocate memory for the iterator at the caller, exposing the size of the iterator
 // - free the iterator at the caller, making the API more cumbersome to use
-extern "C" JNIEXPORT
+extern "C" {
+JNIEXPORT
 int ASGST_RunWithIterator(void* ucontext, int32_t options, void (*fun)(ASGST_Iterator*, void*), void* argument);
 
 // returns 1 if successful, else error code
-extern "C" JNIEXPORT
+JNIEXPORT
 int ASGST_NextFrame(ASGST_Iterator* iter, ASGST_Frame* frame);
 
 // returns error code or 1 if no error
-extern "C" JNIEXPORT
+JNIEXPORT
 int ASGST_State(ASGST_Iterator* iter);
 
-extern "C" JNIEXPORT
+JNIEXPORT
 int ASGST_ThreadState();
 
-extern "C" JNIEXPORT
-int ASGST_ThreadState();
 
+}
 #endif // JVM_PROFILE2_H
