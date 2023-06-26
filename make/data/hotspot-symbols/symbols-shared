@@ -39,3 +39,5 @@ ASGST_RunWithIterator
 ASGST_NextFrame
 ASGST_State
 ASGST_ThreadState
+ASGST_RegisterQueue
+ASGST_Enqueue

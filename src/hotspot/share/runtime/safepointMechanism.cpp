@@ -26,6 +26,7 @@
 #include "logging/log.hpp"
 #include "nmt/memTracker.hpp"
 #include "runtime/globals.hpp"
+#include "runtime/handshake.hpp"
 #include "runtime/javaThread.inline.hpp"
 #include "runtime/orderAccess.hpp"
 #include "runtime/os.hpp"
@@ -135,7 +136,10 @@ void SafepointMechanism::process(JavaThread *thread, bool allow_suspend, bool ch
   DEBUG_ONLY(intptr_t* sp_before = thread->last_Java_sp();)
   // Read global poll and has_handshake after local poll
   OrderAccess::loadload();
-
+  if (thread->handshake_state()->shouldTrace) {
+    printf("Hi %s %f\n", thread->name(), os::elapsedTime());
+    thread->handshake_state()->shouldTrace = false;
+  }
   // local poll already checked, if used.
   bool need_rechecking;
   do {
@@ -155,8 +159,7 @@ void SafepointMechanism::process(JavaThread *thread, bool allow_suspend, bool ch
     // 2) After a thread races with the disarming of the global poll and transitions from native/blocked
     // 3) Before the handshake code is run
     StackWatermarkSet::on_safepoint(thread);
-
-    need_rechecking = thread->handshake_state()->has_operation() && thread->handshake_state()->process_by_self(allow_suspend, check_async_exception);
+    need_rechecking = thread->handshake_state()->can_run()  && thread->handshake_state()->process_by_self(allow_suspend, check_async_exception);
   } while (need_rechecking);
 
   update_poll_values(thread);

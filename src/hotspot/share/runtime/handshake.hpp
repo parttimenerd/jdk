@@ -26,11 +26,20 @@
 #define SHARE_RUNTIME_HANDSHAKE_HPP
 
 #include "memory/allStatic.hpp"
+#include "memory/allocation.hpp"
 #include "memory/iterator.hpp"
 #include "runtime/flags/flagSetting.hpp"
+#include "runtime/javaFrameAnchor.hpp"
 #include "runtime/mutex.hpp"
 #include "runtime/orderAccess.hpp"
+#include "runtime/os.hpp"
 #include "utilities/filterQueue.hpp"
+#include "utilities/globalDefinitions.hpp"
+#include "utilities/linkedlist.hpp"
+
+#include <atomic>
+#include <functional>
+#include <mutex>
 
 class HandshakeOperation;
 class AsyncHandshakeOperation;
@@ -83,6 +92,76 @@ class Handshake : public AllStatic {
 
 class JvmtiRawMonitor;
 
+class ASGSTQueueElement {
+  void* _fp;
+  void* _pc;
+  void* _argument;
+public:
+  ASGSTQueueElement(void* fp, void* pc, void* argument) : _fp(fp), _pc(pc), _argument(argument) {}
+  ASGSTQueueElement(): ASGSTQueueElement(nullptr, nullptr, nullptr) {}
+  void* fp() const { return _fp; }
+  void* pc() const { return _pc; }
+  void* argument() const { return _argument; }
+};
+
+class ASGSTQueueElementHandler : public CHeapObj<mtServiceability> {
+ public:
+  //
+  virtual void operator()(ASGSTQueueElement*, JavaFrameAnchor*) = 0;
+};
+
+class ASGSTQueue : public CHeapObj<mtServiceability> {
+  int id;
+  JavaThread* thread;
+  ASGSTQueueElement elements[100]; // TODO: use size
+  size_t size;
+  std::atomic<int> head;
+  std::atomic<int> tail;
+  ASGSTQueueElementHandler* handler;
+
+  ASGSTQueue* _next = nullptr;
+
+public:
+
+  // Constructor
+  // @param handler pointer to the handler, deleted when the ASGSTQueue is destroyed
+  ASGSTQueue(int id, JavaThread* thread, size_t size, ASGSTQueueElementHandler* handler) :
+    id(id), thread(thread), size(100), head(0), tail(0), handler(handler) {
+  }
+
+  int max_size() const { return size; }
+  int length() const { return (tail < head ? (tail + size) : tail.load()) - head; }
+  bool is_full() const { return length() >= max_size(); }
+  bool is_empty() const { return length() <= 0; }
+
+  // use the methods in HandshakeState to enqueue/dequeue
+
+  bool push(ASGSTQueueElement element);
+
+  // element or null if empty
+  ASGSTQueueElement *pop();
+
+  ~ASGSTQueue() {
+    delete handler;
+  }
+
+  void handle(ASGSTQueueElement* element, JavaFrameAnchor* frame_anchor) {
+    (*handler)(element, frame_anchor);
+  }
+
+  bool equals(const ASGSTQueue* other) const {
+    return other != nullptr && id == other->id;
+  }
+
+  bool in_current_thread();
+
+  ASGSTQueue* next() const { return _next; }
+
+  void set_next(ASGSTQueue* next) { _next = next; }
+
+  bool has_next() const { return _next != nullptr; }
+};
+
 // The HandshakeState keeps track of an ongoing handshake for this JavaThread.
 // VMThread/Handshaker and JavaThread are serialized with _lock making sure the
 // operation is only done by either VMThread/Handshaker on behalf of the
@@ -124,12 +203,16 @@ class HandshakeState {
   };
 
  public:
+   bool shouldTrace = false;
+
   HandshakeState(JavaThread* thread);
   ~HandshakeState();
 
   void add_operation(HandshakeOperation* op);
 
   bool has_operation() { return !_queue.is_empty(); }
+  // does calling process_by_self make sense?
+  bool can_run() { return has_operation() || has_asgst_queues(); }
   bool has_operation(bool allow_suspend, bool check_async_exception);
   bool has_async_exception_operation();
   void clean_async_exception_operation();
@@ -153,6 +236,12 @@ class HandshakeState {
 
   Thread* active_handshaker() const { return Atomic::load(&_active_handshaker); }
 
+  ASGSTQueue* register_asgst_queue(JavaThread* thread, size_t size, ASGSTQueueElementHandler* handler);
+
+  void remove_asgst_queue(ASGSTQueue* queue);
+
+  bool asgst_enqueue(ASGSTQueue* queue, ASGSTQueueElement element);
+
   // Support for asynchronous exceptions
  private:
   bool _async_exceptions_blocked;
@@ -171,6 +260,16 @@ class HandshakeState {
   // thread gets suspended again (after a resume)
   // and we have not yet processed it.
   bool _async_suspend_handshake;
+
+  int _current_asgst_queue_id = 0;
+  // linked list
+  ASGSTQueue* _asgst_queue_start = nullptr;
+  std::mutex _asgst_queue_mutex;
+  std::atomic<int> _asgst_queue_size = {0};
+
+  void process_asgst_queue(JavaFrameAnchor* frame_anchor);
+
+  bool has_asgst_queues() const { return _asgst_queue_start != nullptr; }
 
   // Called from the suspend handshake.
   bool suspend_with_handshake();

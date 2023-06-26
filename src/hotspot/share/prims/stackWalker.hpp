@@ -76,7 +76,15 @@ class StackWalker {
 
   bool _skip_c_frames;
 
+  // end at the first/top most java frame, but don't process it, just obtain pc, fp and sp
+  // end on this frame
+  // java frame = bytecode backed frame
+  bool _end_at_first_java_frame;
+
   int _max_c_frames_skip;
+
+  // allow to use _thread->last_java_frame()
+  bool _allow_thread_last_frame_use;
 
   // current frame (surrounding frame if inlined)
   frame _frame;
@@ -103,6 +111,8 @@ class StackWalker {
   bool in_c_on_top;
 
   bool had_first_java_frame;
+
+  bool is_at_first_java_frame = false;
 
   frame next_c_frame(frame fr);
 
@@ -134,7 +144,7 @@ class StackWalker {
 
 public:
 
-  StackWalker(JavaThread* thread, frame top_frame, bool skip_c_frames = true, int max_c_frames_skip = -1);
+  StackWalker(JavaThread* thread, frame top_frame, bool skip_c_frames = true, bool end_at_first_java_frame = false, bool allow_thread_last_frame_use = true, int max_c_frames_skip = -1);
 
   // requires a non null thread
   StackWalker(JavaThread* thread, bool skip_c_frames = true, int max_c_frames_skip = -1);
@@ -156,10 +166,12 @@ public:
 
   bool at_error() const { return _state <= 0; }
 
+  bool at_end_or_error() const { return at_end() || at_error(); }
+
   int error() const { return at_error() ? _state : 1;}
 
   // not at and and not at error
-  bool has_frame() const { return !at_end() && !at_error(); }
+  bool has_frame() const { return !at_end_or_error() || is_at_first_java_frame; }
 
   bool is_interpreted_frame() const { return _state == STACKWALKER_INTERPRETED_FRAME; }
 
@@ -189,6 +201,16 @@ public:
 
   // -1 if not at a Java frame
   int compilation_level() const;
+
+  // at_end and at first Java frame, only base_frame is valid
+  bool at_first_java_frame() const { return is_at_first_java_frame; }
+
+  // return frame count
+  int walk_till_end_or_error();
+
+
+  // true: found Java frame
+  bool walk_till_first_java_frame();
 
 };
 
