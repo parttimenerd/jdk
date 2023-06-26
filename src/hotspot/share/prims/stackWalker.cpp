@@ -23,6 +23,7 @@
  */
 
 #include "stackWalker.hpp"
+#include "code/codeCache.hpp"
 #include "code/debugInfoRec.hpp"
 #include "code/pcDesc.hpp"
 #include "gc/shared/collectedHeap.inline.hpp"
@@ -228,13 +229,20 @@ static bool is_decipherable_native_frame(frame* fr, CompiledMethod* nm) {
   return fr->cb()->frame_size() >= 0;
 }
 
-StackWalker::StackWalker(JavaThread* thread, frame top_frame, bool skip_c_frames, int max_c_frames_skip):
+StackWalker::StackWalker(JavaThread* thread, frame top_frame, bool skip_c_frames, bool end_at_first_java_frame, bool allow_thread_last_frame_use, int max_c_frames_skip):
   _thread(thread),
-  _skip_c_frames(skip_c_frames), _max_c_frames_skip(max_c_frames_skip), _frame(top_frame),
+  _skip_c_frames(skip_c_frames),
+  _end_at_first_java_frame(end_at_first_java_frame),
+  _max_c_frames_skip(max_c_frames_skip),
+  _allow_thread_last_frame_use(allow_thread_last_frame_use),
+  _frame(top_frame),
   supports_os_get_frame(os::current_frame().pc() != nullptr),
-  _state(STACKWALKER_START), _map(thread, RegisterMap::UpdateMap::skip,
+  _state(STACKWALKER_START),
+  _inlined(false), _method(nullptr), _bci(-1), _compilation_level(-1),
+  _map(thread, RegisterMap::UpdateMap::skip,
      RegisterMap::ProcessFrames::skip, RegisterMap::WalkContinuation::skip),
-    in_c_on_top(false), had_first_java_frame(false) {
+  _st({}),
+  in_c_on_top(false), had_first_java_frame(false), is_at_first_java_frame(false) {
   if ((thread == nullptr && skip_c_frames) || !supports_os_get_frame) {
     set_state(STACKWALKER_END);
     return;
@@ -243,11 +251,15 @@ StackWalker::StackWalker(JavaThread* thread, frame top_frame, bool skip_c_frames
 }
 
 StackWalker::StackWalker(JavaThread* thread, bool skip_c_frames, int max_c_frames_skip):
-  _thread(thread), _skip_c_frames(skip_c_frames), _max_c_frames_skip(max_c_frames_skip),
+  _thread(thread), _skip_c_frames(skip_c_frames), _end_at_first_java_frame(false),
+  _max_c_frames_skip(max_c_frames_skip), _allow_thread_last_frame_use(true),
   supports_os_get_frame(!skip_c_frames && os::current_frame().pc() != nullptr),
-  _state(STACKWALKER_START), _map(thread, RegisterMap::UpdateMap::skip,
+  _state(STACKWALKER_START),
+  _inlined(false), _method(nullptr), _bci(-1), _compilation_level(-1),
+  _map(thread, RegisterMap::UpdateMap::skip,
      RegisterMap::ProcessFrames::skip, RegisterMap::WalkContinuation::skip),
-  in_c_on_top(false), had_first_java_frame(false) {
+  _st({}),
+  in_c_on_top(false), had_first_java_frame(false), is_at_first_java_frame(false) {
   if (thread == nullptr || !thread->has_last_Java_frame()) {
     set_state(STACKWALKER_END);
     return;
@@ -327,7 +339,7 @@ void StackWalker::set_state(int state) {
 }
 
 void StackWalker::advance() {
-  if (!has_frame()) {
+  if (at_end_or_error()) {
     return;
   }
   if (in_c_on_top) {
@@ -343,7 +355,7 @@ bool StackWalker::checkFrame() {
   if (_thread == nullptr) {
     return true;
   }
-  if (!_frame.safe_for_sender(_thread) || _frame.is_first_frame()) {
+  if (/*!_frame.safe_for_sender(_thread) ||*/ _frame.is_first_frame()) {
     if (_skip_c_frames) {
       set_state(STACKWALKER_END);
       return false;
@@ -384,7 +396,7 @@ void StackWalker::process(bool potentially_first_java_frame) {
 // assumes that _frame has been advanced and not already in compiled stream
 // leaves the _frame unchanged
 void StackWalker::process_normal(bool potentially_first_java_frame) {
-  if (!os::is_readable_pointer(_frame.cb())){
+  if (_frame.cb() == nullptr || !os::is_readable_pointer(_frame.cb())){
     set_state(STACKWALKER_C_FRAME);
     return;
   }
@@ -407,9 +419,15 @@ void StackWalker::process_normal(bool potentially_first_java_frame) {
     had_first_java_frame = true;
     return;
   } else if (_frame.is_java_frame()) { // another validity check
-    if (potentially_first_java_frame && _thread != nullptr && _thread->has_last_Java_frame()) {
+        had_first_java_frame = true;
+    if (_end_at_first_java_frame) {
+      // native frames seems to cause problems
+      is_at_first_java_frame = true;
+      set_state(STACKWALKER_END);
+      return;
+    }
+    if (_allow_thread_last_frame_use && potentially_first_java_frame && _thread != nullptr && _thread->has_last_Java_frame()) {
       _frame.set_pc(_thread->last_Java_pc());
-      had_first_java_frame = true;
     }
     if (_frame.is_interpreted_frame()) {
       _inlined = false;
@@ -538,6 +556,9 @@ void StackWalker::advance_fully_c() {
 }
 
 bool StackWalker::skip_c_frames() {
+  if (at_end() || at_error()) {
+    return false;
+  }
   int i = 0;
   for (; (i < _max_c_frames_skip || _max_c_frames_skip == -1) && is_c_frame(); i++) {
     advance();
@@ -556,6 +577,7 @@ void StackWalker::skip_frames(int skip) {
 }
 
 int StackWalker::next(){
+  void* pc = _frame.pc();
   advance();
   if (_skip_c_frames) {
     skip_c_frames();
@@ -565,4 +587,18 @@ int StackWalker::next(){
 
 int StackWalker::compilation_level() const {
   return _compilation_level;
+}
+
+int StackWalker::walk_till_end_or_error() {
+  int count = 0;
+  while (!at_end() && !at_error()) {
+    count++;
+    advance();
+  }
+  return count;
+}
+
+bool StackWalker::walk_till_first_java_frame() {
+  walk_till_end_or_error();
+  return is_at_first_java_frame;
 }

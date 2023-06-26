@@ -657,11 +657,9 @@ class ThreadInAsyncStackWalking {
  public:
   ThreadInAsyncStackWalking(Thread* thread) : _thread(thread) {
     assert(_thread != nullptr, "invariant");
-    assert(!_thread->in_async_stack_walking(), "invariant");
     _thread->set_in_async_stack_walking(true);
   }
   ~ThreadInAsyncStackWalking() {
-    assert(_thread->in_async_stack_walking(), "invariant");
     _thread->set_in_async_stack_walking(false);
   }
 };

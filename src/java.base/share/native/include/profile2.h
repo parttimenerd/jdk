@@ -31,6 +31,7 @@
 #include <stdint.h>
 
 #include "jni.h"
+#include "jni_md.h"
 
 enum ASGST_Capabilities {
   ASGST_REGISTER_QUEUE = 1,
@@ -44,8 +45,8 @@ typedef struct _ASGST_Iterator ASGST_Iterator;
 enum ASGST_FrameTypeId {
   ASGST_FRAME_JAVA         = 1, // JIT compiled and interpreted
   ASGST_FRAME_JAVA_INLINED = 2, // inlined JIT compiled
-  ASGST_FRAME_NATIVE       = 3, // native wrapper to call C methods from Java
-  ASGST_FRAME_CPP          = 4  // C/C++/... frames
+  ASGST_FRAME_JAVA_NATIVE  = 3, // native wrapper to call C methods from Java
+  ASGST_FRAME_NON_JAVA     = 4  // C/C++/... frames
 };
 
 typedef struct {
@@ -60,6 +61,8 @@ typedef struct {
 
 enum ASGST_Options {
   ASGST_INCLUDE_NON_JAVA_FRAMES = 1,
+  // end at the first/top most java frame, but don't process it, just obtain pc, fp and sp
+  // but not method or bci, used if you want to deal with the Java frames at the safe point
   ASGST_END_ON_FIRST_JAVA_FRAME = 2,
 };
 
@@ -75,6 +78,7 @@ enum ASGST_Error {
   ASGST_UNSAFE_STATE     = -3, // thread is in unsafe state
   ASGST_NO_CLASS_LOAD    = -4, // class not loaded
   ASGST_NO_TOP_JAVA_FRAME = -5,
+  ASGST_ENQUEU_NO_QUEUE  = -6,
 };
 
 // Why not ASGST_CreateIterator? Because we then would have to
@@ -95,6 +99,22 @@ int ASGST_State(ASGST_Iterator* iter);
 JNIEXPORT
 int ASGST_ThreadState();
 
+struct _ASGST_Queue;
+typedef struct _ASGST_Queue ASGST_Queue;
+typedef void (*ASGST_Handler)(ASGST_Iterator*, void*, void*);
+
+// Register a queue to the current thread (or the one passed via env)
+// @param fun handler called at safe point with iterators, the argument for RegisterQueue and the argument passed via Enqueue
+// not signal safe
+JNIEXPORT
+ASGST_Queue* ASGST_RegisterQueue(JNIEnv* env, int size, int options, ASGST_Handler fun, void* argument);
+
+// Enqueue the processing of the current stack and return the kind (or error if <= 0)
+// you have to deal with the top C and native frames yourself (but there is an option for this)
+// @param argument argument passed through to the ASGST_Handler for the queue as the third argument
+// signal safe, but has to be called with a queue that belongs to the current thread
+JNIEXPORT
+int ASGST_Enqueue(ASGST_Queue* queue, void* ucontext, void* argument);
 
 }
 #endif // JVM_PROFILE2_H

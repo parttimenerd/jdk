@@ -22,16 +22,23 @@
  *
  */
 
+#include "jni.h"
+#include "memory/resourceArea.hpp"
 #include "precompiled.hpp"
 
-#include "prims/stackWalker.hpp"
-#include "prims/jvmtiExport.hpp"
-#include "runtime/javaThread.hpp"
-#include "runtime/os.hpp"
 #include <algorithm>
 #include <cstddef>
-#include <cstdint>
+#include "prims/stackWalker.hpp"
+#include "prims/jvmtiExport.hpp"
 #include "profile2.h"
+#include "runtime/handshake.hpp"
+#include "runtime/interfaceSupport.inline.hpp"
+#include "runtime/javaFrameAnchor.hpp"
+#include "runtime/javaThread.hpp"
+#include "runtime/os.hpp"
+#include "runtime/safefetch.hpp"
+#include "runtime/safepointMechanism.hpp"
+#include "utilities/globalDefinitions.hpp"
 
 int ASGST_Capabilities() {
   return ASGST_REGISTER_QUEUE | ASGST_MARK_FRAME;
@@ -40,14 +47,19 @@ int ASGST_Capabilities() {
 struct _ASGST_Iterator {
   StackWalker walker;
   JavaThread *thread;
-  int32_t options;
+  int options = options;
+  bool switchToThreadBased = false;
 };
 
-static int initStackWalker(_ASGST_Iterator *iterator, void *ucontext, int options, frame &ret_frame) {
-  if (iterator->thread != nullptr) {
+static int initStackWalker(_ASGST_Iterator *iterator, int options, frame frame, bool allow_thread_last_frame_use = true, bool set_async = true) {
+  if (set_async && iterator->thread != nullptr) {
       iterator->thread->set_in_async_stack_walking(true);
   }
-  iterator->walker = StackWalker(iterator->thread, ret_frame, (options & ASGST_INCLUDE_NON_JAVA_FRAMES) == 0);
+  iterator->walker = StackWalker(iterator->thread, frame,
+    (options & ASGST_INCLUDE_NON_JAVA_FRAMES) == 0,
+    (options & ASGST_END_ON_FIRST_JAVA_FRAME) != 0,
+    allow_thread_last_frame_use);
+  iterator->options = options;
   return ASGST_JAVA_TRACE;
 }
 
@@ -86,7 +98,7 @@ static int initNonJavaStackWalker(_ASGST_Iterator* iter, void* ucontext, int32_t
     return ASGST_NO_FRAME;
   }
   iter->thread = nullptr;
-  int ret = initStackWalker(iter, ucontext, options, ret_frame);
+  int ret = initStackWalker(iter, options, ret_frame);
   return ret > 0 ? ASGST_NON_JAVA_TRACE : ret;
 }
 
@@ -113,7 +125,6 @@ static int ASGST_Check(JavaThread** thread) {
 
 int ASGST_CreateIter(_ASGST_Iterator* iterator, void* ucontext, int32_t options) {
 
-  iterator->options = options;
   bool include_non_java_frames = (options & ASGST_INCLUDE_NON_JAVA_FRAMES) != 0;
 
 
@@ -159,7 +170,7 @@ int ASGST_CreateIter(_ASGST_Iterator* iterator, void* ucontext, int32_t options)
           }
         }
       }
-      return initStackWalker(iterator, ucontext, options, ret_frame);
+      return initStackWalker(iterator, options, ret_frame);
     }
     break;
   case _thread_in_Java:
@@ -172,7 +183,7 @@ int ASGST_CreateIter(_ASGST_Iterator* iterator, void* ucontext, int32_t options)
           return ASGST_NO_TOP_JAVA_FRAME;
         }
       }
-      return initStackWalker(iterator, ucontext, options, ret_frame);
+      return initStackWalker(iterator, options, ret_frame);
     }
     break;
   default:
@@ -204,9 +215,13 @@ int ASGST_NextFrame(ASGST_Iterator *iter, ASGST_Frame *frame) {
   if (iter->walker.is_bytecode_based_frame()) {
     frame->type = iter->walker.is_inlined() ? ASGST_FRAME_JAVA_INLINED : ASGST_FRAME_JAVA;
   } else if (iter->walker.is_native_frame()) {
-    frame->type = ASGST_FRAME_NATIVE;
+    frame->type = ASGST_FRAME_JAVA_NATIVE;
   } else {
-    frame->type = ASGST_FRAME_CPP;
+    frame->type = ASGST_FRAME_NON_JAVA;
+  }
+  if (iter->switchToThreadBased && !iter->walker.is_inlined()) {
+    initStackWalker(iter, iter->options, iter->thread->last_frame(), false, false);
+    iter->walker.next();
   }
   iter->walker.next();
   return 1;
@@ -246,6 +261,7 @@ int ASGST_RunWithIterator(void* ucontext, int options, void (*fun)(ASGST_Iterato
     return ret;
   }
   fun(iterator, argument);
+  ASGST_DestroyIter(iterator);
   return 1;
 }
 
@@ -285,4 +301,67 @@ int ASGST_ThreadState() {
       break;
   }
   return state;
+
+class ASGSTQueueElementHandlerImpl : public ASGSTQueueElementHandler {
+  int options;
+  ASGST_Handler fun;
+  void* queue_arg;
+public:
+  ASGSTQueueElementHandlerImpl(int options, ASGST_Handler fun, void* queue_arg) : options(options), fun(fun), queue_arg(queue_arg) {}
+  void operator()(ASGSTQueueElement* element, JavaFrameAnchor* frame_anchor) override {
+    int8_t iter[sizeof(ASGST_Iterator)]; // no need for default constructor
+
+    ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
+    iterator->thread = JavaThread::current();
+    IterRAII raii(iterator); // destroy iterator on exit
+    frame fExtended = frame(frame_anchor->last_Java_sp(), (address)element->fp(), (address)element->pc());
+    initStackWalker(iterator, options, fExtended, false);
+    iterator->switchToThreadBased = fExtended.pc() != JavaThread::current()->last_Java_pc();
+    fun(iterator, queue_arg, element->argument());
+    ASGST_DestroyIter(iterator);
+  }
+};
+
+ASGST_Queue* ASGST_RegisterQueue(JNIEnv* env, int size, int options, ASGST_Handler fun, void* argument) {
+  JavaThread* thread = env == nullptr ? JavaThread::current_or_null() : JavaThread::thread_from_jni_environment(env);
+  if (thread == nullptr || !os::is_readable_pointer(thread->handshake_state()) || thread->is_terminated()) {
+    return nullptr;
+  }
+  return (ASGST_Queue*)thread->handshake_state()->register_asgst_queue(thread, size, new ASGSTQueueElementHandlerImpl(options, fun, argument));
+}
+
+struct EnqueueFindFirstJavaFrameStruct {
+  int kindOrError; // 1, no error, 2 no Java frame, < 0 error
+  void* fp;
+  void* pc;
+  JavaThread* thread;
+};
+
+void enqueueFindFirstJavaFrame(ASGST_Iterator* iterator, void* arg) {
+  auto argument = (EnqueueFindFirstJavaFrameStruct*)arg;
+  if (!iterator->walker.walk_till_first_java_frame()) {
+    argument->kindOrError = iterator->walker.at_error() ? iterator->walker.error() : ASGST_NON_JAVA_TRACE;
+    return;
+  }
+  argument->kindOrError = 1;
+  argument->fp = iterator->walker.base_frame()->fp();
+  argument->pc = iterator->walker.base_frame()->pc();
+  argument->thread = iterator->thread;
+}
+
+int ASGST_Enqueue(ASGST_Queue* queue, void* ucontext, void* argument) {
+    printf("argument %p\n", argument);
+  if (queue == nullptr) {
+    return ASGST_ENQUEU_NO_QUEUE;
+  }
+  ASGSTQueue *q = (ASGSTQueue*)queue;
+  assert(q->in_current_thread(), "ASGST_Enqueue called with queue belonging to another thread");
+  int8_t iter[sizeof(ASGST_Iterator)]; // no need for default constructor
+  EnqueueFindFirstJavaFrameStruct runArgument;
+  int kind = ASGST_RunWithIterator(ucontext, ASGST_END_ON_FIRST_JAVA_FRAME, &enqueueFindFirstJavaFrame, &runArgument);
+  if (kind != ASGST_JAVA_TRACE || runArgument.kindOrError != ASGST_JAVA_TRACE) {
+    return kind;
+  }
+  runArgument.thread->handshake_state()->asgst_enqueue(q, {runArgument.fp, runArgument.pc, runArgument.pc});
+  return ASGST_JAVA_TRACE;
 }

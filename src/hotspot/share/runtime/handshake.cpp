@@ -22,6 +22,8 @@
  *
  */
 
+#include "handshake.hpp"
+#include "memory/allocation.hpp"
 #include "precompiled.hpp"
 #include "classfile/javaClasses.hpp"
 #include "classfile/vmSymbols.hpp"
@@ -33,18 +35,24 @@
 #include "runtime/globals.hpp"
 #include "runtime/handshake.hpp"
 #include "runtime/interfaceSupport.inline.hpp"
+#include "runtime/javaFrameAnchor.hpp"
 #include "runtime/javaThread.inline.hpp"
 #include "runtime/os.hpp"
 #include "runtime/osThread.hpp"
 #include "runtime/stackWatermarkSet.hpp"
 #include "runtime/task.hpp"
+#include "runtime/thread.hpp"
 #include "runtime/threadSMR.hpp"
 #include "runtime/vmThread.hpp"
+#include "safepointMechanism.hpp"
 #include "utilities/formatBuffer.hpp"
 #include "utilities/filterQueue.inline.hpp"
 #include "utilities/globalDefinitions.hpp"
 #include "utilities/preserveException.hpp"
 #include "utilities/systemMemoryBarrier.hpp"
+#include <atomic>
+#include <cstddef>
+#include <mutex>
 
 class HandshakeOperation : public CHeapObj<mtThread> {
   friend class HandshakeState;
@@ -469,6 +477,14 @@ HandshakeState::~HandshakeState() {
     guarantee(op->is_async(), "Only async operations may still be present on queue");
     delete op;
   }
+  if (_asgst_queue_start != nullptr) {
+    auto next = _asgst_queue_start;
+    while (next != nullptr) {
+      auto tmp = next->next();
+      delete next;
+      next = tmp;
+    }
+  }
 }
 
 void HandshakeState::add_operation(HandshakeOperation* op) {
@@ -548,11 +564,12 @@ void HandshakeState::remove_op(HandshakeOperation* op) {
 bool HandshakeState::process_by_self(bool allow_suspend, bool check_async_exception) {
   assert(Thread::current() == _handshakee, "should call from _handshakee");
   assert(!_handshakee->is_terminated(), "should not be a terminated thread");
-
   _handshakee->frame_anchor()->make_walkable();
+  if (has_asgst_queues()) {
+    process_asgst_queue(_handshakee->frame_anchor());
+  }
   // Threads shouldn't block if they are in the middle of printing, but...
   ttyLocker::break_tty_lock_for_safepoint(os::current_thread_id());
-
   while (has_operation()) {
     // Handshakes cannot safely safepoint. The exceptions to this rule are
     // the asynchronous suspension and unsafe access error handshakes.
@@ -813,4 +830,93 @@ void HandshakeState::handle_unsafe_access_error() {
     java_lang_InternalError::set_during_unsafe_access(h_exception());
   }
   _handshakee->handle_async_exception(h_exception());
+}
+
+bool ASGSTQueue::in_current_thread() {
+  return JavaThread::current_or_null_safe() == thread;
+}
+
+bool ASGSTQueue::push(ASGSTQueueElement element) {
+  // atomic to make signal safe
+  int expected_tail, new_tail;
+  do {
+    expected_tail = tail;
+    if (is_full())
+      return false;
+    new_tail = (expected_tail + 1) % max_size();
+  } while (!tail.compare_exchange_weak(expected_tail, new_tail, std::memory_order_relaxed));
+  elements[expected_tail] = element;
+  return true;
+}
+
+ASGSTQueueElement *ASGSTQueue::pop() {
+  // atomic to make signal safe
+  int old_head = head.load();
+  int new_head = (old_head + 1) % max_size();
+  if (old_head == tail.load()) {
+    return nullptr;
+  }
+  while (!head.compare_exchange_weak(old_head, new_head, std::memory_order_relaxed)) {
+    old_head = head.load();
+    new_head = (old_head + 1) % max_size();
+    if (old_head == tail.load()) {
+      return nullptr;
+    }
+  }
+  return &elements[old_head];
+}
+
+ASGSTQueue* HandshakeState::register_asgst_queue(JavaThread *thread, size_t size, ASGSTQueueElementHandler* handler) {
+  std::lock_guard<std::mutex> lock(_asgst_queue_mutex);
+  auto q = new ASGSTQueue(_current_asgst_queue_id, thread, size, handler);
+  q->set_next(_asgst_queue_start);
+  _asgst_queue_start = q;
+  _current_asgst_queue_id++;
+  return q;
+}
+
+void HandshakeState::remove_asgst_queue(ASGSTQueue* queue) {
+  std::lock_guard<std::mutex> lock(_asgst_queue_mutex);
+  if (queue->equals(_asgst_queue_start)) {
+    _asgst_queue_start = queue->next();
+  } else {
+    ASGSTQueue* prev = nullptr;
+    ASGSTQueue* curr = _asgst_queue_start;
+    while (curr != nullptr) {
+      if (curr == queue) {
+        prev->set_next(curr->next());
+        delete curr;
+        break;
+      }
+      prev = curr;
+      curr = curr->next();
+    }
+  }
+}
+
+bool HandshakeState::asgst_enqueue(ASGSTQueue* queue, ASGSTQueueElement element) {
+  if (!queue->push(element)) {
+    return false;
+  }
+  _asgst_queue_size++;
+  assert(_handshakee == JavaThread::current(), "");
+  SafepointMechanism::arm_local_poll_release(JavaThread::current());
+  return true;
+}
+
+void HandshakeState::process_asgst_queue(JavaFrameAnchor* frame_anchor) {
+  if (_asgst_queue_size == 0) {
+    return; // nothing to do
+  }
+  std::lock_guard<std::mutex> lock(_asgst_queue_mutex);
+  for (auto q = _asgst_queue_start; q; q = q->next()) {
+    while (q->length() > 0) {
+      ASGSTQueueElement* element = q->pop();
+      if (element == nullptr) {
+        break;
+      };
+      q->handle(element, frame_anchor);
+      _asgst_queue_size--;
+    }
+  }
 }
