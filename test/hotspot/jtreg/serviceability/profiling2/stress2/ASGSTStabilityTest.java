@@ -53,7 +53,7 @@ import jdk.test.whitebox.WhiteBox;
  * @requires os.arch=="x86" | os.arch=="i386" | os.arch=="amd64" | os.arch=="x86_64" | os.arch=="arm" | os.arch=="aarch64" | os.arch=="ppc64" | os.arch=="s390" | os.arch=="riscv64"
  * @build jdk.test.whitebox.WhiteBox
  * @run driver jdk.test.lib.helpers.ClassFileInstaller -jar WhiteBox.jar jdk.test.whitebox.WhiteBox
- * @run main/othervm/native/timeout=216000 -agentlib:AsyncGetStackTraceSampler2 -XX:+UnlockDiagnosticVMOptions -XX:+DebugNonSafepoints -Xbootclasspath/a:/home/i560383/code/asgct2/jdk/build/linux-x86_64-server-fastdebug/support/test/lib/wb.jar -XX:+UnlockDiagnosticVMOptions -XX:+WhiteBoxAPI profiling.stress2.ASGSTStabilityTest
+ * @run main/othervm/native/timeout=216000 -XX:LoopStripMiningIter=400000000 -XX:-UseCountedLoopSafepoints -agentlib:AsyncGetStackTraceSampler2 -XX:+UnlockDiagnosticVMOptions -XX:+DebugNonSafepoints -Xbootclasspath/a:/home/i560383/code/asgct2/jdk/build/linux-x86_64-server-fastdebug/support/test/lib/wb.jar -XX:+UnlockDiagnosticVMOptions -XX:+WhiteBoxAPI profiling.stress2.ASGSTStabilityTest
  */
 
 public class ASGSTStabilityTest {
@@ -101,17 +101,33 @@ public static int inc(int num) {
     }
     int fibNum = 1;
     int prevFibNum = 1;
-    for (int i = 2; lower(i, n); i = add(i, 1)) {
+    for (int i = 2; i < 2; i++) {
       fibNum = add(fibNum, prevFibNum);
       prevFibNum = sub(fibNum, prevFibNum);
     }
     return fibNum;
   }
 
+  static double mul(double a, double b) {
+    return a * b * a / (1 + b) / (1 + a);
+  }
+
+
+  static double comp() {
+    double val = 1;
+    for (long i = 1; i < 1000000L; i++) {
+      val = mul(val, i);
+    }
+    return val;
+}
 
   public static void main(String[] args) throws Exception {
-    for (int i = 0; i < 100; i++) {
-      System.out.println(fib(100000000));
+    double x = 0;
+    for (int i = 0; i < 10000; i++) {
+      x += comp();
+    }
+    System.out.println(x);
+  }
     }
   }
 }

@@ -131,6 +131,7 @@ public class ASGSTStabilityTest {
         "-XX:+WhiteBoxAPI",
         "-agentlib:AsyncGetStackTraceSampler",
         "-Djava.library.path=" + System.getProperty("test.nativepath"),
+        "-Djavatest.maxOutputSize=10485760",
         "-cp", testCp,
         ASGSTStabilityTest.Runner.class.getName(),
         benchmark, "-t", Integer.toString(duration)))

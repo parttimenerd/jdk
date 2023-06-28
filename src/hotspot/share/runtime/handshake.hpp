@@ -93,13 +93,11 @@ class Handshake : public AllStatic {
 class JvmtiRawMonitor;
 
 class ASGSTQueueElement {
-  void* _fp;
   void* _pc;
   void* _argument;
 public:
-  ASGSTQueueElement(void* fp, void* pc, void* argument) : _fp(fp), _pc(pc), _argument(argument) {}
-  ASGSTQueueElement(): ASGSTQueueElement(nullptr, nullptr, nullptr) {}
-  void* fp() const { return _fp; }
+  ASGSTQueueElement(void* pc, void* argument) : _pc(pc), _argument(argument) {}
+  ASGSTQueueElement(): ASGSTQueueElement(nullptr, nullptr) {}
   void* pc() const { return _pc; }
   void* argument() const { return _argument; }
 };
@@ -113,10 +111,12 @@ class ASGSTQueueElementHandler : public CHeapObj<mtServiceability> {
 class ASGSTQueue : public CHeapObj<mtServiceability> {
   int id;
   JavaThread* thread;
-  ASGSTQueueElement elements[100]; // TODO: use size
-  size_t size;
-  std::atomic<int> head;
-  std::atomic<int> tail;
+  ASGSTQueueElement* elements;
+  int size;
+  // pop: head increase
+  int head;
+  // push: tail increase
+  int tail;
   ASGSTQueueElementHandler* handler;
 
   ASGSTQueue* _next = nullptr;
@@ -126,11 +126,13 @@ public:
   // Constructor
   // @param handler pointer to the handler, deleted when the ASGSTQueue is destroyed
   ASGSTQueue(int id, JavaThread* thread, size_t size, ASGSTQueueElementHandler* handler) :
-    id(id), thread(thread), size(100), head(0), tail(0), handler(handler) {
+    id(id), thread(thread),
+    elements((ASGSTQueueElement*)os::malloc(sizeof(ASGSTQueueElement) * size, mtServiceability)),
+    size(size), head(0), tail(0), handler(handler) {
   }
 
   int max_size() const { return size; }
-  int length() const { return (tail < head ? (tail + size) : tail.load()) - head; }
+  int length() const { return (tail < head ? (tail + size) : tail) - head; }
   bool is_full() const { return length() >= max_size(); }
   bool is_empty() const { return length() <= 0; }
 
@@ -143,6 +145,7 @@ public:
 
   ~ASGSTQueue() {
     delete handler;
+    os::free(elements);
   }
 
   void handle(ASGSTQueueElement* element, JavaFrameAnchor* frame_anchor) {
@@ -241,6 +244,8 @@ class HandshakeState {
   void remove_asgst_queue(ASGSTQueue* queue);
 
   bool asgst_enqueue(ASGSTQueue* queue, ASGSTQueueElement element);
+
+  int asgst_queue_size() const { return _asgst_queue_size; }
 
   // Support for asynchronous exceptions
  private:
