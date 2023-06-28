@@ -837,33 +837,21 @@ bool ASGSTQueue::in_current_thread() {
 }
 
 bool ASGSTQueue::push(ASGSTQueueElement element) {
-  // atomic to make signal safe
-  int expected_tail, new_tail;
-  do {
-    expected_tail = tail;
-    if (is_full())
-      return false;
-    new_tail = (expected_tail + 1) % max_size();
-  } while (!tail.compare_exchange_weak(expected_tail, new_tail, std::memory_order_relaxed));
-  elements[expected_tail] = element;
+  if ((tail + 1) % size == head) {
+    return false;
+  }
+  elements[tail] = element;
+  tail = (tail + 1) % size;
   return true;
 }
 
 ASGSTQueueElement *ASGSTQueue::pop() {
-  // atomic to make signal safe
-  int old_head = head.load();
-  int new_head = (old_head + 1) % max_size();
-  if (old_head == tail.load()) {
+  if (head == tail) {
     return nullptr;
   }
-  while (!head.compare_exchange_weak(old_head, new_head, std::memory_order_relaxed)) {
-    old_head = head.load();
-    new_head = (old_head + 1) % max_size();
-    if (old_head == tail.load()) {
-      return nullptr;
-    }
-  }
-  return &elements[old_head];
+  ASGSTQueueElement *element = &elements[head];
+  head = (head + 1) % size;
+  return element;
 }
 
 ASGSTQueue* HandshakeState::register_asgst_queue(JavaThread *thread, size_t size, ASGSTQueueElementHandler* handler) {
@@ -885,6 +873,7 @@ void HandshakeState::remove_asgst_queue(ASGSTQueue* queue) {
     while (curr != nullptr) {
       if (curr == queue) {
         prev->set_next(curr->next());
+        _asgst_queue_size -= curr->length();
         delete curr;
         break;
       }
@@ -912,9 +901,6 @@ void HandshakeState::process_asgst_queue(JavaFrameAnchor* frame_anchor) {
   for (auto q = _asgst_queue_start; q; q = q->next()) {
     while (q->length() > 0) {
       ASGSTQueueElement* element = q->pop();
-      if (element == nullptr) {
-        break;
-      };
       q->handle(element, frame_anchor);
       _asgst_queue_size--;
     }

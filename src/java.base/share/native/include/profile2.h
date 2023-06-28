@@ -72,13 +72,14 @@ enum ASGST_TRACE_KIND {
 };
 
 enum ASGST_Error {
-  ASGST_NO_FRAME         =  0, // come to and end
-  ASGST_NO_THREAD        = -1, // thread is not here
-  ASGST_THREAD_EXIT      = -2, // dying thread
-  ASGST_UNSAFE_STATE     = -3, // thread is in unsafe state
-  ASGST_NO_CLASS_LOAD    = -4, // class not loaded
-  ASGST_NO_TOP_JAVA_FRAME = -5,
-  ASGST_ENQUEU_NO_QUEUE  = -6,
+  ASGST_NO_FRAME           =  0, // come to and end
+  ASGST_NO_THREAD          = -1, // thread is not here
+  ASGST_THREAD_EXIT        = -2, // dying thread
+  ASGST_UNSAFE_STATE       = -3, // thread is in unsafe state
+  ASGST_NO_CLASS_LOAD      = -4, // class not loaded
+  ASGST_NO_TOP_JAVA_FRAME  = -5,
+  ASGST_ENQUEUE_NO_QUEUE   = -6,
+  ASGST_ENQUEUE_FULL_QUEUE = -7,
 };
 
 // Why not ASGST_CreateIterator? Because we then would have to
@@ -87,6 +88,8 @@ enum ASGST_Error {
 extern "C" {
 JNIEXPORT
 int ASGST_RunWithIterator(void* ucontext, int32_t options, void (*fun)(ASGST_Iterator*, void*), void* argument);
+
+int ASGST_RunWithIteratorFromFrame(void* sp, void* fp, void* pc, int options, void (*fun)(ASGST_Iterator*, void*), void* argument);
 
 // returns 1 if successful, else error code
 JNIEXPORT
