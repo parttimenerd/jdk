@@ -31,8 +31,6 @@
 #include "oops/metadata.hpp"
 #include "oops/oop.hpp"
 #include "oops/oopHandle.hpp"
-#include "oops/symbol.hpp"
-#include "runtime/safefetch.hpp"
 #include "utilities/accessFlags.hpp"
 #include "utilities/macros.hpp"
 #if INCLUDE_JFR
@@ -305,7 +303,6 @@ protected:
 
   // class loader data
   ClassLoaderData* class_loader_data() const               { return _class_loader_data; }
-  ClassLoaderData* class_loader_data_safe() const          { return (ClassLoaderData*)SafeFetchN((intptr_t*)_class_loader_data, (intptr_t)nullptr); }
   void set_class_loader_data(ClassLoaderData* loader_data) {  _class_loader_data = loader_data; }
 
   s2 shared_classpath_index() const   {
@@ -699,7 +696,6 @@ protected:
 
   // klass name
   Symbol* name() const                   { return _name; }
-  Symbol* name_safe() const              { return (Symbol*)SafeFetchN((intptr_t*)&_name, (intptr_t)nullptr); }
   void set_name(Symbol* n);
 
   virtual void release_C_heap_structures(bool release_constant_pool = true);

@@ -1298,10 +1298,10 @@ bool os::is_first_C_frame(frame* fr) {
   // Check usp first, because if that's bad the other accessors may fault
   // on some architectures.  Ditto ufp second, etc.
 
-  if (is_pointer_bad(fr->sp())) return true;
+  if (fr->sp() == nullptr || is_pointer_bad(fr->sp())) return true;
 
   uintptr_t ufp    = (uintptr_t)fr->fp();
-  if (is_pointer_bad(fr->fp())) return true;
+  if (fr->fp() == nullptr || is_pointer_bad(fr->fp())) return true;
 
   uintptr_t old_sp = (uintptr_t)fr->sender_sp();
   if ((uintptr_t)fr->sender_sp() == (uintptr_t)-1 || is_pointer_bad(fr->sender_sp())) return true;

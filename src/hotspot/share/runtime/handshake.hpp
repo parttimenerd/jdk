@@ -241,7 +241,7 @@ class HandshakeState {
 
   ASGSTQueue* register_asgst_queue(JavaThread* thread, size_t size, ASGSTQueueElementHandler* handler);
 
-  void remove_asgst_queue(ASGSTQueue* queue);
+  bool remove_asgst_queue(ASGSTQueue* queue);
 
   bool asgst_enqueue(ASGSTQueue* queue, ASGSTQueueElement element);
 

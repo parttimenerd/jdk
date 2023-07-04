@@ -25,7 +25,6 @@
 #ifndef SHARE_OOPS_CONSTMETHODFLAGS_HPP
 #define SHARE_OOPS_CONSTMETHODFLAGS_HPP
 
-#include "runtime/safefetch.hpp"
 #include "utilities/globalDefinitions.hpp"
 #include "utilities/macros.hpp"
 
@@ -77,13 +76,6 @@ class ConstMethodFlags {
   // Create getters and setters for the flag values.
 #define CM_FLAGS_GET_SET(name, ignore)          \
   bool name() const { return (_flags & _misc_##name) != 0; } \
-  int safe_##name() const { \
-    int flags = SafeFetch32((int*)&_flags, -1); \
-    if (flags == -1 && SafeFetch32((int*)&_flags, -2) == -2) { \
-      return -1; \
-    } \
-    return ( flags & _misc_##name) != 0 ? 1 : 0; \
-  } \
   void set_##name() {         \
     _flags |= _misc_##name;  \
   }

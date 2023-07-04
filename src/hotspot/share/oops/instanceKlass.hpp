@@ -25,6 +25,7 @@
 #ifndef SHARE_OOPS_INSTANCEKLASS_HPP
 #define SHARE_OOPS_INSTANCEKLASS_HPP
 
+#include "klass.hpp"
 #include "memory/referenceType.hpp"
 #include "oops/annotations.hpp"
 #include "oops/constMethod.hpp"
@@ -32,7 +33,10 @@
 #include "oops/instanceKlassFlags.hpp"
 #include "oops/instanceOop.hpp"
 #include "runtime/handles.hpp"
+<<<<<<< HEAD
 #include "runtime/javaThread.hpp"
+=======
+>>>>>>> 2cb29629861 (Improve safe point based walking and add class unload handler)
 #include "utilities/accessFlags.hpp"
 #include "utilities/align.hpp"
 #include "utilities/growableArray.hpp"
@@ -128,6 +132,22 @@ class OopMapBlock {
  private:
   int  _offset;
   uint _count;
+};
+
+class InstanceKlass;
+
+class KlassDeallocationHandler : public CHeapObj<mtServiceability> {
+ friend class InstanceKlass;
+ private:
+  volatile KlassDeallocationHandler *next = nullptr;
+ public:
+  virtual void call(InstanceKlass*) = 0;
+  virtual ~KlassDeallocationHandler() {
+    if (next) {
+      delete next->next;
+      next->next = nullptr;
+    }
+  }
 };
 
 struct JvmtiCachedClassFileData;
@@ -645,7 +665,6 @@ public:
 
   // constant pool
   ConstantPool* constants() const        { return _constants; }
-  ConstantPool* constants_safe() const   { return (ConstantPool*)SafeFetchN((intptr_t*)&_constants, (intptr_t)nullptr); }
   void set_constants(ConstantPool* c)    { _constants = c; }
 
   // protection domain
@@ -803,7 +822,6 @@ public:
                 size_t *length_p, jmethodID* id_p);
   void ensure_space_for_methodids(int start_offset = 0);
   jmethodID jmethod_id_or_null(Method* method);
-  jmethodID jmethod_id_or_null_safe(Method* method);
 
   // annotations support
   Annotations* annotations() const          { return _annotations; }
@@ -993,6 +1011,10 @@ public:
   // For RedefineClasses and class file parsing errors, we need to deallocate
   // instanceKlasses and the metadata they point to.
   void deallocate_contents(ClassLoaderData* loader_data);
+
+  // handler is called when a class is deallocated, before any of it's members are
+  static void add_deallocation_handler(KlassDeallocationHandler* handler);
+
   static void deallocate_methods(ClassLoaderData* loader_data,
                                  Array<Method*>* methods);
   void static deallocate_interfaces(ClassLoaderData* loader_data,
@@ -1003,6 +1025,7 @@ public:
                                            Array<RecordComponent*>* record_component);
 
   virtual bool on_stack() const;
+  void static add_deallocate_handler(void (*handler)(InstanceKlass*));
 
   // callbacks for actions during class unloading
   static void unload_class(InstanceKlass* ik);
@@ -1081,7 +1104,6 @@ public:
   // going from null to non-null.
   bool idnum_can_increment() const      { return has_been_redefined(); }
   inline jmethodID* methods_jmethod_ids_acquire() const;
-  inline jmethodID* methods_jmethod_ids_acquire_safe() const;
   inline void release_set_methods_jmethod_ids(jmethodID* jmeths);
 
   // Lock during initialization

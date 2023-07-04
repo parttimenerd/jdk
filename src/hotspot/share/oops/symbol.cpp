@@ -137,17 +137,6 @@ char* Symbol::as_C_string(char* buf, int size) const {
   return buf;
 }
 
-char* Symbol::as_C_string_safe(char* buf, int size) const {
-  if (size > 0) {
-    int len = MIN2(size - 1, utf8_length_safe());
-    for (int i = 0; i < len; i++) {
-      buf[i] = char_at_safe(i);
-    }
-    buf[len] = '\0';
-  }
-  return buf;
-}
-
 char* Symbol::as_C_string() const {
   int len = utf8_length();
   char* str = NEW_RESOURCE_ARRAY(char, len + 1);

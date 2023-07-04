@@ -42,3 +42,9 @@ ASGST_State
 ASGST_ThreadState
 ASGST_RegisterQueue
 ASGST_Enqueue
+ASGST_MethodToJMethodID
+ASGST_GetMethodInfo
+ASGST_GetClassInfo
+ASGST_GetClass
+ASGST_ClassToJClass
+ASGST_RegisterClassUnloadHandler

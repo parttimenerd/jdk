@@ -26,7 +26,6 @@
 #define SHARE_OOPS_ARRAY_HPP
 
 #include "runtime/atomic.hpp"
-#include "runtime/safefetch.hpp"
 #include "utilities/align.hpp"
 #include "utilities/exceptions.hpp"
 #include "utilities/globalDefinitions.hpp"
@@ -127,14 +126,6 @@ protected:
   T    at(int i) const                 { assert(i >= 0 && i< _length, "oob: 0 <= %d < %d", i, _length); return data()[i]; }
   void at_put(const int i, const T& x) { assert(i >= 0 && i< _length, "oob: 0 <= %d < %d", i, _length); data()[i] = x; }
   T*   adr_at(const int i)             { assert(i >= 0 && i< _length, "oob: 0 <= %d < %d", i, _length); return &data()[i]; }
-  T*   adr_at_safe(int i)  {
-    int length = SafeFetch32((int*)&_length, -1);
-    assert(i >= 0 && i< length, "oob: 0 <= %d < %d", i, length);
-    if (length == -1) {
-      return nullptr;
-    }
-    return data() + i;
-  }
 
   int  find(const T& x)                { return index_of(x); }
 

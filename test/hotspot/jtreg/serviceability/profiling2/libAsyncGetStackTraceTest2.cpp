@@ -156,7 +156,7 @@ void handleASGST_Iterator(ASGST_Iterator* iter, void* argument) {
   ASGST_Frame frame;
   while (ASGST_NextFrame(iter, &frame)) {
     printf("state %d ", ASGST_State(iter));
-    printMethod(stdout, frame.method_id);
+    printMethod(stdout, frame.method);
     printf("\n");
   }
 }
