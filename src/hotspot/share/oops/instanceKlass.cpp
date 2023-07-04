@@ -22,7 +22,8 @@
  *
  */
 
-#include "jni.h"
+#include "instanceKlass.hpp"
+#include "klass.hpp"
 #include "precompiled.hpp"
 #include "cds/archiveUtils.hpp"
 #include "cds/cdsConfig.hpp"
@@ -87,7 +88,6 @@
 #include "runtime/orderAccess.hpp"
 #include "runtime/os.inline.hpp"
 #include "runtime/reflectionUtils.hpp"
-#include "runtime/safefetch.hpp"
 #include "runtime/threads.hpp"
 #include "services/classLoadingService.hpp"
 #include "services/finalizerService.hpp"
@@ -583,9 +583,16 @@ void InstanceKlass::deallocate_record_components(ClassLoaderData* loader_data,
   }
 }
 
+static KlassDeallocationHandler* _deallocation_handler;
+
 // This function deallocates the metadata and C heap pointers that the
 // InstanceKlass points to.
 void InstanceKlass::deallocate_contents(ClassLoaderData* loader_data) {
+  KlassDeallocationHandler* handler = Atomic::load(&_deallocation_handler);
+  while (handler != nullptr) {
+    handler->call(this);
+    handler = Atomic::load(&_deallocation_handler);
+  }
   // Orphan the mirror first, CMS thinks it's still live.
   if (java_mirror() != nullptr) {
     java_lang_Class::set_klass(java_mirror(), nullptr);
@@ -713,6 +720,14 @@ void InstanceKlass::deallocate_contents(ClassLoaderData* loader_data) {
     HeapShared::remove_scratch_objects(this);
   }
 #endif
+}
+
+void InstanceKlass::add_deallocation_handler(KlassDeallocationHandler* handler) {
+  volatile KlassDeallocationHandler* prev = Atomic::load(&_deallocation_handler);
+  if (prev != nullptr) {
+    Atomic::store(&handler->next, prev);
+  }
+  Atomic::store(&_deallocation_handler, handler);
 }
 
 bool InstanceKlass::is_record() const {
@@ -2467,19 +2482,6 @@ jmethodID InstanceKlass::jmethod_id_or_null(Method* method) {
   if (jmeths != nullptr &&                      // If there is a cache
       (length = (size_t)jmeths[0]) > idnum) {   // and if it is long enough,
     id = jmeths[idnum+1];                       // Look up the id (may be null)
-  }
-  return id;
-}
-
-// Lookup a jmethodID, null if not found.  Do no blocking, no allocations, no handles
-jmethodID InstanceKlass::jmethod_id_or_null_safe(Method* method) {
-  size_t idnum = (size_t)method->method_idnum_safe();
-  jmethodID* jmeths = methods_jmethod_ids_acquire_safe();
-  size_t length;                                // length assigned as debugging crumb
-  jmethodID id = nullptr;
-  if (jmeths != nullptr &&                      // If there is a cache
-      (length = (size_t)SafeFetchN((intptr_t*)jmeths[0], (intptr_t)nullptr)) > idnum) {   // and if it is long enough,
-    id = (jmethodID)SafeFetchN((intptr_t*)(jmeths + idnum + 1), (intptr_t)nullptr);                       // Look up the id (may be null)
   }
   return id;
 }

@@ -863,10 +863,11 @@ ASGSTQueue* HandshakeState::register_asgst_queue(JavaThread *thread, size_t size
   return q;
 }
 
-void HandshakeState::remove_asgst_queue(ASGSTQueue* queue) {
+bool HandshakeState::remove_asgst_queue(ASGSTQueue* queue) {
   std::lock_guard<std::mutex> lock(_asgst_queue_mutex);
   if (queue->equals(_asgst_queue_start)) {
     _asgst_queue_start = queue->next();
+    return true;
   } else {
     ASGSTQueue* prev = nullptr;
     ASGSTQueue* curr = _asgst_queue_start;
@@ -875,11 +876,12 @@ void HandshakeState::remove_asgst_queue(ASGSTQueue* queue) {
         prev->set_next(curr->next());
         _asgst_queue_size -= curr->length();
         delete curr;
-        break;
+        return true;
       }
       prev = curr;
       curr = curr->next();
     }
+    return false;
   }
 }
 

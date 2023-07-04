@@ -39,7 +39,7 @@
 #include "profile2.h"
 
 #ifdef DEBUG
-const int INTERVAL_NS = 20000; // 20us, 50 000 times per second
+const int INTERVAL_NS = 2000; // 20us, 50 000 times per second
                                // 1000 times more than in a normal profiling run
 #else
 const int INTERVAL_NS = 1000; // 1us, 1 0000 000 times per second
@@ -61,8 +61,17 @@ thread_local ASGST_Queue *queue;
 
 static void asgstHandler(ASGST_Iterator* iterator, void* queueArg, void* arg) {
   printf("Hi from inside the queue with state %d\n", ASGST_State(iterator));
+  if (ASGST_State(iterator) != 1) {
+    return;
+  }
   ASGST_Frame frame;
-  ASGST_NextFrame(iterator, &frame);
+  int count = 0;
+  while (ASGST_NextFrame(iterator, &frame) == 1) {
+    printf("frame %d ", count);
+    printMethod(stdout, frame.method);
+    printf("\n");
+    count++;
+  }
 }
 
 thread_local JNIEnv* _jni_env;

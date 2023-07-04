@@ -26,12 +26,19 @@
 #ifndef JVM_PROFILE2_H
 #define JVM_PROFILE2_H
 
+#include <cstddef>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <stdint.h>
 
 #include "jni.h"
 #include "jni_md.h"
+
+struct _ASGST_Method;
+typedef struct _ASGST_Method* ASGST_Method;
+
+struct _ASGST_Class;
+typedef struct _ASGST_Class* ASGST_Class;
 
 enum ASGST_Capabilities {
   ASGST_REGISTER_QUEUE = 1,
@@ -53,7 +60,7 @@ typedef struct {
   uint8_t type;            // frame type
   int comp_level;      // compilation level, 0 is interpreted, -1 is undefined, > 1 is JIT compiled
   int bci;            // -1 if the bci is not available (like in native frames)
-  jmethodID method_id;    // method id or null if not available
+  ASGST_Method method;    // method or nullptr if not available
   void *pc;          // current program counter inside this frame
   void *sp;          // current stack pointer inside this frame
   void *fp;          // current frame pointer inside this frame
@@ -112,6 +119,9 @@ typedef void (*ASGST_Handler)(ASGST_Iterator*, void*, void*);
 JNIEXPORT
 ASGST_Queue* ASGST_RegisterQueue(JNIEnv* env, int size, int options, ASGST_Handler fun, void* argument);
 
+JNIEXPORT
+bool ASGST_DeregisterQueue(JNIEnv* env, ASGST_Queue* queue);
+
 // Enqueue the processing of the current stack and return the kind (or error if <= 0)
 // you have to deal with the top C and native frames yourself (but there is an option for this)
 // @param argument argument passed through to the ASGST_Handler for the queue as the third argument
@@ -119,5 +129,72 @@ ASGST_Queue* ASGST_RegisterQueue(JNIEnv* env, int size, int options, ASGST_Handl
 JNIEXPORT
 int ASGST_Enqueue(ASGST_Queue* queue, void* ucontext, void* argument);
 
+
+// Returns the jmethodID for a given ASGST_Method, null if the method has
+// no corresponding jmethodID.
+JNIEXPORT
+jmethodID ASGST_MethodToJMethodID(ASGST_Method method);
+
+typedef struct {
+  ASGST_Class klass;
+  char* method_name;
+  jint method_name_length;
+  char* signature;
+  jint signature_length;
+  char* generic_signature;
+  jint generic_signature_length;
+  jint modifiers;
+} ASGST_MethodInfo;
+
+#define ASGST_METHOD_INFO(variable_name, method_name_length, signature_length, generic_signature_length) \
+  char variable_name##__method_name[method_name_length];\
+  char variable_name##__signature[signature_length];\
+  char variable_name##__generic_signature[generic_signature_length];\
+  ASGST_MethodInfo variable_name;\
+  variable_name.method_name = (char*)variable_name##__method_name;\
+  variable_name.method_name_length = method_name_length;\
+  variable_name.signature = (char*)variable_name##__signature;\
+  variable_name.signature_length = signature_length;\
+  variable_name.generic_signature = (char*)variable_name##__generic_signature;\
+  variable_name.generic_signature_length = generic_signature_length;
+
+typedef struct {
+  char* class_name;
+  jint class_name_length;
+  char* generic_class_name;
+  jint generic_class_name_length;
+  jint modifiers;
+} ASGST_ClassInfo;
+
+#define ASGST_CLASS_INFO(variable_name, class_name_length, generic_class_name_length) \
+  char variable_name##__class_name[class_name_length];\
+  char variable_name##__generic_class_name[generic_class_name_length];\
+  ASGST_ClassInfo variable_name;\
+  variable_name.class_name = (char*)variable_name##__class_name;\
+  variable_name.class_name_length = class_name_length;\
+  variable_name.generic_class_name = (char*)variable_name##__generic_class_name;\
+  variable_name.generic_class_name_length = generic_class_name_length;
+
+// Obtain the method information for a given ASGST_Method and store it in the pre-allocated info struct.
+// It stores the actual length in the _len fields and at a null terminated string in the string fields.
+// Safe to call from signal handlers.
+// A field is set to null if the information is not available.
+JNIEXPORT
+void ASGST_GetMethodInfo(ASGST_Method method, ASGST_MethodInfo* info);
+
+JNIEXPORT
+void ASGST_GetClassInfo(ASGST_Class klass, ASGST_ClassInfo* info);
+
+JNIEXPORT
+ASGST_Class ASGST_GetClass(ASGST_Method method);
+
+JNIEXPORT
+jclass ASGST_ClassToJClass(ASGST_Class klass);
+
+typedef void (*ASGST_ClassUnloadHandler)(ASGST_Class klass, ASGST_Method *methods, size_t count);
+
+// not signal and safe point safe
+JNIEXPORT
+void ASGST_RegisterClassUnloadHandler(ASGST_ClassUnloadHandler handler);
 }
 #endif // JVM_PROFILE2_H
