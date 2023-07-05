@@ -250,11 +250,29 @@ int ASGST_NextFrame(ASGST_Iterator *iter, ASGST_Frame *frame) {
   if (iter->switchToThreadBased && !iter->walker.is_inlined()) {
     iter->switchToThreadBased = false;
     iter->invalidSpAndFp = false;
+    int8_t walkerBytes[sizeof(StackWalker)]; // backup the old walker
+    StackWalker* walker = (StackWalker*) walkerBytes;
+    *walker = iter->walker;
     initStackWalker(iter, iter->options,
       {iter->anchor.last_Java_sp(), iter->anchor.last_Java_fp(), iter->anchor.last_Java_pc()}, false, false);
-    iter->walker.next();
-  }
-  iter->walker.next();
+    if ((Method*)frame->method == iter->walker.method() && frame->sp == nullptr) {
+      // last frame from old walker is similar to current frame from new walker
+      // therefor skip the old walker frame (contains less information)
+      // typical for poll-at-return handshakes
+      return ASGST_NextFrame(iter, frame);
+    }
+    if (iter->walker.at_end_or_error() && !walker->at_end_or_error()) {
+      // use the old walker
+      iter->walker = *walker;
+      if ((Method*)frame->method == iter->walker.method() && frame->sp == nullptr) {
+        // last frame from old walker is similar to current frame from new walker
+        // therefor skip the old walker frame (contains less information)
+        // typical for poll-at-return handshakes
+        return ASGST_NextFrame(iter, frame);
+      }
+      return 1;
+    }
+  } else  iter->walker.next();
   return 1;
 }
 
