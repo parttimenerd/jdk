@@ -247,12 +247,13 @@ int ASGST_NextFrame(ASGST_Iterator *iter, ASGST_Frame *frame) {
   } else {
     frame->type = ASGST_FRAME_NON_JAVA;
   }
-  if (iter->switchToThreadBased && !iter->walker.is_inlined()) {
+  if (iter->switchToThreadBased && !iter->walker.is_inlined() && iter->anchor.last_Java_pc() != nullptr) {
     iter->switchToThreadBased = false;
     iter->invalidSpAndFp = false;
     int8_t walkerBytes[sizeof(StackWalker)]; // backup the old walker
     StackWalker* walker = (StackWalker*) walkerBytes;
     *walker = iter->walker;
+    assert(iter->anchor.last_Java_pc() != nullptr, "non nulllll");
     initStackWalker(iter, iter->options,
       {iter->anchor.last_Java_sp(), iter->anchor.last_Java_fp(), iter->anchor.last_Java_pc()}, false, false);
     if ((Method*)frame->method == iter->walker.method() && frame->sp == nullptr) {
@@ -392,9 +393,14 @@ public:
     ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
     iterator->thread = JavaThread::current();
     IterRAII raii(iterator); // destroy iterator on exit
-    frame fExtended = frame(frame_anchor->last_Java_sp(), frame_anchor->last_Java_fp(), (address)element->pc());
+    assert(element != nullptr, "element is null");
+    if (element->pc() == nullptr && frame_anchor->last_Java_pc() == nullptr) {
+      return;
+    }
+    frame fExtended = frame(frame_anchor->last_Java_sp(), frame_anchor->last_Java_fp(),
+      element->pc() != nullptr ? (address)element->pc() : frame_anchor->last_Java_pc());
     initStackWalker(iterator, options, fExtended, false);
-    if (fExtended.pc() != JavaThread::current()->last_Java_pc()) {
+    if (element->pc() != nullptr && fExtended.pc() != frame_anchor->last_Java_pc() && frame_anchor->last_Java_pc() != nullptr) {
       iterator->switchToThreadBased = true;
       iterator->invalidSpAndFp = true;
       iterator->anchor = frame_anchor;
