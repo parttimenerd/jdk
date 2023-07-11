@@ -31,10 +31,12 @@
 #include "runtime/safepoint.hpp"
 #include "runtime/stackFrameStream.inline.hpp"
 #include "runtime/stackWatermark.inline.hpp"
+#include "runtime/stackWatermarkKind.hpp"
 #include "utilities/debug.hpp"
 #include "utilities/globalDefinitions.hpp"
 #include "utilities/macros.hpp"
 #include "utilities/preserveException.hpp"
+#include <cstdint>
 
 class StackWatermarkFramesIterator : public CHeapObj<mtThread> {
   JavaThread* _jt;
@@ -44,7 +46,6 @@ class StackWatermarkFramesIterator : public CHeapObj<mtThread> {
   StackWatermark& _owner;
   bool _is_done;
 
-  void set_watermark(uintptr_t sp);
   RegisterMap& register_map();
   frame& current();
   void next();
@@ -56,6 +57,7 @@ public:
   void process_one(void* context);
   void process_all(void* context);
   bool has_next() const;
+  void set_watermark(uintptr_t sp);
 };
 
 void StackWatermarkFramesIterator::set_watermark(uintptr_t sp) {
@@ -160,7 +162,7 @@ void StackWatermarkFramesIterator::next() {
   _is_done = _frame_stream.is_done();
 }
 
-StackWatermark::StackWatermark(JavaThread* jt, StackWatermarkKind kind, uint32_t epoch) :
+StackWatermark::StackWatermark(JavaThread* jt, StackWatermarkKind kind, uint32_t epoch, bool update_automatically) :
     _state(StackWatermarkState::create(epoch, true /* is_done */)),
     _watermark(0),
     _next(nullptr),
@@ -168,7 +170,8 @@ StackWatermark::StackWatermark(JavaThread* jt, StackWatermarkKind kind, uint32_t
     _iterator(nullptr),
     _lock(Mutex::stackwatermark, "StackWatermark_lock"),
     _kind(kind),
-    _linked_watermarks() {
+    _linked_watermarks(),
+    _update_automatically(update_automatically) {
 }
 
 StackWatermark::~StackWatermark() {
@@ -186,6 +189,9 @@ void StackWatermark::assert_is_frame_safe(const frame& f) {
 // that allows exposing a frame, and for that frame to directly access its caller frame
 // without going through any hooks.
 bool StackWatermark::is_frame_safe(const frame& f) {
+  if (!_update_automatically) {
+    return reinterpret_cast<uintptr_t>(f.sp()) < _iterator->caller();
+  }
   assert(_lock.owned_by_self(), "Must be locked");
   uint32_t state = Atomic::load(&_state);
   if (!processing_started(state)) {
@@ -240,6 +246,21 @@ void StackWatermark::update_watermark() {
     log_info(stackbarrier)("Finished stack processing iteration for tid %d",
                            _jt->osthread()->thread_id());
   }
+}
+
+void StackWatermark::update_watermark(uintptr_t sp) {
+  MutexLocker ml(&_lock, Mutex::_no_safepoint_check_flag);
+  if ((void*)sp != nullptr) {
+    Atomic::release_store(&_watermark, sp);
+    Atomic::release_store(&_state, StackWatermarkState::create(epoch_id(), false /* is_done */)); // release watermark w.r.t. epoch
+  } else {
+    Atomic::release_store(&_watermark, uintptr_t(0)); // Release stack data modifications w.r.t. watermark
+    Atomic::release_store(&_state, StackWatermarkState::create(epoch_id(), true /* is_done */)); // release watermark w.r.t. epoch
+  }
+  if (_iterator == nullptr) {
+    _iterator = new StackWatermarkFramesIterator(*this);
+  }
+  _iterator->set_watermark(sp);
 }
 
 void StackWatermark::process_one() {
@@ -319,6 +340,10 @@ void StackWatermark::on_safepoint() {
 }
 
 void StackWatermark::start_processing() {
+  if (!_update_automatically) {
+    trigger_before_unwind(frame{_jt->last_Java_sp(), _jt->frame_anchor()->last_Java_fp(), _jt->last_Java_pc()});
+    return;
+  }
   if (!processing_started_acquire()) {
     MutexLocker ml(&_lock, Mutex::_no_safepoint_check_flag);
     if (!processing_started()) {

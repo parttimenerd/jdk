@@ -35,11 +35,13 @@
 #include "jvmti.h"
 #include "util.hpp"
 #include <atomic>
+#include <thread>
+#include <iostream>
 
 #include "profile2.h"
 
 #ifdef DEBUG
-const int INTERVAL_NS = 200000; // 20us, 50 000 times per second
+const int INTERVAL_NS = 20000; // 20us, 50 000 times per second
                                // 1000 times more than in a normal profiling run
 #else
 const int INTERVAL_NS = 1000; // 1us, 1 0000 000 times per second
@@ -58,27 +60,59 @@ static void JNICALL OnClassPrepare(jvmtiEnv *jvmti, JNIEnv *jni_env,
 }
 
 thread_local ASGST_Queue *queue;
+thread_local JNIEnv* _jni_env;
+thread_local ASGST_FrameMark* frameMark = nullptr;
 
 static void asgstHandler(ASGST_Iterator* iterator, void* queueArg, void* arg) {
   if (ASGST_State(iterator) != 1) {
     return;
   }
-  printf("sample\n");
+  printf("framemark sp %p\n", ASGST_GetFrameMarkStackPointer(frameMark));
+  printf("sample ");
   ASGST_Frame frame;
   int count = 0;
+  void* not_top = nullptr;
   while (ASGST_NextFrame(iterator, &frame) == 1) {
-    printf("frame %d ", count);
+    /*printf("frame %d ", count);
     printMethod(stdout, frame.method);
-    printf("\n");
+    printf("\n");*/
     count++;
+    if (count > 1 && frame.sp != nullptr && not_top == nullptr) {
+      not_top = frame.sp;
+    }
   }
+  printf(" %d ", count);
+  void* wm = ASGST_GetFrameMarkStackPointer(frameMark);
+  if (not_top != nullptr && (wm == nullptr || wm > not_top)) {
+    printf("mark %d %p", count, not_top);
+    ASGST_MoveFrameMark(frameMark, not_top);
+  }
+  printf("\n");
 }
 
-thread_local JNIEnv* _jni_env;
-thread_local ASGST_FrameMark* frameMark = nullptr;
-
 void frameMarkHandler(ASGST_FrameMark* frameMark, ASGST_Iterator* iter, void* arg) {
-
+  std::cout << "Hit frame mark for thread " << std::this_thread::get_id() << std::endl;
+  ASGST_Frame frame;
+  void* first = nullptr;
+  void* second = nullptr;
+  while (ASGST_NextFrame(iter, &frame) == 1) {
+    printf("frame %p ", frame.sp);
+    if (first != nullptr && second == nullptr && frame.sp != nullptr) {
+      second = frame.sp;
+    }
+    if (first == nullptr && frame.sp != nullptr) {
+      first = frame.sp;
+    }
+    printf("   ");
+    printMethod(stdout, frame.method);
+    if (frame.type == ASGST_FRAME_JAVA_INLINED) {
+      printf(" (inline)");
+    }
+    printf("\n");
+  }
+  printf("Move %p\n", second);
+  printf("set to %p\n", second == nullptr ? first : second);
+  ASGST_MoveFrameMark(frameMark, second == nullptr ? first : second);
 }
 
 static void JNICALL OnThreadStart(jvmtiEnv *jvmti, JNIEnv *jni_env, jthread thread) {

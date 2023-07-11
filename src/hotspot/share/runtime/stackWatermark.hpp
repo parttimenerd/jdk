@@ -29,6 +29,7 @@
 #include "runtime/mutex.hpp"
 #include "runtime/stackWatermarkKind.hpp"
 #include "utilities/growableArray.hpp"
+#include <cstdint>
 
 class frame;
 class JavaThread;
@@ -88,17 +89,20 @@ class StackWatermark : public CHeapObj<mtThread> {
   friend class StackWatermarkFramesIterator;
 protected:
   volatile uint32_t _state;
-  volatile uintptr_t _watermark;
+  volatile uintptr_t _watermark; // SP of the watermark
   StackWatermark* _next;
   JavaThread* _jt;
   StackWatermarkFramesIterator* _iterator;
   Mutex _lock;
   StackWatermarkKind _kind;
   GrowableArrayCHeap<StackWatermark*, mtThread> _linked_watermarks;
+  bool _update_automatically;
 
   void process_one();
 
   void update_watermark();
+  // set the watermark, has to be the SP of the callee frame (??)
+  void update_watermark(uintptr_t sp);
   void yield_processing();
   static bool has_barrier(const frame& f);
   void ensure_safe(const frame& f);
@@ -122,8 +126,12 @@ protected:
   bool processing_started(uint32_t state) const;
   bool processing_completed(uint32_t state) const;
 
+  virtual void trigger_before_unwind(const frame& fr) {}
+
+  virtual void trigger_after_unwind(const frame& fr) {}
+
 public:
-  StackWatermark(JavaThread* jt, StackWatermarkKind kind, uint32_t epoch);
+  StackWatermark(JavaThread* jt, StackWatermarkKind kind, uint32_t epoch, bool update_automatically = true);
   virtual ~StackWatermark();
 
 

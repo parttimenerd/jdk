@@ -30,6 +30,7 @@
 #include "memory/allocation.hpp"
 #include "oops/oop.hpp"
 #include "oops/oopHandle.hpp"
+#include "runtime/atomic.hpp"
 #include "runtime/frame.hpp"
 #include "runtime/globals.hpp"
 #include "runtime/handshake.hpp"
@@ -37,6 +38,7 @@
 #include "runtime/lockStack.hpp"
 #include "runtime/park.hpp"
 #include "runtime/safepointMechanism.hpp"
+#include "runtime/stackWatermark.hpp"
 #include "runtime/stackWatermarkSet.hpp"
 #include "runtime/stackOverflow.hpp"
 #include "runtime/thread.hpp"
@@ -1192,6 +1194,21 @@ public:
   static bool has_oop_handles_to_release() {
     return _oop_handle_list != nullptr;
   }
+
+public:
+  // ASGST frame mark support
+
+  StackWatermark* asgst_watermark() { return Atomic::load(&_asgst_watermark); }
+
+  // this class handles the deletion of the last assigned mark
+  // returns true if the passed mark is used, or false if one already is present
+  bool set_asgst_watermark(StackWatermark* watermark) {
+    assert(_asgst_watermark == nullptr, "set_asgst_watermark called twice");
+    return Atomic::cmpxchg(&_asgst_watermark, (StackWatermark*)nullptr, watermark) == nullptr;
+  }
+private:
+
+  StackWatermark* volatile _asgst_watermark = nullptr;
 };
 
 inline JavaThread* JavaThread::current_or_null() {

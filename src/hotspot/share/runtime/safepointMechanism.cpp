@@ -136,10 +136,6 @@ void SafepointMechanism::process(JavaThread *thread, bool allow_suspend, bool ch
   DEBUG_ONLY(intptr_t* sp_before = thread->last_Java_sp();)
   // Read global poll and has_handshake after local poll
   OrderAccess::loadload();
-  if (thread->handshake_state()->shouldTrace) {
-    printf("Hi %s %f\n", thread->name(), os::elapsedTime());
-    thread->handshake_state()->shouldTrace = false;
-  }
   // local poll already checked, if used.
   bool need_rechecking;
   do {
