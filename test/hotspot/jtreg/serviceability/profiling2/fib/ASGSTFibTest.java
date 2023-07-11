@@ -22,7 +22,7 @@
  * questions.
  */
 
-package profiling.stress2;
+package profiling.fib;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -47,85 +47,33 @@ import jdk.test.whitebox.WhiteBox;
  * @test
  * @summary Verifies that AsyncGetStackTrace usage is stable in a high-frequency signal sampler
  * @library /test/jdk/lib/testlibrary /test/lib
- * @compile ASGSTStabilityTest.java
+ * @compile ASGSTFibTest.java MathParser.java
  * @key stress
  * @requires os.family == "linux" | os.family == "mac"
  * @requires os.arch=="x86" | os.arch=="i386" | os.arch=="amd64" | os.arch=="x86_64" | os.arch=="arm" | os.arch=="aarch64" | os.arch=="ppc64" | os.arch=="s390" | os.arch=="riscv64"
  * @build jdk.test.whitebox.WhiteBox
  * @run driver jdk.test.lib.helpers.ClassFileInstaller -jar WhiteBox.jar jdk.test.whitebox.WhiteBox
- * @run main/othervm/native/timeout=216000 -XX:LoopStripMiningIter=400000000 -XX:-UseCountedLoopSafepoints -agentlib:AsyncGetStackTraceSampler2 -XX:+UnlockDiagnosticVMOptions -XX:+DebugNonSafepoints -Xbootclasspath/a:/home/i560383/code/asgct2/jdk/build/linux-x86_64-server-fastdebug/support/test/lib/wb.jar -XX:+UnlockDiagnosticVMOptions -XX:+WhiteBoxAPI profiling.stress2.ASGSTStabilityTest
+ * @run main/othervm/native/timeout=216000 -XX:LoopStripMiningIter=400000000 -XX:-UseCountedLoopSafepoints -agentlib:AsyncGetStackTraceFibSampler -XX:+UnlockDiagnosticVMOptions -XX:+DebugNonSafepoints -Xbootclasspath/a:/home/i560383/code/asgct2/jdk/build/linux-x86_64-server-fastdebug/support/test/lib/wb.jar -XX:+UnlockDiagnosticVMOptions -XX:+WhiteBoxAPI profiling.fib.ASGSTFibTest
  */
 
-public class ASGSTStabilityTest {
+public class ASGSTFibTest {
 
-public static int add(int a, int b) {
-  int sum = a;
-  for (int i = 0; i < b; i++) {
-    sum = inc(sum);
-  }
-  return sum;
-}
-
-public static int inc(int num) {
-  return num + 1;
-}
-
-  public static int sub(int a, int b) {
-    int difference = a;
-    for (int i = 0; i < b; i++) {
-      difference = dec(difference);
-    }
-    return a - b;
-  }
-
-  public static int dec(int num) {
-    return num - 1;
-  }
-
-  public static boolean lower(int a, int b) {
-    return sub(a, b) < 0;
-  }
-
-
-  /**
-   * Returns the nth number in the Fibonacci sequence.
-   *
-   * A loop with two inlined methods
-   *
-   * @param n the index of the desired Fibonacci number
-   * @return the nth Fibonacci number
-   */
-  public static int fib(int n) {
+  static int recursiveFib(int n) {
     if (n <= 1) {
       return n;
     }
-    int fibNum = 1;
-    int prevFibNum = 1;
-    for (int i = 2; i < 2; i++) {
-      fibNum = add(fibNum, prevFibNum);
-      prevFibNum = sub(fibNum, prevFibNum);
-    }
-    return fibNum;
+    return recursiveFib(n - 1) + recursiveFib(n - 2);
   }
-
-  static double mul(double a, double b) {
-    return a * b * a / (1 + b) / (1 + a);
-  }
-
 
   static double comp() {
     double val = 1;
-    for (long i = 1; i < 1000L; i++) {
-      val = mul(val, i);
+    for (long i = 1; i < 100L; i++) {
+      val *= recursiveFib(20);
     }
     return val;
   }
 
   public static void main(String[] args) throws Exception {
-    double x = 0;
-    for (int i = 0; i < 10000; i++) {
-      x += comp();
-    }
-    System.out.println(x);
+    MathParser.run(100, 200, 100);
   }
 }

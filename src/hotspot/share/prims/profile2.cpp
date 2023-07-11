@@ -23,16 +23,23 @@
  */
 
 #include "jni.h"
+#include "memory/allocation.hpp"
 #include "memory/resourceArea.hpp"
+#include "oops/method.hpp"
 #include "precompiled.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <mutex>
 #include "prims/jvmtiEnvBase.hpp"
 #include "prims/stackWalker.hpp"
 #include "prims/jvmtiExport.hpp"
 #include "profile2.h"
+#include "runtime/atomic.hpp"
+#include "runtime/frame.hpp"
+#include "runtime/handshake.hpp"
 #include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/javaFrameAnchor.hpp"
 #include "runtime/javaThread.hpp"
@@ -40,6 +47,8 @@
 #include "runtime/os.hpp"
 #include "runtime/safefetch.hpp"
 #include "runtime/safepointMechanism.hpp"
+#include "runtime/stackWatermark.hpp"
+#include "runtime/stackWatermarkKind.hpp"
 #include "utilities/globalDefinitions.hpp"
 #include "code/compiledMethod.hpp"
 
@@ -55,6 +64,14 @@ struct _ASGST_Iterator {
   int options = options;
   bool invalidSpAndFp = false;
   bool switchToThreadBased = false;
+
+  void reset() {
+    thread = nullptr;
+    anchor = JavaFrameAnchor();
+    options = 0;
+    invalidSpAndFp = false;
+    switchToThreadBased = false;
+  }
 };
 
 static int initStackWalker(_ASGST_Iterator *iterator, int options, frame frame, bool allow_thread_last_frame_use = true, bool set_async = true) {
@@ -129,6 +146,7 @@ static int ASGST_Check(JavaThread** thread) {
   return ASGST_JAVA_TRACE;
 }
 
+// @return error or kind
 int ASGST_CreateIter(_ASGST_Iterator* iterator, void* ucontext, int32_t options) {
 
   bool include_non_java_frames = (options & ASGST_INCLUDE_NON_JAVA_FRAMES) != 0;
@@ -239,7 +257,6 @@ int ASGST_NextFrame(ASGST_Iterator *iter, ASGST_Frame *frame) {
     frame->comp_level = iter->walker.compilation_level(),
     frame->bci = iter->walker.bci();
   }
-
   if (iter->walker.is_bytecode_based_frame()) {
     frame->type = iter->walker.is_inlined() ? ASGST_FRAME_JAVA_INLINED : ASGST_FRAME_JAVA;
   } else if (iter->walker.is_native_frame()) {
@@ -305,25 +322,27 @@ public:
 int ASGST_RunWithIterator(void* ucontext, int options, void (*fun)(ASGST_Iterator*, void*), void* argument) {
   int8_t iter[sizeof(ASGST_Iterator)]; // no need for default constructor
   ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
+  iterator->reset();
   IterRAII raii(iterator); // destroy iterator on exit
   int ret = ASGST_CreateIter(iterator, ucontext, options);
   if (ret <= 0) {
     return ret;
   }
   fun(iterator, argument);
-  return 1;
+  return ret;
 }
 
 int ASGST_RunWithIteratorFromFrame(void* sp, void* fp, void* pc, int options, void (*fun)(ASGST_Iterator*, void*), void* argument) {
   int8_t iter[sizeof(ASGST_Iterator)]; // no need for default constructor
   ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
+  iterator->reset();
   IterRAII raii(iterator); // destroy iterator on exit
   int ret = ASGST_CreateIterFromFrame(iterator, sp, fp, pc, options);
   if (ret <= 0) {
     return ret;
   }
   fun(iterator, argument);
-  return 1;
+  return ret;
 }
 
 // state or -1
@@ -389,8 +408,8 @@ public:
   ASGSTQueueElementHandlerImpl(int options, ASGST_Handler fun, void* queue_arg) : options(options), fun(fun), queue_arg(queue_arg) {}
   void operator()(ASGSTQueueElement* element, JavaFrameAnchor* frame_anchor) override {
     int8_t iter[sizeof(ASGST_Iterator)]; // no need for default constructor
-
     ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
+    iterator->reset();
     iterator->thread = JavaThread::current();
     IterRAII raii(iterator); // destroy iterator on exit
     assert(element != nullptr, "element is null");
@@ -427,6 +446,45 @@ bool ASGST_DeregisterQueue(JNIEnv* env, ASGST_Queue* queue) {
 }
 
 
+class ASGSTQueueOnSafepointHandlerImpl : public ASGSTQueueOnSafepointHandler {
+  int options;
+  ASGST_OnQueueSafepointHandler fun;
+  void* on_queue_arg;
+public:
+  ASGSTQueueOnSafepointHandlerImpl(int options, ASGST_OnQueueSafepointHandler fun, void* on_queue_arg) : options(options), fun(fun), on_queue_arg(on_queue_arg) {}
+  void operator()(ASGSTQueue* queue, JavaFrameAnchor* frame_anchor) override {
+    int8_t iter[sizeof(ASGST_Iterator)]; // no need for default constructor
+    ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
+    iterator->reset();
+    iterator->thread = JavaThread::current();
+    IterRAII raii(iterator); // destroy iterator on exit
+    if (frame_anchor->last_Java_pc() == nullptr) {
+      return;
+    }
+    frame f = frame(frame_anchor->last_Java_sp(), frame_anchor->last_Java_fp(), frame_anchor->last_Java_pc());
+    initStackWalker(iterator, options, f, false);
+    fun((ASGST_Queue*)queue, iterator, on_queue_arg);
+  }
+};
+
+void ASGST_SetOnQueueProcessingStart(ASGST_Queue* queue, int options, ASGST_OnQueueSafepointHandler before, void* arg) {
+  ASGSTQueue* q = (ASGSTQueue*)queue;
+  if (before == nullptr) {
+    q->set_before(nullptr);
+  } else {
+    q->set_before(new ASGSTQueueOnSafepointHandlerImpl(options, before, arg));
+  }
+}
+
+void ASGST_SetOnQueueProcessingEnd(ASGST_Queue* queue, int options, ASGST_OnQueueSafepointHandler after, void* arg) {
+  ASGSTQueue* q = (ASGSTQueue*)queue;
+  if (after == nullptr) {
+    q->set_after(nullptr);
+  } else {
+    q->set_after(new ASGSTQueueOnSafepointHandlerImpl(options, after, arg));
+  }
+}
+
 struct EnqueueFindFirstJavaFrameStruct {
   int kindOrError; // 1, no error, 2 no Java frame, < 0 error
   void* fp;
@@ -454,8 +512,6 @@ int ASGST_Enqueue(ASGST_Queue* queue, void* ucontext, void* argument) {
   if (q->is_full()) {
     return ASGST_ENQUEUE_FULL_QUEUE;
   }
-  assert(q->in_current_thread(), "ASGST_Enqueue called with queue belonging to another thread");
-  int8_t iter[sizeof(ASGST_Iterator)]; // no need for default constructor
   EnqueueFindFirstJavaFrameStruct runArgument;
   int kind = ASGST_RunWithIterator(ucontext, ASGST_END_ON_FIRST_JAVA_FRAME, &enqueueFindFirstJavaFrame, &runArgument);
   if (kind != ASGST_JAVA_TRACE || runArgument.kindOrError != ASGST_JAVA_TRACE) {
@@ -463,6 +519,10 @@ int ASGST_Enqueue(ASGST_Queue* queue, void* ucontext, void* argument) {
   }
   bool worked = runArgument.thread->handshake_state()->asgst_enqueue(q, {runArgument.pc, runArgument.pc});
   return worked ? (int)ASGST_JAVA_TRACE : (int)ASGST_ENQUEUE_FULL_QUEUE;
+}
+
+int ASGST_QueueSize(ASGST_Queue* queue) {
+  return ((ASGSTQueue*)queue)->length();
 }
 
 jmethodID ASGST_MethodToJMethodID(ASGST_Method method) {
@@ -538,4 +598,181 @@ public:
 
 void ASGST_RegisterClassUnloadHandler(ASGST_ClassUnloadHandler handler) {
   InstanceKlass::add_deallocation_handler(new KlassDeallocationHandlerImpl(handler));
+}
+
+class ASGSTFrameMark : public CHeapObj<mtServiceability> {
+  JavaThread* _thread = nullptr;
+  ASGST_FrameMarkHandler _handler;
+  int _options;
+  void* _argument;
+  std::atomic<void*> _sp;
+  ASGSTFrameMark* _next = nullptr;
+public:
+  ASGSTFrameMark(JavaThread* thread, ASGST_FrameMarkHandler handler, int options, void* argument, void* sp):
+    _thread(thread),_handler(handler), _options(options), _argument(argument), _sp(sp) {}
+
+  void call(ASGST_Iterator* iterator) {
+    _handler((ASGST_FrameMark*)this, iterator, _argument);
+  }
+
+  void call(frame fr) {
+    int8_t iter[sizeof(ASGST_Iterator)]; // no need for default constructor
+    ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
+    iterator->reset();
+    IterRAII raii(iterator); // destroy iterator on exit
+    int ret = ASGST_CreateIterFromFrame(iterator, fr.sp(), fr.fp(), fr.pc(), _options);
+    assert(ret == 1, "Expect Java trace");
+    call(iterator);
+  }
+
+  ASGSTFrameMark* next() const { return _next; }
+
+  void set_next(ASGSTFrameMark* next) { _next = next; }
+
+  bool applicable(void* sp) const { return this->_sp != nullptr && this->_sp <= sp; }
+
+  void* sp() const { return _sp; }
+
+  void update(void* sp) {
+    _sp = sp;
+  }
+  JavaThread* thread() const { return _thread; }
+};
+
+// Watermark for ASGST, handling multiple ASGST frame marks
+class ASGSTStackWatermark : public StackWatermark {
+
+  std::recursive_mutex _mutex;
+  ASGSTFrameMark* _mark_list = nullptr;
+
+  // helper methods
+
+  // find smallest sp and set it
+  void recompute_and_set_watermark() {
+    ASGSTFrameMark *current = _mark_list;
+    void* smallest = nullptr;
+    bool set = false;
+    while (current != nullptr) {
+      if ((!set || current->sp() < smallest) && current->sp() != nullptr) {
+        // ignore nulls as they disable
+        smallest = current->sp();
+        set = true;
+      }
+      current = current->next();
+    }
+    void* sp = set ? smallest : nullptr;
+    if (sp != (void*)watermark()) {
+      update_watermark((uintptr_t)sp);
+    }
+  }
+
+  bool contains(ASGSTFrameMark* mark) {
+    ASGSTFrameMark* current = _mark_list;
+    while (current != nullptr) {
+      if (current == mark) {
+        return true;
+      }
+      current = current->next();
+    }
+    return false;
+  }
+
+  // deletes frame mark and update watermark if necessary
+  void remove_directly(ASGSTFrameMark* mark) {
+    // remove mark from list
+    ASGSTFrameMark* current = _mark_list;
+    while (current != nullptr) {
+      if (current == mark) {
+        current->set_next(mark->next());
+        break;
+      }
+      current = current->next();
+    }
+    delete mark;
+    recompute_and_set_watermark();
+  }
+
+  // implementation of StackWatermark methods
+
+  virtual uint32_t epoch_id() const { return 0; }
+
+  virtual bool process_on_iteration() { return false; }
+
+  virtual void process(const frame& fr, RegisterMap& register_map, void* context) {
+    printf("wm::process for sp %p\n", fr.sp());
+  }
+
+  virtual void trigger_before_unwind(const frame& fr) {
+    std::lock_guard<std::recursive_mutex> lock(_mutex);
+    ASGSTFrameMark* current = _mark_list;
+    while (current != nullptr) {
+      if (current->applicable(fr.sp())) {
+        current->call(fr);
+      }
+      current = current->next();
+    }
+  }
+
+public:
+
+  ASGSTStackWatermark(JavaThread* jt): StackWatermark(jt, StackWatermarkKind::asgst, 0, false) {
+  }
+
+  void add(ASGSTFrameMark* mark) {
+    std::lock_guard<std::recursive_mutex> lock(_mutex);
+    mark->set_next(_mark_list);
+    _mark_list = mark;
+    recompute_and_set_watermark();
+  }
+
+  // update of frame mark and update watermark if necessary
+  void update(ASGSTFrameMark *mark, void* sp) {
+    std::lock_guard<std::recursive_mutex> lock(_mutex);
+    assert(contains(mark), "mark does not exist");
+    mark->update(sp);
+    recompute_and_set_watermark();
+  }
+
+  void remove(ASGSTFrameMark* mark) {
+    std::lock_guard<std::recursive_mutex> lock(_mutex);
+    assert(contains(mark), "mark does not exist");
+    remove_directly(mark);
+  }
+};
+
+// init if needed, signal safe
+ASGSTStackWatermark* initWatermark(JavaThread* current = nullptr) {
+  JavaThread* const jt = current == nullptr ? JavaThread::current_or_null() : current;
+  assert(jt != nullptr, "Thread is null");
+  if (jt->asgst_watermark() == nullptr) {
+    ASGSTStackWatermark* watermark = new ASGSTStackWatermark(jt);
+    if (!jt->set_asgst_watermark(watermark)) {
+      // a watermark has been added between
+      // the call to asgst_watermark and the call to set_asgst_watermark
+      delete watermark;
+    }
+    StackWatermarkSet::add_watermark(jt, jt->asgst_watermark());
+  }
+  return (ASGSTStackWatermark*)jt->asgst_watermark();
+}
+
+ASGST_FrameMark* ASGST_RegisterFrameMark(JNIEnv* env, ASGST_FrameMarkHandler handler, int options, void* arg) {
+  JavaThread* thread = env == nullptr ? JavaThread::current_or_null() : JavaThread::thread_from_jni_environment(env);
+  assert(thread != nullptr, "Thread is null");
+  ASGSTFrameMark* mark = new ASGSTFrameMark(thread, handler, options, arg, nullptr);
+  auto wm = initWatermark(thread);
+  wm->add(mark);
+  return (ASGST_FrameMark*)mark;
+}
+
+void ASGST_MoveFrameMark(ASGST_FrameMark* mark, void* sp) {
+  initWatermark()->update((ASGSTFrameMark*)mark, sp);
+}
+
+void* ASGST_GetFrameMarkStackPointer(ASGST_FrameMark* mark) {
+  return ((ASGSTFrameMark*)mark)->sp();
+}
+
+void ASGST_RemoveFrameMark(ASGST_FrameMark* mark) {
+  initWatermark(((ASGSTFrameMark*)mark)->thread())->remove((ASGSTFrameMark*)mark);
 }

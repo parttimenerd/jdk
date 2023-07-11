@@ -33,6 +33,7 @@
 
 #include "jni.h"
 #include "jni_md.h"
+#include "profile2.h"
 
 struct _ASGST_Method;
 typedef struct _ASGST_Method* ASGST_Method;
@@ -40,12 +41,13 @@ typedef struct _ASGST_Method* ASGST_Method;
 struct _ASGST_Class;
 typedef struct _ASGST_Class* ASGST_Class;
 
+// implementations don't have to implement all methods,
+// only the iterator related and those that match their capabilities
 enum ASGST_Capabilities {
-  ASGST_REGISTER_QUEUE = 1,
-  ASGST_MARK_FRAME = 2
+  ASGST_REGISTER_QUEUE = 1, // everything safepoint queue related
+  ASGST_MARK_FRAME     = 2  // frame marking related
 };
 
-int ASGST_Capabilities();
 struct _ASGST_Iterator;
 typedef struct _ASGST_Iterator ASGST_Iterator;
 
@@ -57,13 +59,13 @@ enum ASGST_FrameTypeId {
 };
 
 typedef struct {
-  uint8_t type;            // frame type
-  int comp_level;      // compilation level, 0 is interpreted, -1 is undefined, > 1 is JIT compiled
-  int bci;            // -1 if the bci is not available (like in native frames)
-  ASGST_Method method;    // method or nullptr if not available
-  void *pc;          // current program counter inside this frame
-  void *sp;          // current stack pointer inside this frame
-  void *fp;          // current frame pointer inside this frame
+  uint8_t type;         // frame type
+  int comp_level;       // compilation level, 0 is interpreted, -1 is undefined, > 1 is JIT compiled
+  int bci;              // -1 if the bci is not available (like in native frames)
+  ASGST_Method method;  // method or nullptr if not available
+  void *pc;             // current program counter inside this frame
+  void *sp;             // current stack pointer inside this frame, might be null (for top inlined frames)
+  void *fp;             // current frame pointer inside this frame, might be null (for top inlined frames)
 } ASGST_Frame;
 
 enum ASGST_Options {
@@ -73,8 +75,11 @@ enum ASGST_Options {
   ASGST_END_ON_FIRST_JAVA_FRAME = 2,
 };
 
+// There are different kinds of traces depending
+// on the purpose of the currently running code
+// in the walked thread, all above 1 are implementation specific
 enum ASGST_TRACE_KIND {
-  ASGST_JAVA_TRACE = 1,
+  ASGST_JAVA_TRACE     = 1,
   ASGST_NON_JAVA_TRACE = 2
 };
 
@@ -84,57 +89,64 @@ enum ASGST_Error {
   ASGST_THREAD_EXIT        = -2, // dying thread
   ASGST_UNSAFE_STATE       = -3, // thread is in unsafe state
   ASGST_NO_CLASS_LOAD      = -4, // class not loaded
-  ASGST_NO_TOP_JAVA_FRAME  = -5,
-  ASGST_ENQUEUE_NO_QUEUE   = -6,
-  ASGST_ENQUEUE_FULL_QUEUE = -7,
+  ASGST_NO_TOP_JAVA_FRAME  = -5, // no top java frame
+  ASGST_ENQUEUE_NO_QUEUE   = -6, // no queue registered
+  ASGST_ENQUEUE_FULL_QUEUE = -7, // safepoint queue is full
+  // everything lower is implementation specific
 };
 
-// Why not ASGST_CreateIterator? Because we then would have to
-// - allocate memory for the iterator at the caller, exposing the size of the iterator
-// - free the iterator at the caller, making the API more cumbersome to use
+// Note: Safepoint == Thread Local Handshake
+
 extern "C" {
+
+// returns the supported capabilities
+JNIEXPORT
+int ASGST_Capabilities();
+
+// Create an iterator and pass it to fun alongside the passed argument.
+// @return error or kind
+//
+// Signal safe, has to be called on thread that belongs to the frame.
 JNIEXPORT
 int ASGST_RunWithIterator(void* ucontext, int32_t options, void (*fun)(ASGST_Iterator*, void*), void* argument);
 
+// Similar to RunWithIterator, but starting from a frame (sp, fp, pc) instead of a ucontext.
+//
+// Signal safe, has to be called on thread that belongs to the frame.
+JNIEXPORT
 int ASGST_RunWithIteratorFromFrame(void* sp, void* fp, void* pc, int options, void (*fun)(ASGST_Iterator*, void*), void* argument);
 
-// returns 1 if successful, else error code
+// Obtains the next frame from the iterator
+// @returns 1 if successful, else error code
+//
+// Signal safe, has to be called on thread that belongs to the frame.
 JNIEXPORT
 int ASGST_NextFrame(ASGST_Iterator* iter, ASGST_Frame* frame);
 
-// returns error code or 1 if no error
+// State of the iterator, corresponding to the next frame
+// @returns error code or 1 if no error
+//
+// Signal safe, has to be called on thread that belongs to the frame.
 JNIEXPORT
 int ASGST_State(ASGST_Iterator* iter);
 
+// Returns state of the current thread, which is a subset
+// of the JVMTI thread state.
+// no JVMTI_THREAD_STATE_INTERRUPTED, limited JVMTI_THREAD_STATE_SUSPENDED.
+//
+// Signal safe, has to be called on thread that belongs to the frame.
 JNIEXPORT
 int ASGST_ThreadState();
-
-struct _ASGST_Queue;
-typedef struct _ASGST_Queue ASGST_Queue;
-typedef void (*ASGST_Handler)(ASGST_Iterator*, void*, void*);
-
-// Register a queue to the current thread (or the one passed via env)
-// @param fun handler called at safe point with iterators, the argument for RegisterQueue and the argument passed via Enqueue
-// not signal safe
-JNIEXPORT
-ASGST_Queue* ASGST_RegisterQueue(JNIEnv* env, int size, int options, ASGST_Handler fun, void* argument);
-
-JNIEXPORT
-bool ASGST_DeregisterQueue(JNIEnv* env, ASGST_Queue* queue);
-
-// Enqueue the processing of the current stack and return the kind (or error if <= 0)
-// you have to deal with the top C and native frames yourself (but there is an option for this)
-// @param argument argument passed through to the ASGST_Handler for the queue as the third argument
-// signal safe, but has to be called with a queue that belongs to the current thread
-JNIEXPORT
-int ASGST_Enqueue(ASGST_Queue* queue, void* ucontext, void* argument);
-
 
 // Returns the jmethodID for a given ASGST_Method, null if the method has
 // no corresponding jmethodID.
 JNIEXPORT
 jmethodID ASGST_MethodToJMethodID(ASGST_Method method);
 
+// Method info
+// You have to preallocate the strings yourself and store the lengths
+// in the appropriate fields, the lengths are set to the respective
+// string lengths by the VM, be aware that strings are null-terminated
 typedef struct {
   ASGST_Class klass;
   char* method_name;
@@ -146,18 +158,7 @@ typedef struct {
   jint modifiers;
 } ASGST_MethodInfo;
 
-#define ASGST_METHOD_INFO(variable_name, method_name_length, signature_length, generic_signature_length) \
-  char variable_name##__method_name[method_name_length];\
-  char variable_name##__signature[signature_length];\
-  char variable_name##__generic_signature[generic_signature_length];\
-  ASGST_MethodInfo variable_name;\
-  variable_name.method_name = (char*)variable_name##__method_name;\
-  variable_name.method_name_length = method_name_length;\
-  variable_name.signature = (char*)variable_name##__signature;\
-  variable_name.signature_length = signature_length;\
-  variable_name.generic_signature = (char*)variable_name##__generic_signature;\
-  variable_name.generic_signature_length = generic_signature_length;
-
+// Class info, like the method info
 typedef struct {
   char* class_name;
   jint class_name_length;
@@ -166,35 +167,151 @@ typedef struct {
   jint modifiers;
 } ASGST_ClassInfo;
 
-#define ASGST_CLASS_INFO(variable_name, class_name_length, generic_class_name_length) \
-  char variable_name##__class_name[class_name_length];\
-  char variable_name##__generic_class_name[generic_class_name_length];\
-  ASGST_ClassInfo variable_name;\
-  variable_name.class_name = (char*)variable_name##__class_name;\
-  variable_name.class_name_length = class_name_length;\
-  variable_name.generic_class_name = (char*)variable_name##__generic_class_name;\
-  variable_name.generic_class_name_length = generic_class_name_length;
-
 // Obtain the method information for a given ASGST_Method and store it in the pre-allocated info struct.
-// It stores the actual length in the _len fields and at a null terminated string in the string fields.
+// It stores the actual length in the _len fields and at a null-terminated string in the string fields.
 // Safe to call from signal handlers.
 // A field is set to null if the information is not available.
+//
+// Signal safe
 JNIEXPORT
 void ASGST_GetMethodInfo(ASGST_Method method, ASGST_MethodInfo* info);
 
+// Similar to GetMethodInfo
+//
+// Signal safe
 JNIEXPORT
 void ASGST_GetClassInfo(ASGST_Class klass, ASGST_ClassInfo* info);
 
+// Returns the class that contains a given method
+//
+// Signal safe
 JNIEXPORT
 ASGST_Class ASGST_GetClass(ASGST_Method method);
 
+// Returns the JVMTI class id for a given class,
+// used to obtain more information on classes via JVMTI
+//
+// Not signal and safe point safe
 JNIEXPORT
 jclass ASGST_ClassToJClass(ASGST_Class klass);
 
+// handler called with the unloaded class and the methods that were unloaded (pointer + count)
 typedef void (*ASGST_ClassUnloadHandler)(ASGST_Class klass, ASGST_Method *methods, size_t count);
 
+//
+typedef struct _ASGST_FrameMark ASGST_FrameMark;
+
+// Register a handler to be called when a class is unloaded
+//
 // not signal and safe point safe
 JNIEXPORT
 void ASGST_RegisterClassUnloadHandler(ASGST_ClassUnloadHandler handler);
+
+
+// The following functions are only callable if ASGST_REGISTER_QUEUE is a capability
+
+struct _ASGST_Queue;
+typedef struct _ASGST_Queue ASGST_Queue;
+// handler called at asafe point with iterator, queue argument, enqueue argument
+typedef void (*ASGST_Handler)(ASGST_Iterator*, void*, void*);
+
+// Register a queue to the current thread (or the one passed via env)
+// @param fun handler called at a safe point with iterators,
+// the argument for RegisterQueue and the argument passed via Enqueue
+//
+// The handler can only call safe point safe methods, which excludes all
+// JVMTI methods, but the handler is not called inside a signal handler,
+// so allocating or obtaining locks is possible
+//
+// Not signal safe, requires ASGST_REGISTER_QUEUE capability
+JNIEXPORT
+ASGST_Queue* ASGST_RegisterQueue(JNIEnv* env, int size, int options, ASGST_Handler fun, void* argument);
+
+// Remove queue, return true if successful
+//
+// Not signal safe, requires ASGST_REGISTER_QUEUE capability
+JNIEXPORT
+bool ASGST_DeregisterQueue(JNIEnv* env, ASGST_Queue* queue);
+
+// handler that is called at a safe point with enqueued samples before and after processing
+// called with the queue, a frame iterator, and the OnQueue argument
+typedef void (*ASGST_OnQueueSafepointHandler)(ASGST_Queue*, ASGST_Iterator*, void*);
+
+// Set the handler that is called at a safe point before the elements in the (non-empty) queue
+// are processed.
+//
+// @param before handler or null to remove the handler
+//
+// Not signal safe, requires ASGST_REGISTER_QUEUE capability
+JNIEXPORT
+void ASGST_SetOnQueueProcessingStart(ASGST_Queue* queue, int options, ASGST_OnQueueSafepointHandler before, void* arg);
+
+// Set the handler that is called at a safe point after the elements in the (non-empty) queue
+// are processed.
+//
+// @param after handler or null to remove the handler
+//
+// Not signal safe, requires ASGST_REGISTER_QUEUE capability
+JNIEXPORT
+void ASGST_SetOnQueueProcessingEnd(ASGST_Queue* queue, int options, ASGST_OnQueueSafepointHandler end, void* arg);
+
+// Enqueue the processing of the current stack and return the kind (or error if <= 0)
+// you have to deal with the top C and native frames yourself (but there is an option for this)
+// @param argument argument passed through to the ASGST_Handler for the queue as the third argument
+// @return kind or error, returns ASGST_ENQUEUE_FULL_QUEUE if queue is full
+// or ASGST_ENQUEUE_NO_QUEUE if queue is null
+//
+// Signal safe, but has to be called with a queue that belongs to the current thread, or the thread
+// has to be stopped during the duration of this call
+// Requires ASGST_REGISTER_QUEUE capability
+JNIEXPORT
+int ASGST_Enqueue(ASGST_Queue* queue, void* ucontext, void* argument);
+
+// Returns the number of elements in the queue
+JNIEXPORT
+int ASGST_QueueSize(ASGST_Queue* queue);
+
+// the following requires ASGST_MARK_FRAME capabilities
+// and most methods are not signal safe
+
+struct _ASGST_FrameMark;
+typedef struct _ASGST_FrameMark ASGST_FrameMark;
+
+// handler when a frame mark is being hit, gets passed the mark, an iterator,
+// and the mark argument and
+// returns the new mark
+typedef void (*ASGST_FrameMarkHandler)(ASGST_FrameMark*, ASGST_Iterator*, void*);
+
+
+// Register a frame mark
+//
+// Be aware that it will never be triggered, as the mark points to no frame
+// (the stack pointer of the mark is null), use ASGST_MoveFrameMark to move
+// the mark. This is typically done in the safe point handler.
+//
+// @param env thread or null for the current thread
+// @param handler called whenever the stack pointer of the unwound frame
+//                is larger (older) than the frame mark
+// @param options options for the frame iterator
+//
+// Requires ASGST_MARK_FRAME capability, not signal safe
+JNIEXPORT
+ASGST_FrameMark* ASGST_RegisterFrameMark(JNIEnv* env, ASGST_FrameMarkHandler handler, int options, void* arg);
+
+// Move the frame mark to a new stack pointer
+// Requires ASGST_MARK_FRAME capability, not signal safe
+JNIEXPORT
+void ASGST_MoveFrameMark(ASGST_FrameMark* mark, void* new_sp);
+
+// Returns the stack pointer of the mark
+// Requires ASGST_MARK_FRAME capability, signal safe
+JNIEXPORT
+void* ASGST_GetFrameMarkStackPointer(ASGST_FrameMark* mark);
+
+// Remove the frame mark
+// @param mark mark to remove, has to belong to the specified thread
+// Requires ASGST_MARK_FRAME capability, not signal safe
+JNIEXPORT
+void ASGST_RemoveFrameMark(ASGST_FrameMark* mark);
 }
 #endif // JVM_PROFILE2_H

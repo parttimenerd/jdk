@@ -28,11 +28,13 @@
 #include "memory/allStatic.hpp"
 #include "memory/allocation.hpp"
 #include "memory/iterator.hpp"
+#include "runtime/atomic.hpp"
 #include "runtime/flags/flagSetting.hpp"
 #include "runtime/javaFrameAnchor.hpp"
 #include "runtime/mutex.hpp"
 #include "runtime/orderAccess.hpp"
 #include "runtime/os.hpp"
+#include "runtime/stackWatermark.hpp"
 #include "utilities/filterQueue.hpp"
 #include "utilities/globalDefinitions.hpp"
 #include "utilities/linkedlist.hpp"
@@ -92,6 +94,8 @@ class Handshake : public AllStatic {
 
 class JvmtiRawMonitor;
 
+class ASGSTQueue;
+
 class ASGSTQueueElement {
   void* _pc;
   void* _argument;
@@ -108,6 +112,11 @@ class ASGSTQueueElementHandler : public CHeapObj<mtServiceability> {
   virtual void operator()(ASGSTQueueElement*, JavaFrameAnchor*) = 0;
 };
 
+class ASGSTQueueOnSafepointHandler : public CHeapObj<mtServiceability> {
+ public:
+  virtual void operator()(ASGSTQueue*, JavaFrameAnchor*) = 0;
+};
+
 class ASGSTQueue : public CHeapObj<mtServiceability> {
   int id;
   JavaThread* thread;
@@ -118,6 +127,10 @@ class ASGSTQueue : public CHeapObj<mtServiceability> {
   // push: tail increase
   int tail;
   ASGSTQueueElementHandler* handler;
+  ASGSTQueueOnSafepointHandler* before_handler = nullptr;
+  ASGSTQueueOnSafepointHandler* after_handler = nullptr;
+
+  std::mutex _handler_lock;
 
   ASGSTQueue* _next = nullptr;
 
@@ -125,11 +138,8 @@ public:
 
   // Constructor
   // @param handler pointer to the handler, deleted when the ASGSTQueue is destroyed
-  ASGSTQueue(int id, JavaThread* thread, size_t size, ASGSTQueueElementHandler* handler) :
-    id(id), thread(thread),
-    elements((ASGSTQueueElement*)os::malloc(sizeof(ASGSTQueueElement) * size, mtServiceability)),
-    size(size), head(0), tail(0), handler(handler) {
-  }
+  ASGSTQueue(int id, JavaThread *thread, size_t size,
+             ASGSTQueueElementHandler *handler);
 
   int max_size() const { return size; }
   int length() const { return (tail < head ? (tail + size) : tail) - head; }
@@ -146,11 +156,25 @@ public:
   ~ASGSTQueue() {
     delete handler;
     os::free(elements);
+    delete before_handler;
+    delete after_handler;
   }
 
   void handle(ASGSTQueueElement* element, JavaFrameAnchor* frame_anchor) {
     (*handler)(element, frame_anchor);
   }
+
+  // called directly before the handle method invocations at a safe-point
+  void before(JavaFrameAnchor *frame_anchor);
+
+  // called directly after the handle method invocations at a safe-point
+  void after(JavaFrameAnchor *frame_anchor);
+
+  // sets the before handler and deletes the previous handler if present
+  void set_before(ASGSTQueueOnSafepointHandler *handler);
+
+  // sets the after handler and deletes the previous handler if present
+  void set_after(ASGSTQueueOnSafepointHandler *handler);
 
   bool equals(const ASGSTQueue* other) const {
     return other != nullptr && id == other->id;
@@ -206,7 +230,6 @@ class HandshakeState {
   };
 
  public:
-   bool shouldTrace = false;
 
   HandshakeState(JavaThread* thread);
   ~HandshakeState();
@@ -247,6 +270,7 @@ class HandshakeState {
 
   int asgst_queue_size() const { return _asgst_queue_size; }
 
+
   // Support for asynchronous exceptions
  private:
   bool _async_exceptions_blocked;
@@ -271,6 +295,7 @@ class HandshakeState {
   ASGSTQueue* _asgst_queue_start = nullptr;
   std::mutex _asgst_queue_mutex;
   std::atomic<int> _asgst_queue_size = {0};
+  StackWatermark* volatile _asgst_watermark = 0;
 
   void process_asgst_queue(JavaFrameAnchor* frame_anchor);
 

@@ -95,6 +95,11 @@ inline void StackWatermark::before_unwind() {
     f = f.sender(&map);
   }
 
+  if (!_update_automatically) {
+    trigger_before_unwind(f);
+    return;
+  }
+
   assert_is_frame_safe(f);
   assert(!f.is_runtime_frame(), "should have skipped all runtime stubs");
 
@@ -116,6 +121,11 @@ inline void StackWatermark::after_unwind() {
                     RegisterMap::ProcessFrames::skip,
                     RegisterMap::WalkContinuation::skip);
     f = f.sender(&map);
+  }
+
+  if (!_update_automatically) {
+    trigger_after_unwind(f);
+    return;
   }
 
   assert(!f.is_runtime_frame(), "should have skipped all runtime stubs");

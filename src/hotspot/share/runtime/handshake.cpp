@@ -773,6 +773,74 @@ public:
   bool did_suspend() { return _did_suspend; }
 };
 
+ASGSTQueue::ASGSTQueue(int id, JavaThread *thread, size_t size,
+                       ASGSTQueueElementHandler *handler)
+    : id(id), thread(thread),
+      elements((ASGSTQueueElement *)os::malloc(sizeof(ASGSTQueueElement) * size,
+                                               mtServiceability)),
+      size(size), head(0), tail(0), handler(handler) {}
+
+void ASGSTQueue::before(JavaFrameAnchor *frame_anchor) {
+  std::lock_guard<std::mutex> lock(_handler_lock);
+  if (before_handler != nullptr) {
+    (*before_handler)(this, frame_anchor);
+  }
+}
+
+void ASGSTQueue::after(JavaFrameAnchor *frame_anchor) {
+  std::lock_guard<std::mutex> lock(_handler_lock);
+  if (after_handler != nullptr) {
+    (*after_handler)(this, frame_anchor);
+  }
+}
+
+void ASGSTQueue::set_before(ASGSTQueueOnSafepointHandler *handler) {
+  std::lock_guard<std::mutex> lock(_handler_lock);
+  if (before_handler != nullptr) {
+    delete before_handler;
+  }
+  before_handler = handler;
+}
+
+void ASGSTQueue::set_after(ASGSTQueueOnSafepointHandler *handler) {
+  std::lock_guard<std::mutex> lock(_handler_lock);
+  if (after_handler != nullptr) {
+    delete after_handler;
+  }
+  after_handler = handler;
+}
+
+bool ASGSTQueue::in_current_thread() {
+  return JavaThread::current_or_null_safe() == thread;
+}
+
+bool ASGSTQueue::push(ASGSTQueueElement element) {
+  if ((tail + 1) % size == head) {
+    return false;
+  }
+  elements[tail] = element;
+  tail = (tail + 1) % size;
+  return true;
+}
+
+ASGSTQueueElement *ASGSTQueue::pop() {
+  if (head == tail) {
+    return nullptr;
+  }
+  ASGSTQueueElement *element = &elements[head];
+  head = (head + 1) % size;
+  return element;
+}
+
+ASGSTQueue* HandshakeState::register_asgst_queue(JavaThread *thread, size_t size, ASGSTQueueElementHandler* handler) {
+  std::lock_guard<std::mutex> lock(_asgst_queue_mutex);
+  auto q = new ASGSTQueue(_current_asgst_queue_id, thread, size, handler);
+  q->set_next(_asgst_queue_start);
+  _asgst_queue_start = q;
+  _current_asgst_queue_id++;
+  return q;
+}
+
 bool HandshakeState::suspend() {
   JVMTI_ONLY(assert(!_handshakee->is_in_VTMS_transition(), "no suspend allowed in VTMS transition");)
   JavaThread* self = JavaThread::current();
@@ -832,37 +900,6 @@ void HandshakeState::handle_unsafe_access_error() {
   _handshakee->handle_async_exception(h_exception());
 }
 
-bool ASGSTQueue::in_current_thread() {
-  return JavaThread::current_or_null_safe() == thread;
-}
-
-bool ASGSTQueue::push(ASGSTQueueElement element) {
-  if ((tail + 1) % size == head) {
-    return false;
-  }
-  elements[tail] = element;
-  tail = (tail + 1) % size;
-  return true;
-}
-
-ASGSTQueueElement *ASGSTQueue::pop() {
-  if (head == tail) {
-    return nullptr;
-  }
-  ASGSTQueueElement *element = &elements[head];
-  head = (head + 1) % size;
-  return element;
-}
-
-ASGSTQueue* HandshakeState::register_asgst_queue(JavaThread *thread, size_t size, ASGSTQueueElementHandler* handler) {
-  std::lock_guard<std::mutex> lock(_asgst_queue_mutex);
-  auto q = new ASGSTQueue(_current_asgst_queue_id, thread, size, handler);
-  q->set_next(_asgst_queue_start);
-  _asgst_queue_start = q;
-  _current_asgst_queue_id++;
-  return q;
-}
-
 bool HandshakeState::remove_asgst_queue(ASGSTQueue* queue) {
   std::lock_guard<std::mutex> lock(_asgst_queue_mutex);
   if (queue->equals(_asgst_queue_start)) {
@@ -901,10 +938,15 @@ void HandshakeState::process_asgst_queue(JavaFrameAnchor* frame_anchor) {
   }
   std::lock_guard<std::mutex> lock(_asgst_queue_mutex);
   for (auto q = _asgst_queue_start; q; q = q->next()) {
+    if (q->length() == 0) {
+      continue;
+    }
+    q->before(frame_anchor);
     while (q->length() > 0) {
       ASGSTQueueElement* element = q->pop();
       q->handle(element, frame_anchor);
       _asgst_queue_size--;
     }
+    q->after(frame_anchor);
   }
 }
