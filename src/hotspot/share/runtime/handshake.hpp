@@ -112,13 +112,14 @@ public:
 
 class ASGSTQueueElementHandler : public CHeapObj<mtServiceability> {
  public:
-  //
   virtual void operator()(ASGSTQueueElement*, JavaFrameAnchor*) = 0;
+  virtual ~ASGSTQueueElementHandler() {}
 };
 
 class ASGSTQueueOnSafepointHandler : public CHeapObj<mtServiceability> {
  public:
   virtual void operator()(ASGSTQueue*, JavaFrameAnchor*) = 0;
+  virtual ~ASGSTQueueOnSafepointHandler() {}
 };
 
 class ASGSTQueue : public CHeapObj<mtServiceability> {

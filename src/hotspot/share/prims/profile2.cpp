@@ -234,8 +234,20 @@ int ASGST_CreateIterFromFrame(_ASGST_Iterator* iterator, void* sp, void* fp, voi
   return ret < 1 ? ret : ASGST_JAVA_TRACE;
 }
 
+void resetFrame(ASGST_Frame* frame) {
+  frame->pc = nullptr;
+  frame->sp = nullptr;
+  frame->fp = nullptr;
+  frame->bci = -1;
+  frame->method = nullptr;
+  frame->comp_level = -1;
+  frame->type = 0;
+}
+
 int ASGST_NextFrame(ASGST_Iterator *iter, ASGST_Frame *frame) {
+  resetFrame(frame); // just to be on the safe side
   int state = ASGST_State(iter);
+  frame->bci = -1;
   if (state <= 0) {
     frame->type = 0;
     return state;
@@ -541,10 +553,39 @@ void writeField(Symbol* symbol, char* char_field, jint* length_field) {
   }
 }
 
+void nullField(char* char_field, jint* length_field) {
+  if (*length_field > 0 && char_field != nullptr) {
+    *char_field = '\0';
+    *length_field = 0;
+  } else {
+    *length_field = 0;
+  }
+}
+
 void ASGST_GetMethodInfo(ASGST_Method method, ASGST_MethodInfo* info) {
   Method *m = (Method*)method;
-  InstanceKlass *klass = m->method_holder();
-  info->klass = (ASGST_Class)klass;
+  if (m == nullptr) {
+    nullField(info->method_name, &info->method_name_length);
+    nullField(info->signature, &info->signature_length);
+    nullField(info->generic_signature, &info->generic_signature_length);
+    info->modifiers = 0;
+    info->klass = nullptr;
+    return;
+  }
+  auto cm = m->constMethod();
+
+  if (!os::is_readable_pointer(cm)) {
+    nullField(info->method_name, &info->method_name_length);
+    nullField(info->signature, &info->signature_length);
+    nullField(info->generic_signature, &info->generic_signature_length);
+    info->modifiers = 0;
+    info->klass = nullptr;
+    return;
+  } else {
+    auto constants = cm->constants();
+    InstanceKlass *klass = constants->pool_holder();
+    info->klass = (ASGST_Class)klass;
+  }
   writeField(m->name(), info->method_name, &info->method_name_length);
   writeField(m->signature(), info->signature, &info->signature_length);
   writeField(m->generic_signature(), info->generic_signature, &info->generic_signature_length);
@@ -552,11 +593,9 @@ void ASGST_GetMethodInfo(ASGST_Method method, ASGST_MethodInfo* info) {
 }
 
 void ASGST_GetClassInfo(ASGST_Class klass, ASGST_ClassInfo *info) {
-  if (klass == nullptr) {
-    *info->class_name = '\0';
-    info->class_name_length = 0;
-    *info->generic_class_name = '\0';
-    info->generic_class_name_length = 0;
+  if (!os::is_readable_pointer(klass)) {
+    nullField(info->class_name, &info->class_name_length);
+    nullField(info->generic_class_name, &info->generic_class_name_length);
     info->modifiers = 0;
     return;
   }
