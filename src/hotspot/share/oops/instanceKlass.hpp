@@ -33,10 +33,7 @@
 #include "oops/instanceKlassFlags.hpp"
 #include "oops/instanceOop.hpp"
 #include "runtime/handles.hpp"
-<<<<<<< HEAD
 #include "runtime/javaThread.hpp"
-=======
->>>>>>> 2cb29629861 (Improve safe point based walking and add class unload handler)
 #include "utilities/accessFlags.hpp"
 #include "utilities/align.hpp"
 #include "utilities/growableArray.hpp"
