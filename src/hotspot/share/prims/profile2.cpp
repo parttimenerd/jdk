@@ -28,11 +28,9 @@
 #include "oops/method.hpp"
 #include "precompiled.hpp"
 
-#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <mutex>
 #include "prims/jvmtiEnvBase.hpp"
 #include "prims/stackWalker.hpp"
 #include "prims/jvmtiExport.hpp"
@@ -298,7 +296,7 @@ int ASGST_State(ASGST_Iterator *iter) {
   if (iter->walker.at_end()) {
     return ASGST_NO_FRAME;
   }
-  return std::min(iter->walker.state(), 1);
+  return MIN(iter->walker.state(), 1);
 }
 
 void ASGST_DestroyIter(ASGST_Iterator* iter) {

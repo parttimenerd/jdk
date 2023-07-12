@@ -257,10 +257,15 @@ void StackWatermark::update_watermark(uintptr_t sp) {
     Atomic::release_store(&_watermark, uintptr_t(0)); // Release stack data modifications w.r.t. watermark
     Atomic::release_store(&_state, StackWatermarkState::create(epoch_id(), true /* is_done */)); // release watermark w.r.t. epoch
   }
-  if (_iterator == nullptr) {
+  if (_iterator == nullptr || (void*)sp == nullptr) {
+    if (_iterator != nullptr) {
+      delete _iterator;
+    }
     _iterator = new StackWatermarkFramesIterator(*this);
   }
-  _iterator->set_watermark(sp);
+  if ((void*)sp != nullptr) {
+    _iterator->set_watermark(sp);
+  }
 }
 
 void StackWatermark::process_one() {
