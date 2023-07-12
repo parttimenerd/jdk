@@ -140,9 +140,6 @@ static int ASGST_Check(JavaThread** thread) {
   if ((*thread)->in_deopt_handler() || Universe::heap()->is_gc_active()) {
     return ASGST_NON_JAVA_TRACE;
   }
-  if (!JvmtiExport::should_post_class_load()) {
-    return ASGST_NO_CLASS_LOAD;
-  }
   return ASGST_JAVA_TRACE;
 }
 

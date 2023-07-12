@@ -88,10 +88,9 @@ enum ASGST_Error {
   ASGST_NO_THREAD          = -1, // thread is not here
   ASGST_THREAD_EXIT        = -2, // dying thread
   ASGST_UNSAFE_STATE       = -3, // thread is in unsafe state
-  ASGST_NO_CLASS_LOAD      = -4, // class not loaded
-  ASGST_NO_TOP_JAVA_FRAME  = -5, // no top java frame
-  ASGST_ENQUEUE_NO_QUEUE   = -6, // no queue registered
-  ASGST_ENQUEUE_FULL_QUEUE = -7, // safepoint queue is full
+  ASGST_NO_TOP_JAVA_FRAME  = -4, // no top java frame
+  ASGST_ENQUEUE_NO_QUEUE   = -5, // no queue registered
+  ASGST_ENQUEUE_FULL_QUEUE = -6, // safepoint queue is full
   // everything lower is implementation specific
 };
 
