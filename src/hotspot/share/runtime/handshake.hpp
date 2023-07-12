@@ -42,6 +42,10 @@
 #include <atomic>
 #include <functional>
 #include <mutex>
+#ifdef assert
+#undef assert
+#endif
+#define assert(p, ...) vmassert(p, __VA_ARGS__)
 
 class HandshakeOperation;
 class AsyncHandshakeOperation;
