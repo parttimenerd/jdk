@@ -52,6 +52,7 @@ ASGST_SetOnQueueProcessingStart
 ASGST_SetOnQueueProcessingEnd
 ASGST_Enqueue
 ASGST_QueueSize
+ASGST_GetQueueElement
 ASGST_RegisterFrameMark
 ASGST_MoveFrameMark
 ASGST_GetFrameMarkStackPointer

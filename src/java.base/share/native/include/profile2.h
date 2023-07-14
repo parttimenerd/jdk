@@ -41,6 +41,8 @@ typedef struct _ASGST_Method* ASGST_Method;
 struct _ASGST_Class;
 typedef struct _ASGST_Class* ASGST_Class;
 
+typedef struct _ASGST_FrameMark ASGST_FrameMark;
+
 // implementations don't have to implement all methods,
 // only the iterator related and those that match their capabilities
 enum ASGST_Capabilities {
@@ -195,17 +197,20 @@ JNIEXPORT
 jclass ASGST_ClassToJClass(ASGST_Class klass);
 
 // handler called with the unloaded class and the methods that were unloaded (pointer + count)
-typedef void (*ASGST_ClassUnloadHandler)(ASGST_Class klass, ASGST_Method *methods, size_t count);
-
-//
-typedef struct _ASGST_FrameMark ASGST_FrameMark;
+typedef void (*ASGST_ClassUnloadHandler)(ASGST_Class klass, ASGST_Method *methods, size_t count, void* arg);
 
 // Register a handler to be called when a class is unloaded
 //
 // not signal and safe point safe
 JNIEXPORT
-void ASGST_RegisterClassUnloadHandler(ASGST_ClassUnloadHandler handler);
+void ASGST_RegisterClassUnloadHandler(ASGST_ClassUnloadHandler handler, void* arg);
 
+// Deregister a handler to be called when a class is unloaded
+// @returns true if handler was present
+//
+// not signal and safe point safe
+JNIEXPORT
+bool ASGST_DeregisterClassUnloadHandler(ASGST_ClassUnloadHandler handler, void* arg);
 
 // The following functions are only callable if ASGST_REGISTER_QUEUE is a capability
 
@@ -254,7 +259,7 @@ void ASGST_SetOnQueueProcessingStart(ASGST_Queue* queue, int options, ASGST_OnQu
 JNIEXPORT
 void ASGST_SetOnQueueProcessingEnd(ASGST_Queue* queue, int options, ASGST_OnQueueSafepointHandler end, void* arg);
 
-// Enqueue the processing of the current stack and return the kind (or error if <= 0)
+// Enqueue the processing of the current stack at the end of the queue and return the kind (or error if <= 0)
 // you have to deal with the top C and native frames yourself (but there is an option for this)
 // @param argument argument passed through to the ASGST_Handler for the queue as the third argument
 // @return kind or error, returns ASGST_ENQUEUE_FULL_QUEUE if queue is full
@@ -267,8 +272,23 @@ JNIEXPORT
 int ASGST_Enqueue(ASGST_Queue* queue, void* ucontext, void* argument);
 
 // Returns the number of elements in the queue
+//
+// Signal safe
 JNIEXPORT
 int ASGST_QueueSize(ASGST_Queue* queue);
+
+typedef struct {
+  void* pc;  // null if invalid
+  void* arg; // null if invalid
+} ASGST_QueueElement;
+
+// Returns the nth element in the queue (from the front),
+// 0 gives you the first/oldest element.
+// -1 gives you the youngest element, ..., -size the oldest.
+//
+// Signal safe
+JNIEXPORT
+ASGST_QueueElement ASGST_GetQueueElement(ASGST_Queue* queue, int n);
 
 // the following requires ASGST_MARK_FRAME capabilities
 // and most methods are not signal safe

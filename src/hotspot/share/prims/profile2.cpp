@@ -25,12 +25,14 @@
 #include "jni.h"
 #include "memory/allocation.hpp"
 #include "memory/resourceArea.hpp"
+#include "oops/instanceKlass.hpp"
 #include "oops/method.hpp"
 #include "precompiled.hpp"
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include "prims/jvmtiEnvBase.hpp"
 #include "prims/stackWalker.hpp"
 #include "prims/jvmtiExport.hpp"
@@ -524,12 +526,18 @@ int ASGST_Enqueue(ASGST_Queue* queue, void* ucontext, void* argument) {
   if (kind != ASGST_JAVA_TRACE || runArgument.kindOrError != ASGST_JAVA_TRACE) {
     return kind;
   }
-  bool worked = runArgument.thread->handshake_state()->asgst_enqueue(q, {runArgument.pc, runArgument.pc});
+  bool worked = runArgument.thread->handshake_state()->asgst_enqueue(q, {runArgument.pc, argument});
   return worked ? (int)ASGST_JAVA_TRACE : (int)ASGST_ENQUEUE_FULL_QUEUE;
 }
 
 int ASGST_QueueSize(ASGST_Queue* queue) {
   return ((ASGSTQueue*)queue)->length();
+}
+
+ASGST_QueueElement ASGST_GetQueueElement(ASGST_Queue* queue, int n) {
+  ASGSTQueue* q = (ASGSTQueue*)queue;
+  auto elem = q->get(n < 0 ? (q->length() + n) : n);
+  return *((ASGST_QueueElement*)&elem);
 }
 
 jmethodID ASGST_MethodToJMethodID(ASGST_Method method) {
@@ -620,18 +628,98 @@ jclass ASGST_ClassToJClass(ASGST_Class klass) {
     (jclass)JNIHandles::make_local(thread, ((Klass*)klass)->java_mirror()) : nullptr;
 }
 
-class KlassDeallocationHandlerImpl : public KlassDeallocationHandler {
-  ASGST_ClassUnloadHandler handler;
+class SmallKlassDeallocationHandler : public CHeapObj<mtServiceability> {
+  ASGST_ClassUnloadHandler _handler;
+  void* _arg;
+  SmallKlassDeallocationHandler* _next;
 public:
-  KlassDeallocationHandlerImpl(ASGST_ClassUnloadHandler handler): handler(handler) {}
-
+  SmallKlassDeallocationHandler(ASGST_ClassUnloadHandler handler, void* arg):
+    _handler(handler), _arg(arg) {}
+  SmallKlassDeallocationHandler(): _handler(nullptr), _arg(nullptr) {}
   void call(InstanceKlass* klass) {
-    handler((ASGST_Class)klass, (ASGST_Method*)klass->methods()->data(), klass->methods()->size());
+    _handler((ASGST_Class)klass, (ASGST_Method*)klass->methods()->data(), klass->methods()->size(), _arg);
+  }
+
+  bool has_handler(ASGST_ClassUnloadHandler handler) const {
+    return _handler == handler;
+  }
+
+  bool has_argument(void* arg) const { return _arg == arg; }
+
+  SmallKlassDeallocationHandler* next() { return _next; }
+
+  void set_next(SmallKlassDeallocationHandler* next) { _next = next; }
+
+  ~SmallKlassDeallocationHandler() {
+    if (_next != nullptr) {
+      delete _next;
+    }
   }
 };
 
-void ASGST_RegisterClassUnloadHandler(ASGST_ClassUnloadHandler handler) {
-  InstanceKlass::add_deallocation_handler(new KlassDeallocationHandlerImpl(handler));
+class KlassDeallocationHandlerImpl : public KlassDeallocationHandler {
+  SmallKlassDeallocationHandler* handlers;
+  bool registered = false;
+  void register_if_needed() {
+    InstanceKlass::add_deallocation_handler(this);
+  }
+public:
+  KlassDeallocationHandlerImpl() {}
+
+  void add(ASGST_ClassUnloadHandler handler, void* arg) {
+    register_if_needed();
+    auto* n = new SmallKlassDeallocationHandler(handler, arg);
+    n->set_next(handlers);
+    handlers = n;
+  }
+
+  void call(InstanceKlass* klass) {
+    SmallKlassDeallocationHandler* cur = handlers;
+    while (cur != nullptr) {
+      cur->call(klass);
+      cur = cur->next();
+    }
+  }
+
+  bool remove(ASGST_ClassUnloadHandler handler, void* arg) {
+    SmallKlassDeallocationHandler* prev = nullptr;
+    auto* cur = handlers;
+    bool found = false;
+    while (cur != nullptr) {
+      if (cur->has_handler(handler) && cur->has_argument(arg)) {
+        auto next = cur->next();
+        delete cur;
+        found = true;
+        if (prev == nullptr) {
+          handlers = next;
+        } else {
+          prev->set_next(next);
+        }
+        cur = next;
+      } else {
+        prev = cur;
+        cur = cur->next();
+      }
+    }
+    return found;
+  }
+
+  ~KlassDeallocationHandlerImpl() {
+    delete handlers;
+  }
+};
+
+std::mutex klassDeallocationHandlersMutex;
+KlassDeallocationHandlerImpl klassDealloc;
+
+void ASGST_RegisterClassUnloadHandler(ASGST_ClassUnloadHandler handler, void* arg) {
+  std::lock_guard<std::mutex> lock(klassDeallocationHandlersMutex);
+  klassDealloc.add(handler, arg);
+}
+
+bool ASGST_DeregisterClassUnloadHandler(ASGST_ClassUnloadHandler handler, void* arg) {
+  std::lock_guard<std::mutex> lock(klassDeallocationHandlersMutex);
+  return klassDealloc.remove(handler, arg);
 }
 
 class ASGSTFrameMark : public CHeapObj<mtServiceability> {
@@ -655,6 +743,9 @@ public:
     iterator->reset();
     IterRAII raii(iterator); // destroy iterator on exit
     int ret = ASGST_CreateIterFromFrame(iterator, fr.sp(), fr.fp(), fr.pc(), _options);
+    if (ret == 0) {
+      return;
+    }
     assert(ret == 1, "Expect Java trace");
     call(iterator);
   }
