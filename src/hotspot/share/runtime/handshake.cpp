@@ -814,6 +814,12 @@ bool ASGSTQueue::in_current_thread() {
   return JavaThread::current_or_null_safe() == thread;
 }
 
+ASGSTQueueElement ASGSTQueue::get(int n) {
+  return n < length() && n >= 0 ?
+    elements[(head + n) % size] :
+    ASGSTQueueElement{nullptr, nullptr};
+}
+
 bool ASGSTQueue::push(ASGSTQueueElement element) {
   if ((tail + 1) % size == head) {
     return false;

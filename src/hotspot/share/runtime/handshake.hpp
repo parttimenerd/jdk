@@ -150,7 +150,7 @@ public:
   int length() const { return (tail < head ? (tail + size) : tail) - head; }
   bool is_full() const { return length() >= max_size(); }
   bool is_empty() const { return length() <= 0; }
-
+  ASGSTQueueElement get(int n);
   // use the methods in HandshakeState to enqueue/dequeue
 
   bool push(ASGSTQueueElement element);
