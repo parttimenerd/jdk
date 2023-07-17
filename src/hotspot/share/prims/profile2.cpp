@@ -578,6 +578,7 @@ void ASGST_GetMethodInfo(ASGST_Method method, ASGST_MethodInfo* info) {
     nullField(info->generic_signature, &info->generic_signature_length);
     info->modifiers = 0;
     info->klass = nullptr;
+    info->idnum = 0;
     return;
   }
   auto cm = m->constMethod();
@@ -588,17 +589,27 @@ void ASGST_GetMethodInfo(ASGST_Method method, ASGST_MethodInfo* info) {
     nullField(info->generic_signature, &info->generic_signature_length);
     info->modifiers = 0;
     info->klass = nullptr;
+    info->idnum = 0;
     return;
   } else {
     auto constants = cm->constants();
     InstanceKlass *klass = constants->pool_holder();
     info->klass = (ASGST_Class)klass;
+    info->idnum = cm->orig_method_idnum();
   }
   writeField(m->name(), info->method_name, &info->method_name_length);
   writeField(m->signature(), info->signature, &info->signature_length);
   writeField(m->generic_signature(), info->generic_signature, &info->generic_signature_length);
   info->modifiers = m->access_flags().get_flags();
 }
+
+jint ASGST_GetMethodIdNum(ASGST_Method method) {
+  if (method == nullptr) {
+    return 0;
+  }
+  return ((Method*)method)->orig_method_idnum();
+}
+
 
 void ASGST_GetClassInfo(ASGST_Class klass, ASGST_ClassInfo *info) {
   if (!os::is_readable_pointer(klass)) {

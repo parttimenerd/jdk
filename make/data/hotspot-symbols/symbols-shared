@@ -42,6 +42,7 @@ ASGST_State
 ASGST_ThreadState
 ASGST_MethodToJMethodID
 ASGST_GetMethodInfo
+ASGST_GetMethodIdNum
 ASGST_GetClassInfo
 ASGST_GetClass
 ASGST_ClassToJClass
