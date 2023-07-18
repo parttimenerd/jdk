@@ -117,6 +117,12 @@ int ASGST_RunWithIterator(void* ucontext, int32_t options, void (*fun)(ASGST_Ite
 JNIEXPORT
 int ASGST_RunWithIteratorFromFrame(void* sp, void* fp, void* pc, int options, void (*fun)(ASGST_Iterator*, void*), void* argument);
 
+// Rewind an interator to the top most frame
+//
+// Signal safe, has to be called on thread that belongs to the frame.
+JNIEXPORT
+void ASGST_RewindIterator(ASGST_Iterator* iterator);
+
 // Obtains the next frame from the iterator
 // @returns 1 if successful, else error code
 //
@@ -144,6 +150,12 @@ int ASGST_ThreadState();
 JNIEXPORT
 jmethodID ASGST_MethodToJMethodID(ASGST_Method method);
 
+// Returns the ASGST_Method for a given jmethodID.
+//
+// Not signal safe, might crash for unloaded methods.
+JNIEXPORT
+ASGST_Method ASGST_JMethodIDToMethod(jmethodID methodID);
+
 // Method info
 // You have to preallocate the strings yourself and store the lengths
 // in the appropriate fields, the lengths are set to the respective
@@ -157,6 +169,8 @@ typedef struct {
   char* generic_signature;
   jint generic_signature_length;
   jint modifiers;
+  jint idnum; // class local id, doesn't change with redefinitions
+  jlong class_idnum; // class id, doesn't change with redefinitions
 } ASGST_MethodInfo;
 
 // Class info, like the method info
@@ -166,6 +180,7 @@ typedef struct {
   char* generic_class_name;
   jint generic_class_name_length;
   jint modifiers;
+  jlong idnum; // id that doesn't change with redefinitions
 } ASGST_ClassInfo;
 
 // Obtain the method information for a given ASGST_Method and store it in the pre-allocated info struct.
@@ -177,11 +192,35 @@ typedef struct {
 JNIEXPORT
 void ASGST_GetMethodInfo(ASGST_Method method, ASGST_MethodInfo* info);
 
+// Returns the class local id of the method, or 0
+//
+// signal safe
+JNIEXPORT
+jint ASGST_GetMethodIdNum(ASGST_Method method);
+
+typedef struct {
+  jint start_bci;
+  jint line_number;
+} ASGST_MethodLineNumberEntry;
+
+// Populates the method line number table, mapping BCI to line number.
+// Returns the number of written elements
+//
+// Signal safe
+JNIEXPORT
+int ASGST_GetMethodLineNumberTable(ASGST_Method method, ASGST_MethodLineNumberEntry* entries, int length);
+
 // Similar to GetMethodInfo
 //
 // Signal safe
 JNIEXPORT
 void ASGST_GetClassInfo(ASGST_Class klass, ASGST_ClassInfo* info);
+
+// Returns the id of the class that doesn't change with redefinitions
+//
+// signal safe
+JNIEXPORT
+jlong ASGST_GetClassIdNum(ASGST_Class klass);
 
 // Returns the class that contains a given method
 //
@@ -189,15 +228,21 @@ void ASGST_GetClassInfo(ASGST_Class klass, ASGST_ClassInfo* info);
 JNIEXPORT
 ASGST_Class ASGST_GetClass(ASGST_Method method);
 
+// Returns the ASGST_Class for a given jclass
+//
+// Signal safe
+JNIEXPORT
+ASGST_Class ASGST_JClassToClass(jclass klass);
+
 // Returns the JVMTI class id for a given class,
 // used to obtain more information on classes via JVMTI
-//
-// Not signal and safe point safe
 JNIEXPORT
 jclass ASGST_ClassToJClass(ASGST_Class klass);
 
 // handler called with the unloaded class and the methods that were unloaded (pointer + count)
-typedef void (*ASGST_ClassUnloadHandler)(ASGST_Class klass, ASGST_Method *methods, size_t count, void* arg);
+// and whether the class is redefined or unloaded,
+// and the argument passed when registering the handler
+typedef void (*ASGST_ClassUnloadHandler)(ASGST_Class klass, ASGST_Method *methods, int count, bool redefined, void* arg);
 
 // Register a handler to be called when a class is unloaded
 //
