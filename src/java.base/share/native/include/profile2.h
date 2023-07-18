@@ -244,7 +244,7 @@ jclass ASGST_ClassToJClass(ASGST_Class klass);
 // and the argument passed when registering the handler
 typedef void (*ASGST_ClassUnloadHandler)(ASGST_Class klass, ASGST_Method *methods, int count, bool redefined, void* arg);
 
-// Register a handler to be called when a class is unloaded
+// Register a handler to be called when class is unloaded
 //
 // not signal and safe point safe
 JNIEXPORT

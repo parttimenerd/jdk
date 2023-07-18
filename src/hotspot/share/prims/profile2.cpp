@@ -90,10 +90,7 @@ struct _ASGST_Iterator {
   }
 };
 
-static int initStackWalker(_ASGST_Iterator *iterator, int options, frame frame, bool allow_thread_last_frame_use = true, bool set_async = true) {
-  if (set_async && iterator->thread != nullptr) {
-      iterator->thread->set_in_async_stack_walking(true);
-  }
+static int initStackWalker(_ASGST_Iterator *iterator, int options, frame frame, bool allow_thread_last_frame_use = true) {
   iterator->walker = StackWalker(iterator->thread, frame,
     (options & ASGST_INCLUDE_NON_JAVA_FRAMES) == 0,
     (options & ASGST_END_ON_FIRST_JAVA_FRAME) != 0,
@@ -247,7 +244,6 @@ int ASGST_CreateIterFromFrame(_ASGST_Iterator* iterator, void* sp, void* fp, voi
   frame f{sp, fp, pc};
   iterator->initialArgs.frame = f;
   iterator->thread = JavaThread::current_or_null();
-
   // handle non-java case
   if (kindOrError > ASGST_JAVA_TRACE) {
     int ret = initStackWalker(iterator, options, f);
@@ -302,7 +298,7 @@ int ASGST_NextFrame(ASGST_Iterator *iter, ASGST_Frame *frame) {
     *walker = iter->walker;
     assert(iter->anchor.last_Java_pc() != nullptr, "non nulllll");
     initStackWalker(iter, iter->options,
-      {iter->anchor.last_Java_sp(), iter->anchor.last_Java_fp(), iter->anchor.last_Java_pc()}, false, false);
+      {iter->anchor.last_Java_sp(), iter->anchor.last_Java_fp(), iter->anchor.last_Java_pc()}, false);
     if ((Method*)frame->method == iter->walker.method() && frame->sp == nullptr) {
       // last frame from old walker is similar to current frame from new walker
       // therefor skip the old walker frame (contains less information)
@@ -334,18 +330,20 @@ int ASGST_State(ASGST_Iterator *iter) {
   return MIN(iter->walker.state(), 1);
 }
 
-void ASGST_DestroyIter(ASGST_Iterator* iter) {
-  if (iter->thread != nullptr) {
-    iter->thread->set_in_async_stack_walking(false);
-  }
-}
-
 class IterRAII {
-  ASGST_Iterator* iter;
+  JavaThread* thread;
+  bool old;
 public:
-  IterRAII(ASGST_Iterator* iter) : iter(iter) {}
+  IterRAII() : thread(JavaThread::current_or_null()) {
+    if (thread != nullptr) {
+      old = thread->in_async_stack_walking();
+      thread->set_in_async_stack_walking(true);
+    }
+  }
   ~IterRAII() {
-    ASGST_DestroyIter(iter);
+    if (thread != nullptr && !old) {
+      thread->set_in_async_stack_walking(old);
+    }
   }
 };
 
@@ -353,7 +351,7 @@ int ASGST_RunWithIterator(void* ucontext, int options, void (*fun)(ASGST_Iterato
   int8_t iter[sizeof(ASGST_Iterator)]; // no need for default constructor
   ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
   iterator->reset();
-  IterRAII raii(iterator); // destroy iterator on exit
+  IterRAII raii; // destroy iterator on exit
   int ret = ASGST_CreateIter(iterator, ucontext, options);
   if (ret <= 0) {
     return ret;
@@ -366,7 +364,7 @@ int ASGST_RunWithIteratorFromFrame(void* sp, void* fp, void* pc, int options, vo
   int8_t iter[sizeof(ASGST_Iterator)]; // no need for default constructor
   ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
   iterator->reset();
-  IterRAII raii(iterator); // destroy iterator on exit
+  IterRAII raii; // destroy iterator on exit
   int ret = ASGST_CreateIterFromFrame(iterator, sp, fp, pc, options);
   if (ret <= 0) {
     return ret;
@@ -378,7 +376,7 @@ int ASGST_RunWithIteratorFromFrame(void* sp, void* fp, void* pc, int options, vo
 void ASGST_RewindIterator(ASGST_Iterator* iterator) {
   iterator->switchToThreadBased = iterator->initialArgs.switchToThreadBased;
   iterator->invalidSpAndFp = iterator->initialArgs.invalidSpAndFp;
-  initStackWalker(iterator, iterator->options, iterator->initialArgs.frame, iterator->initialArgs.allowThreadLastFrameUse, false);
+  initStackWalker(iterator, iterator->options, iterator->initialArgs.frame, iterator->initialArgs.allowThreadLastFrameUse);
 }
 
 // state or -1
@@ -447,13 +445,16 @@ public:
     ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
     iterator->reset();
     iterator->thread = JavaThread::current();
-    IterRAII raii(iterator); // destroy iterator on exit
+    IterRAII raii; // destroy iterator on exit
+
     assert(element != nullptr, "element is null");
     if (element->pc() == nullptr && frame_anchor->last_Java_pc() == nullptr) {
       return;
     }
+
     frame fExtended = frame(frame_anchor->last_Java_sp(), frame_anchor->last_Java_fp(),
       element->pc() != nullptr ? (address)element->pc() : frame_anchor->last_Java_pc());
+
     initStackWalker(iterator, options, fExtended, false);
     iterator->initialArgs.allowThreadLastFrameUse = false;
     iterator->initialArgs.frame = fExtended;
@@ -498,7 +499,7 @@ public:
     ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
     iterator->reset();
     iterator->thread = JavaThread::current();
-    IterRAII raii(iterator); // destroy iterator on exit
+    IterRAII raii; // destroy iterator on exit
     if (frame_anchor->last_Java_pc() == nullptr) {
       return;
     }
@@ -813,7 +814,7 @@ public:
     int8_t iter[sizeof(ASGST_Iterator)]; // no need for default constructor
     ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
     iterator->reset();
-    IterRAII raii(iterator); // destroy iterator on exit
+    IterRAII raii; // destroy iterator on exit
     int ret = ASGST_CreateIterFromFrame(iterator, fr.sp(), fr.fp(), fr.pc(), _options);
     if (ret == 0) {
       return;
