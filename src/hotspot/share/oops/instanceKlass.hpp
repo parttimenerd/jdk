@@ -38,6 +38,7 @@
 #include "utilities/align.hpp"
 #include "utilities/growableArray.hpp"
 #include "utilities/macros.hpp"
+#include <stdint.h>
 #if INCLUDE_JFR
 #include "jfr/support/jfrKlassExtension.hpp"
 #endif
@@ -138,7 +139,7 @@ class KlassDeallocationHandler : public CHeapObj<mtServiceability> {
  private:
   volatile KlassDeallocationHandler *next = nullptr;
  public:
-  virtual void call(InstanceKlass*) = 0;
+  virtual void call(InstanceKlass* klass, bool redefined) = 0;
   virtual ~KlassDeallocationHandler() {
     if (next) {
       delete next->next;
@@ -266,7 +267,20 @@ class InstanceKlass: public Klass {
   // JVMTI fields can be moved to their own structure - see 6315920
   // JVMTI: cached class file, before retransformable agent modified it in CFLH
   JvmtiCachedClassFileData* _cached_class_file;
+  uint64_t _orig_idnum; // 0: undefined
+  uint64_t _idnum;
+  volatile uint64_t _idnum_counter = 1;
+  bool _is_redefined = false;
 #endif
+
+  void init_idnum_if_needed() {
+#if INCLUDE_JVMTI
+    _idnum = (uint64_t)Atomic::fetch_then_add(&_idnum_counter, (uint64_t)1);
+    if (_orig_idnum == 0) {
+      _orig_idnum = _idnum;
+    }
+#endif
+  }
 
 #if INCLUDE_JVMTI
   JvmtiCachedClassFieldMap* _jvmti_cached_class_field_map;  // JVMTI: used during heap iteration
@@ -715,8 +729,13 @@ public:
   void purge_previous_version_list();
 
   InstanceKlass* previous_versions() const { return _previous_versions; }
+
+  uint64_t orig_idnum() const { return _orig_idnum; }
+
 #else
   InstanceKlass* previous_versions() const { return nullptr; }
+
+  uint64_t orig_idnum() const { return 0; }
 #endif
 
   InstanceKlass* get_klass_version(int version);
@@ -1002,6 +1021,7 @@ public:
  private:
   void clean_implementors_list();
   void clean_method_data();
+  static void trigger_deallocation_handlers(InstanceKlass* klass, bool redefined);
 
  public:
   // Explicit metaspace deallocation of fields
@@ -1142,7 +1162,8 @@ private:
 
 #if INCLUDE_JVMTI
   // RedefineClasses support
-  void link_previous_versions(InstanceKlass* pv) { _previous_versions = pv; }
+  // link previous versions and set orig id num
+  void link_previous_versions(InstanceKlass *pv);
   void mark_newly_obsolete_methods(Array<Method*>* old_methods, int emcp_method_count);
 #endif
   // log class name to classlist

@@ -544,6 +544,14 @@ jmethodID ASGST_MethodToJMethodID(ASGST_Method method) {
   return (jmethodID)((Method*)method)->find_jmethod_id_or_null();
 }
 
+ASGST_Method ASGST_JMethodIDToMethod(jmethodID methodID) {
+  Method** m = (Method**)methodID;
+  if (methodID == nullptr || *m == nullptr) {
+    return nullptr;
+  }
+  return (ASGST_Method)*m;
+}
+
 void writeField(Symbol* symbol, char* char_field, jint* length_field) {
   int& length = *length_field;
   if (length == 0 || char_field == nullptr) {
@@ -572,31 +580,23 @@ void nullField(char* char_field, jint* length_field) {
 
 void ASGST_GetMethodInfo(ASGST_Method method, ASGST_MethodInfo* info) {
   Method *m = (Method*)method;
-  if (m == nullptr) {
+  if (m == nullptr || !os::is_readable_pointer(m->constMethod())) {
     nullField(info->method_name, &info->method_name_length);
     nullField(info->signature, &info->signature_length);
     nullField(info->generic_signature, &info->generic_signature_length);
     info->modifiers = 0;
     info->klass = nullptr;
     info->idnum = 0;
+    info->class_idnum = 0;
     return;
   }
   auto cm = m->constMethod();
 
-  if (!os::is_readable_pointer(cm)) {
-    nullField(info->method_name, &info->method_name_length);
-    nullField(info->signature, &info->signature_length);
-    nullField(info->generic_signature, &info->generic_signature_length);
-    info->modifiers = 0;
-    info->klass = nullptr;
-    info->idnum = 0;
-    return;
-  } else {
-    auto constants = cm->constants();
-    InstanceKlass *klass = constants->pool_holder();
-    info->klass = (ASGST_Class)klass;
-    info->idnum = cm->orig_method_idnum();
-  }
+  auto constants = cm->constants();
+  InstanceKlass *klass = constants->pool_holder();
+  info->klass = (ASGST_Class)klass;
+  info->idnum = cm->orig_method_idnum();
+  info->class_idnum = klass->orig_idnum();
   writeField(m->name(), info->method_name, &info->method_name_length);
   writeField(m->signature(), info->signature, &info->signature_length);
   writeField(m->generic_signature(), info->generic_signature, &info->generic_signature_length);
@@ -610,12 +610,26 @@ jint ASGST_GetMethodIdNum(ASGST_Method method) {
   return ((Method*)method)->orig_method_idnum();
 }
 
+int ASGST_GetMethodLineNumberTable(ASGST_Method method, ASGST_MethodLineNumberEntry* entries, int length) {
+  int num_entries = 0;
+  Method* m = (Method*)method;
+  CompressedLineNumberReadStream stream(m->compressed_linenumber_table());
+  while (stream.read_pair()) {
+    if (num_entries < length) {
+      *entries = {.line_number = stream.bci(), .start_bci = stream.line()};
+      entries++;
+    }
+    num_entries++;
+  }
+  return num_entries;
+}
 
 void ASGST_GetClassInfo(ASGST_Class klass, ASGST_ClassInfo *info) {
   if (!os::is_readable_pointer(klass)) {
     nullField(info->class_name, &info->class_name_length);
     nullField(info->generic_class_name, &info->generic_class_name_length);
     info->modifiers = 0;
+    info->idnum = 0;
     return;
   }
   Klass *k = (Klass*)klass;
@@ -623,13 +637,25 @@ void ASGST_GetClassInfo(ASGST_Class klass, ASGST_ClassInfo *info) {
   if (k->is_instance_klass()) {
     InstanceKlass *ik = (InstanceKlass*)k;
     writeField(ik->generic_signature(), info->generic_class_name, &info->generic_class_name_length);
+    info->idnum = ik->orig_idnum();
+  } else {
+    nullField(info->generic_class_name, &info->generic_class_name_length);
+    info->idnum = 0;
   }
   info->modifiers = k->access_flags().get_flags();
+}
+
+jlong ASGST_GetClassIdNum(ASGST_Class klass) {
+  return klass == nullptr || !((Klass*)klass)->is_instance_klass() ? 0 : ((InstanceKlass*)klass)->orig_idnum();
 }
 
 ASGST_Class ASGST_GetClass(ASGST_Method method) {
   Method *m = (Method*)method;
   InstanceKlass *klass = m->method_holder();
+  return (ASGST_Class)klass;
+}
+
+ASGST_Class ASGST_JClassToClass(jclass klass) {
   return (ASGST_Class)klass;
 }
 
@@ -647,8 +673,9 @@ public:
   SmallKlassDeallocationHandler(ASGST_ClassUnloadHandler handler, void* arg):
     _handler(handler), _arg(arg) {}
   SmallKlassDeallocationHandler(): _handler(nullptr), _arg(nullptr) {}
-  void call(InstanceKlass* klass) {
-    _handler((ASGST_Class)klass, (ASGST_Method*)klass->methods()->data(), klass->methods()->size(), _arg);
+
+  void call(InstanceKlass* klass, bool redefined) {
+    _handler((ASGST_Class)klass, (ASGST_Method*)klass->methods()->data(), klass->methods()->size(), redefined, _arg);
   }
 
   bool has_handler(ASGST_ClassUnloadHandler handler) const {
@@ -684,10 +711,10 @@ public:
     handlers = n;
   }
 
-  void call(InstanceKlass* klass) {
+  void call(InstanceKlass* klass, bool redefined) {
     SmallKlassDeallocationHandler* cur = handlers;
     while (cur != nullptr) {
-      cur->call(klass);
+      cur->call(klass, redefined);
       cur = cur->next();
     }
   }
