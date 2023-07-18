@@ -524,6 +524,7 @@ InstanceKlass::InstanceKlass(const ClassFileParser& parser, KlassKind kind, Refe
 {
   set_vtable_length(parser.vtable_size());
   set_access_flags(parser.access_flags());
+  init_idnum_if_needed();
   if (parser.is_hidden()) set_is_hidden();
   set_layout_helper(Klass::instance_layout_helper(parser.layout_size(),
                                                     false));
@@ -588,11 +589,9 @@ static KlassDeallocationHandler* _deallocation_handler;
 // This function deallocates the metadata and C heap pointers that the
 // InstanceKlass points to.
 void InstanceKlass::deallocate_contents(ClassLoaderData* loader_data) {
-  KlassDeallocationHandler* handler = Atomic::load(&_deallocation_handler);
-  while (handler != nullptr) {
-    handler->call(this);
-    handler = Atomic::load(&_deallocation_handler);
-  }
+
+  trigger_deallocation_handlers(this, _is_redefined);
+
   // Orphan the mirror first, CMS thinks it's still live.
   if (java_mirror() != nullptr) {
     java_lang_Class::set_klass(java_mirror(), nullptr);
@@ -2554,6 +2553,14 @@ void InstanceKlass::clean_method_data() {
   }
 }
 
+void InstanceKlass::trigger_deallocation_handlers(InstanceKlass* klass, bool redefined) {
+  auto* handler = Atomic::load(&_deallocation_handler);
+  while (handler != nullptr) {
+    handler->call(klass, redefined);
+    handler = (KlassDeallocationHandler*)Atomic::load(&(handler->next));
+  }
+}
+
 void InstanceKlass::metaspace_pointers_do(MetaspaceClosure* it) {
   Klass::metaspace_pointers_do(it);
 
@@ -4397,6 +4404,7 @@ void InstanceKlass::mark_newly_obsolete_methods(Array<Method*>* old_methods,
 // also used to clean MethodData links to redefined methods that are no longer running.
 void InstanceKlass::add_previous_version(InstanceKlass* scratch_class,
                                          int emcp_method_count) {
+  scratch_class->_is_redefined = true;
   assert(Thread::current()->is_VM_thread(),
          "only VMThread can add previous versions");
 
@@ -4521,4 +4529,11 @@ void ClassHierarchyIterator::next() {
   }
   _current = _current->next_sibling();
   return; // visit next sibling subclass
+}
+
+void InstanceKlass::link_previous_versions(InstanceKlass *pv) {
+  _previous_versions = pv;
+  if (pv != nullptr) {
+    _orig_idnum = pv->_orig_idnum;
+  }
 }
