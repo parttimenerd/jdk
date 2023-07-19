@@ -556,7 +556,8 @@ private:
   inline void set_thread_state_fence(JavaThreadState s);  // fence after setting thread state
   inline ThreadSafepointState* safepoint_state() const;
   inline void set_safepoint_state(ThreadSafepointState* state);
-  inline bool is_at_poll_safepoint();
+  inline bool is_at_poll_safepoint() const;
+  inline bool is_at_safepoint() const;
 
   // JavaThread termination and lifecycle support:
   void smr_delete();

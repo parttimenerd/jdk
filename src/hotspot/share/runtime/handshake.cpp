@@ -773,68 +773,90 @@ public:
   bool did_suspend() { return _did_suspend; }
 };
 
+void ASGSTQueue::resize_if_needed() {
+  // we know that this method is only called during safepoints
+  // where no new elements are added
+  if (_new_size != -1 && _new_size != _capacity) {
+    assert(length() == 0, "cannot resize a non-empty queue");
+    ASGSTQueueElement* new_elements =
+      (ASGSTQueueElement*)os::malloc(sizeof(ASGSTQueueElement) * _new_size, mtServiceability);
+    _head = 0;
+    _tail = 0;
+    _capacity = _new_size;
+    os::free(_elements);
+    _elements = new_elements;
+  }
+  _new_size == -1;
+}
+
 ASGSTQueue::ASGSTQueue(int id, JavaThread *thread, size_t size,
                        ASGSTQueueElementHandler *handler)
-    : id(id), thread(thread),
-      elements((ASGSTQueueElement *)os::malloc(sizeof(ASGSTQueueElement) * size,
+    : _id(id), _thread(thread),
+      _elements((ASGSTQueueElement *)os::malloc(sizeof(ASGSTQueueElement) * size,
                                                mtServiceability)),
-      size(size), head(0), tail(0), handler(handler) {}
+      _capacity(size), _head(0), _tail(0), _attempts(0), _handler(handler),
+      _new_size(-1) {}
 
 void ASGSTQueue::before(JavaFrameAnchor *frame_anchor) {
   std::lock_guard<std::mutex> lock(_handler_lock);
-  if (before_handler != nullptr) {
-    (*before_handler)(this, frame_anchor);
+  if (_before_handler != nullptr) {
+    (*_before_handler)(this, frame_anchor);
   }
 }
 
 void ASGSTQueue::after(JavaFrameAnchor *frame_anchor) {
-  std::lock_guard<std::mutex> lock(_handler_lock);
-  if (after_handler != nullptr) {
-    (*after_handler)(this, frame_anchor);
+  {
+    std::lock_guard<std::mutex> lock(_handler_lock);
+    if (_after_handler != nullptr) {
+      (*_after_handler)(this, frame_anchor);
+    }
   }
+  resize_if_needed();
+  _attempts = 0;
 }
 
 void ASGSTQueue::set_before(ASGSTQueueOnSafepointHandler *handler) {
   std::lock_guard<std::mutex> lock(_handler_lock);
-  if (before_handler != nullptr) {
-    delete before_handler;
+  if (_before_handler != nullptr) {
+    delete _before_handler;
   }
-  before_handler = handler;
+  _before_handler = handler;
 }
 
 void ASGSTQueue::set_after(ASGSTQueueOnSafepointHandler *handler) {
   std::lock_guard<std::mutex> lock(_handler_lock);
-  if (after_handler != nullptr) {
-    delete after_handler;
+  if (_after_handler != nullptr) {
+    delete _after_handler;
   }
-  after_handler = handler;
+  _after_handler = handler;
 }
 
 bool ASGSTQueue::in_current_thread() {
-  return JavaThread::current_or_null_safe() == thread;
+  return JavaThread::current_or_null_safe() == _thread;
 }
 
 ASGSTQueueElement ASGSTQueue::get(int n) {
   return n < length() && n >= 0 ?
-    elements[(head + n) % size] :
+    _elements[(_head + n) % _capacity] :
     ASGSTQueueElement{nullptr, nullptr};
 }
 
 bool ASGSTQueue::push(ASGSTQueueElement element) {
-  if ((tail + 1) % size == head) {
+  _attempts++;
+  if ((_tail + 1) % _capacity == _head) {
     return false;
   }
-  elements[tail] = element;
-  tail = (tail + 1) % size;
+  _elements[_tail] = element;
+  _tail = (_tail + 1) % _capacity;
   return true;
 }
 
 ASGSTQueueElement *ASGSTQueue::pop() {
-  if (head == tail) {
+  if (_head == _tail) {
     return nullptr;
   }
-  ASGSTQueueElement *element = &elements[head];
-  head = (head + 1) % size;
+  ASGSTQueueElement *element = &_elements[_head];
+  _head = (_head + 1) % _capacity;
   return element;
 }
 

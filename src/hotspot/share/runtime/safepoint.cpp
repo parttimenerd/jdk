@@ -828,7 +828,7 @@ void SafepointSynchronize::print_safepoint_timeout() {
 // Implementation of ThreadSafepointState
 
 ThreadSafepointState::ThreadSafepointState(JavaThread *thread)
-  : _at_poll_safepoint(false), _thread(thread), _safepoint_safe(false),
+  : _at_poll_safepoint(false), _at_safepoint(false), _thread(thread), _safepoint_safe(false),
     _safepoint_id(SafepointSynchronize::InactiveSafepointCounter), _next(nullptr) {
 }
 
@@ -910,6 +910,7 @@ void ThreadSafepointState::print_on(outputStream *st) const {
 
 // Process pending operation.
 void ThreadSafepointState::handle_polling_page_exception() {
+  set_at_safepoint(true);
   JavaThread* self = thread();
   assert(self == JavaThread::current(), "must be self");
 
@@ -974,6 +975,7 @@ void ThreadSafepointState::handle_polling_page_exception() {
     assert(real_return_addr == caller_fr.pc(), "must match");
 
     set_at_poll_safepoint(true);
+
     // Process pending operation
     // We never deliver an async exception at a polling point as the
     // compiler may not have an exception handler for it (polling at
@@ -983,6 +985,7 @@ void ThreadSafepointState::handle_polling_page_exception() {
     // during deoptimization are clobbered by the exception path. The
     // exception will just be delivered once we get into the interpreter.
     SafepointMechanism::process_if_requested_with_exit_check(self, false /* check asyncs */);
+
     set_at_poll_safepoint(false);
 
     if (self->has_async_exception_condition()) {
@@ -1011,6 +1014,7 @@ void ThreadSafepointState::handle_polling_page_exception() {
       }
     }
   }
+  set_at_safepoint(false);
 }
 
 
