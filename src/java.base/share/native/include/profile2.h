@@ -284,6 +284,7 @@ bool ASGST_DeregisterQueue(JNIEnv* env, ASGST_Queue* queue);
 
 // handler that is called at a safe point with enqueued samples before and after processing
 // called with the queue, a frame iterator, and the OnQueue argument
+// frame iterator is null if offerIterator at handler registration was false
 typedef void (*ASGST_OnQueueSafepointHandler)(ASGST_Queue*, ASGST_Iterator*, void*);
 
 // Set the handler that is called at a safe point before the elements in the (non-empty) queue
@@ -293,7 +294,7 @@ typedef void (*ASGST_OnQueueSafepointHandler)(ASGST_Queue*, ASGST_Iterator*, voi
 //
 // Not signal safe, requires ASGST_REGISTER_QUEUE capability
 JNIEXPORT
-void ASGST_SetOnQueueProcessingStart(ASGST_Queue* queue, int options, ASGST_OnQueueSafepointHandler before, void* arg);
+void ASGST_SetOnQueueProcessingStart(ASGST_Queue* queue, int options, bool offerIterator, ASGST_OnQueueSafepointHandler before, void* arg);
 
 // Set the handler that is called at a safe point after the elements in the (non-empty) queue
 // are processed.
@@ -302,7 +303,7 @@ void ASGST_SetOnQueueProcessingStart(ASGST_Queue* queue, int options, ASGST_OnQu
 //
 // Not signal safe, requires ASGST_REGISTER_QUEUE capability
 JNIEXPORT
-void ASGST_SetOnQueueProcessingEnd(ASGST_Queue* queue, int options, ASGST_OnQueueSafepointHandler end, void* arg);
+void ASGST_SetOnQueueProcessingEnd(ASGST_Queue* queue, int options, bool offerIterator, ASGST_OnQueueSafepointHandler end, void* arg);
 
 // Enqueue the processing of the current stack at the end of the queue and return the kind (or error if <= 0)
 // you have to deal with the top C and native frames yourself (but there is an option for this)
@@ -316,11 +317,26 @@ void ASGST_SetOnQueueProcessingEnd(ASGST_Queue* queue, int options, ASGST_OnQueu
 JNIEXPORT
 int ASGST_Enqueue(ASGST_Queue* queue, void* ucontext, void* argument);
 
-// Returns the number of elements in the queue
+typedef struct {
+  jint size; // size of the queue
+  jint capacity; // capacity of the queue
+  jint attempts; // attempts to enqueue since last safepoint end
+} ASGST_QueueSizeInfo;
+
+// Returns the number of elements in the queue, its capacity,
+// and the number of attempts since finishing the previous safepoint
 //
-// Signal safe
+// Signal safe, but only proper values in queues thread
 JNIEXPORT
-int ASGST_QueueSize(ASGST_Queue* queue);
+ASGST_QueueSizeInfo ASGST_GetQueueSizeInfo(ASGST_Queue* queue);
+
+// Trigger the resizing of the queue at end of the next safepoint
+// (or the current if currently processing one)
+//
+// Signal safe, but has to be called with a queue that belongs to the current thread
+// Requires ASGST_REGISTER_QUEUE capability
+JNIEXPORT
+void ASGST_ResizeQueue(ASGST_Queue* queue, int size);
 
 typedef struct {
   void* pc;  // null if invalid

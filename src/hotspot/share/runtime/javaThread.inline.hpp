@@ -172,8 +172,12 @@ void JavaThread::set_safepoint_state(ThreadSafepointState *state) {
   _safepoint_state = state;
 }
 
-bool JavaThread::is_at_poll_safepoint() {
+bool JavaThread::is_at_poll_safepoint() const {
   return _safepoint_state->is_at_poll_safepoint();
+}
+
+bool JavaThread::is_at_safepoint() const {
+  return _safepoint_state->is_at_safepoint();
 }
 
 bool JavaThread::is_vthread_mounted() const {

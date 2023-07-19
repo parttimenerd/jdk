@@ -140,7 +140,7 @@ static int initNonJavaStackWalker(_ASGST_Iterator* iter, void* ucontext, int32_t
 }
 
 // check current thread, return error or kind, set thread if available
-static int ASGST_Check(JavaThread** thread) {
+static int ASGST_Check(JavaThread** thread, bool allow_safepoints) {
   Thread* raw_thread = Thread::current_or_null_safe();
   if (raw_thread == nullptr || !raw_thread->is_Java_thread()) {
     return ASGST_NON_JAVA_TRACE;
@@ -148,7 +148,7 @@ static int ASGST_Check(JavaThread** thread) {
   if ((*thread = JavaThread::cast(raw_thread))->is_exiting()) {
     return ASGST_THREAD_EXIT;
   }
-  if ((*thread)->is_at_poll_safepoint()) {
+  if (!allow_safepoints && (*thread)->is_at_safepoint()) {
     return ASGST_UNSAFE_STATE;
   }
   if ((*thread)->in_deopt_handler() || Universe::heap()->is_gc_active()) {
@@ -158,12 +158,12 @@ static int ASGST_Check(JavaThread** thread) {
 }
 
 // @return error or kind
-int ASGST_CreateIter(_ASGST_Iterator* iterator, void* ucontext, int32_t options) {
+int ASGST_CreateIter(_ASGST_Iterator* iterator, void* ucontext, int32_t options, bool allow_safepoints) {
 
   bool include_non_java_frames = (options & ASGST_INCLUDE_NON_JAVA_FRAMES) != 0;
 
 
-  int kindOrError = ASGST_Check(&iterator->thread);
+  int kindOrError = ASGST_Check(&iterator->thread, allow_safepoints);
   // handle error case
   if (kindOrError <= 0) {
     return kindOrError;
@@ -230,12 +230,12 @@ int ASGST_CreateIter(_ASGST_Iterator* iterator, void* ucontext, int32_t options)
   return 0;
 }
 
-int ASGST_CreateIterFromFrame(_ASGST_Iterator* iterator, void* sp, void* fp, void* pc, int32_t options) {
+int ASGST_CreateIterFromFrame(_ASGST_Iterator* iterator, void* sp, void* fp, void* pc, int32_t options, bool allow_safepoints) {
 
   bool include_non_java_frames = (options & ASGST_INCLUDE_NON_JAVA_FRAMES) != 0;
 
 
-  int kindOrError = ASGST_Check(&iterator->thread);
+  int kindOrError = ASGST_Check(&iterator->thread, allow_safepoints);
   // handle error case
   if (kindOrError <= 0) {
     return kindOrError;
@@ -352,7 +352,7 @@ int ASGST_RunWithIterator(void* ucontext, int options, void (*fun)(ASGST_Iterato
   ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
   iterator->reset();
   IterRAII raii; // destroy iterator on exit
-  int ret = ASGST_CreateIter(iterator, ucontext, options);
+  int ret = ASGST_CreateIter(iterator, ucontext, options, false);
   if (ret <= 0) {
     return ret;
   }
@@ -365,7 +365,7 @@ int ASGST_RunWithIteratorFromFrame(void* sp, void* fp, void* pc, int options, vo
   ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
   iterator->reset();
   IterRAII raii; // destroy iterator on exit
-  int ret = ASGST_CreateIterFromFrame(iterator, sp, fp, pc, options);
+  int ret = ASGST_CreateIterFromFrame(iterator, sp, fp, pc, options, false);
   if (ret <= 0) {
     return ret;
   }
@@ -383,7 +383,7 @@ void ASGST_RewindIterator(ASGST_Iterator* iterator) {
 // no JVMTI_THREAD_STATE_INTERRUPTED, limited JVMTI_THREAD_STATE_SUSPENDED
 int ASGST_ThreadState() {
   JavaThread* thread;
-  if (ASGST_Check(&thread) <= 0) {
+  if (ASGST_Check(&thread, true) <= 0) {
     return -1;
   }
   int state = JVMTI_THREAD_STATE_ALIVE;
@@ -490,42 +490,49 @@ bool ASGST_DeregisterQueue(JNIEnv* env, ASGST_Queue* queue) {
 
 class ASGSTQueueOnSafepointHandlerImpl : public ASGSTQueueOnSafepointHandler {
   int options;
+  bool offer_iterator;
   ASGST_OnQueueSafepointHandler fun;
   void* on_queue_arg;
 public:
-  ASGSTQueueOnSafepointHandlerImpl(int options, ASGST_OnQueueSafepointHandler fun, void* on_queue_arg) : options(options), fun(fun), on_queue_arg(on_queue_arg) {}
+  ASGSTQueueOnSafepointHandlerImpl(int options, bool offer_iterator,
+    ASGST_OnQueueSafepointHandler fun, void* on_queue_arg) :
+    options(options), offer_iterator(offer_iterator), fun(fun), on_queue_arg(on_queue_arg) {}
   void operator()(ASGSTQueue* queue, JavaFrameAnchor* frame_anchor) override {
-    int8_t iter[sizeof(ASGST_Iterator)]; // no need for default constructor
-    ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
-    iterator->reset();
-    iterator->thread = JavaThread::current();
-    IterRAII raii; // destroy iterator on exit
-    if (frame_anchor->last_Java_pc() == nullptr) {
-      return;
+    if (offer_iterator) {
+      int8_t iter[sizeof(ASGST_Iterator)]; // no need for default constructor
+      ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
+      iterator->reset();
+      iterator->thread = JavaThread::current();
+      IterRAII raii; // destroy iterator on exit
+      if (frame_anchor->last_Java_pc() == nullptr) {
+        return;
+      }
+      frame f = frame(frame_anchor->last_Java_sp(), frame_anchor->last_Java_fp(), frame_anchor->last_Java_pc());
+      initStackWalker(iterator, options, f, false);
+      iterator->initialArgs.frame = f;
+      iterator->initialArgs.allowThreadLastFrameUse = false;
+      fun((ASGST_Queue*)queue, iterator, on_queue_arg);
+    } else {
+      fun((ASGST_Queue*)queue, nullptr, on_queue_arg);
     }
-    frame f = frame(frame_anchor->last_Java_sp(), frame_anchor->last_Java_fp(), frame_anchor->last_Java_pc());
-    initStackWalker(iterator, options, f, false);
-    iterator->initialArgs.frame = f;
-    iterator->initialArgs.allowThreadLastFrameUse = false;
-    fun((ASGST_Queue*)queue, iterator, on_queue_arg);
   }
 };
 
-void ASGST_SetOnQueueProcessingStart(ASGST_Queue* queue, int options, ASGST_OnQueueSafepointHandler before, void* arg) {
+void ASGST_SetOnQueueProcessingStart(ASGST_Queue* queue, int options, bool offerIterator, ASGST_OnQueueSafepointHandler before, void* arg) {
   ASGSTQueue* q = (ASGSTQueue*)queue;
   if (before == nullptr) {
     q->set_before(nullptr);
   } else {
-    q->set_before(new ASGSTQueueOnSafepointHandlerImpl(options, before, arg));
+    q->set_before(new ASGSTQueueOnSafepointHandlerImpl(options, offerIterator, before, arg));
   }
 }
 
-void ASGST_SetOnQueueProcessingEnd(ASGST_Queue* queue, int options, ASGST_OnQueueSafepointHandler after, void* arg) {
+void ASGST_SetOnQueueProcessingEnd(ASGST_Queue* queue, int options, bool offerIterator, ASGST_OnQueueSafepointHandler after, void* arg) {
   ASGSTQueue* q = (ASGSTQueue*)queue;
   if (after == nullptr) {
     q->set_after(nullptr);
   } else {
-    q->set_after(new ASGSTQueueOnSafepointHandlerImpl(options, after, arg));
+    q->set_after(new ASGSTQueueOnSafepointHandlerImpl(options, offerIterator, after, arg));
   }
 }
 
@@ -549,6 +556,15 @@ void enqueueFindFirstJavaFrame(ASGST_Iterator* iterator, void* arg) {
 }
 
 int ASGST_Enqueue(ASGST_Queue* queue, void* ucontext, void* argument) {
+  /*auto* cur = JavaThread::current_or_null();
+  if (cur != nullptr) {
+    if (cur->is_at_safepoint()) {
+      printf("at safepoint\n");
+    }
+    if (cur->is_at_poll_safepoint()) {
+      printf("at poll safepoint\n");
+    }
+  }*/
   if (queue == nullptr) {
     return ASGST_ENQUEUE_NO_QUEUE;
   }
@@ -565,8 +581,14 @@ int ASGST_Enqueue(ASGST_Queue* queue, void* ucontext, void* argument) {
   return worked ? (int)ASGST_JAVA_TRACE : (int)ASGST_ENQUEUE_FULL_QUEUE;
 }
 
-int ASGST_QueueSize(ASGST_Queue* queue) {
-  return ((ASGSTQueue*)queue)->length();
+ASGST_QueueSizeInfo ASGST_GetQueueSizeInfo(ASGST_Queue* queue) {
+  ASGSTQueue* q = (ASGSTQueue*)queue;
+  return {q->length(), q->capacity(), q->attempts()};
+}
+
+void ASGST_ResizeQueue(ASGST_Queue* queue, int size) {
+  ASGSTQueue* q = (ASGSTQueue*)queue;
+  q->trigger_resize(size);
 }
 
 ASGST_QueueElement ASGST_GetQueueElement(ASGST_Queue* queue, int n) {
@@ -815,7 +837,7 @@ public:
     ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
     iterator->reset();
     IterRAII raii; // destroy iterator on exit
-    int ret = ASGST_CreateIterFromFrame(iterator, fr.sp(), fr.fp(), fr.pc(), _options);
+    int ret = ASGST_CreateIterFromFrame(iterator, fr.sp(), fr.fp(), fr.pc(), _options, true);
     if (ret == 0) {
       return;
     }

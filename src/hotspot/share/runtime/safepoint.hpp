@@ -197,6 +197,8 @@ class ThreadSafepointState: public CHeapObj<mtThread> {
  private:
   // At polling page safepoint (NOT a poll return safepoint):
   volatile bool                   _at_poll_safepoint;
+  // At polling page or return safepoint:
+  volatile bool                   _at_safepoint;
   JavaThread*                     _thread;
   bool                            _safepoint_safe;
   volatile uint64_t               _safepoint_id;
@@ -226,8 +228,12 @@ class ThreadSafepointState: public CHeapObj<mtThread> {
   void     set_safepoint_id(uint64_t sid);
 
   // Support for safepoint timeout (debugging)
-  bool is_at_poll_safepoint()           { return _at_poll_safepoint; }
+  bool is_at_poll_safepoint() const     { return _at_poll_safepoint; }
   void set_at_poll_safepoint(bool val)  { _at_poll_safepoint = val; }
+
+  // Support for checking if in safepoint
+  bool is_at_safepoint()                { return _at_safepoint; }
+  void set_at_safepoint(bool val)       { _at_safepoint = val; }
 
   void handle_polling_page_exception();
 

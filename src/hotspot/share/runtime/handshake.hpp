@@ -123,22 +123,29 @@ class ASGSTQueueOnSafepointHandler : public CHeapObj<mtServiceability> {
 };
 
 class ASGSTQueue : public CHeapObj<mtServiceability> {
-  int id;
-  JavaThread* thread;
-  ASGSTQueueElement* elements;
-  int size;
+  int _id;
+  JavaThread* _thread;
+  ASGSTQueueElement* _elements;
+  int _capacity;
   // pop: head increase
-  int head;
+  volatile int _head;
   // push: tail increase
-  int tail;
-  ASGSTQueueElementHandler* handler;
-  ASGSTQueueOnSafepointHandler* before_handler = nullptr;
-  ASGSTQueueOnSafepointHandler* after_handler = nullptr;
+  volatile int _tail;
+  volatile int _attempts;
+  ASGSTQueueElementHandler* _handler;
+  ASGSTQueueOnSafepointHandler* _before_handler = nullptr;
+  ASGSTQueueOnSafepointHandler* _after_handler = nullptr;
 
   std::mutex _handler_lock;
 
   ASGSTQueue* _next = nullptr;
 
+  // suggested new size, -1 for no resize
+  int _new_size;
+
+  // resize if new size is set, drops all elements still enqueued,
+  // so clean it
+  void resize_if_needed();
 public:
 
   // Constructor
@@ -146,9 +153,9 @@ public:
   ASGSTQueue(int id, JavaThread *thread, size_t size,
              ASGSTQueueElementHandler *handler);
 
-  int max_size() const { return size; }
-  int length() const { return (tail < head ? (tail + size) : tail) - head; }
-  bool is_full() const { return length() >= max_size(); }
+  int capacity() const { return _capacity; }
+  int length() const { return (_tail < _head ? (_tail + _capacity) : _tail) - _head; }
+  bool is_full() const { return length() >= capacity(); }
   bool is_empty() const { return length() <= 0; }
   ASGSTQueueElement get(int n);
   // use the methods in HandshakeState to enqueue/dequeue
@@ -159,20 +166,25 @@ public:
   ASGSTQueueElement *pop();
 
   ~ASGSTQueue() {
-    delete handler;
-    os::free(elements);
-    delete before_handler;
-    delete after_handler;
+    delete _handler;
+    os::free(_elements);
+    delete _before_handler;
+    delete _after_handler;
   }
 
   void handle(ASGSTQueueElement* element, JavaFrameAnchor* frame_anchor) {
-    (*handler)(element, frame_anchor);
+    (*_handler)(element, frame_anchor);
   }
 
   // called directly before the handle method invocations at a safe-point
+  //
+  // triggers the registered handle
   void before(JavaFrameAnchor *frame_anchor);
 
   // called directly after the handle method invocations at a safe-point
+  //
+  // triggers the registered handle, resizes the queue if requested,
+  // and resets the attempts
   void after(JavaFrameAnchor *frame_anchor);
 
   // sets the before handler and deletes the previous handler if present
@@ -182,7 +194,7 @@ public:
   void set_after(ASGSTQueueOnSafepointHandler *handler);
 
   bool equals(const ASGSTQueue* other) const {
-    return other != nullptr && id == other->id;
+    return other != nullptr && _id == other->_id;
   }
 
   bool in_current_thread();
@@ -192,6 +204,15 @@ public:
   void set_next(ASGSTQueue* next) { _next = next; }
 
   bool has_next() const { return _next != nullptr; }
+
+  // returns the number of push calls since the last finish of a safepoint
+  int attempts() const { return _attempts; }
+
+  // trigger resize to happen at next finish of a safepoint / after call
+  void trigger_resize(int new_size) {
+    assert(in_current_thread(), "only call from current thread");
+    _new_size = new_size;
+  }
 };
 
 // The HandshakeState keeps track of an ongoing handshake for this JavaThread.
