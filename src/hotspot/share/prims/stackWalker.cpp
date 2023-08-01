@@ -23,15 +23,16 @@
  */
 
 #include "stackWalker.hpp"
-#include "code/codeCache.hpp"
 #include "code/debugInfoRec.hpp"
 #include "code/pcDesc.hpp"
 #include "gc/shared/collectedHeap.inline.hpp"
 #include "memory/resourceArea.hpp"
 #include "memory/universe.hpp"
+#include "oops/method.hpp"
 #include "oops/oop.inline.hpp"
 #include "prims/forte.hpp"
 #include "prims/jvmtiExport.hpp"
+#include "runtime/frame.hpp"
 #include "runtime/frame.inline.hpp"
 #include "runtime/javaCalls.hpp"
 #include "runtime/registerMap.hpp"
@@ -40,7 +41,6 @@
 #include "runtime/vframeArray.hpp"
 #include "runtime/vframe_hp.hpp"
 #include "compiler/compilerDefinitions.hpp"
-
 
 // the following code was originally present in the forte.cpp file
 // it is moved in to this file to allow reuse in JFR
@@ -229,10 +229,11 @@ static bool is_decipherable_native_frame(frame* fr, CompiledMethod* nm) {
   return fr->cb()->frame_size() >= 0;
 }
 
-StackWalker::StackWalker(JavaThread* thread, frame top_frame, bool skip_c_frames, bool end_at_first_java_frame, bool allow_thread_last_frame_use, int max_c_frames_skip):
+StackWalker::StackWalker(JavaThread* thread, frame top_frame, bool skip_c_frames, bool end_at_first_java_frame, bool allow_thread_last_frame_use, CompiledMethod* top_method, int max_c_frames_skip):
   _thread(thread),
   _skip_c_frames(skip_c_frames),
   _end_at_first_java_frame(end_at_first_java_frame),
+  _top_method(top_method),
   _max_c_frames_skip(max_c_frames_skip),
   _allow_thread_last_frame_use(allow_thread_last_frame_use),
   _frame(top_frame),
@@ -342,6 +343,10 @@ void StackWalker::advance() {
   if (at_end_or_error()) {
     return;
   }
+  if (is_at_first_bc_java_frame()) {
+    set_state(STACKWALKER_END);
+    return;
+  }
   if (in_c_on_top) {
     advance_fully_c();
   } else {
@@ -355,7 +360,7 @@ bool StackWalker::checkFrame() {
   if (_thread == nullptr) {
     return true;
   }
-  if (/*!_frame.safe_for_sender(_thread) ||*/ _frame.is_first_frame()) {
+  if (/*!_frame.safe_for_sender(_thread) || */_frame.is_first_frame()) {
     if (_skip_c_frames) {
       set_state(STACKWALKER_END);
       return false;
@@ -396,7 +401,7 @@ void StackWalker::process(bool potentially_first_java_frame) {
 // assumes that _frame has been advanced and not already in compiled stream
 // leaves the _frame unchanged
 void StackWalker::process_normal(bool potentially_first_java_frame) {
-  if (_frame.cb() == nullptr || !os::is_readable_pointer(_frame.cb())){
+  if (!os::is_readable_pointer2(_frame.cb())){
     set_state(STACKWALKER_C_FRAME);
     return;
   }
@@ -408,7 +413,7 @@ void StackWalker::process_normal(bool potentially_first_java_frame) {
   if (_frame.is_native_frame()) {
     CompiledMethod* nm = _frame.cb()->as_compiled_method();
     if (!is_decipherable_native_frame(&_frame, nm)) {
-      set_state(STACKWALKER_INDECIPHERABLE_FRAME);
+      set_state(STACKWALKER_INDECIPHERABLE_NATIVE_FRAME);
       return;
     }
     _method = nm->method();
@@ -423,11 +428,15 @@ void StackWalker::process_normal(bool potentially_first_java_frame) {
     if (_end_at_first_java_frame) {
       // native frames seems to cause problems
       is_at_first_java_frame = true;
-      set_state(STACKWALKER_END);
+      set_state(STACKWALKER_FIRST_JAVA_FRAME);
       return;
     }
     if (_allow_thread_last_frame_use && potentially_first_java_frame && _thread != nullptr && _thread->has_last_Java_frame()) {
-      _frame.set_pc(_thread->last_Java_pc());
+      frame f = _frame;
+      f.set_pc(_thread->last_Java_pc());
+      if (f.is_interpreted_frame() || f.is_compiled_frame()) { // sanity checks
+        _frame = f;
+      }
     }
     if (_frame.is_interpreted_frame()) {
       _inlined = false;
@@ -435,7 +444,32 @@ void StackWalker::process_normal(bool potentially_first_java_frame) {
       _compilation_level = 0;
       if (!_frame.is_interpreted_frame_valid(_thread) ||
           (potentially_first_java_frame && !is_decipherable_first_interpreted_frame(_thread, &_frame, &_method, &_bci))) {
-        set_state(STACKWALKER_INDECIPHERABLE_FRAME);
+        if (potentially_first_java_frame && _top_method != nullptr && Method::is_valid_method(_top_method->method())) {
+          // handle first Java frame differently if we know the method
+          // this happens currently only when we're at a return safepoint of an interpreted method
+         Method* method = _top_method->method();
+          address bcp = method->bcp_from((address)*_frame.interpreter_frame_bcp_addr());
+          int bci = _top_method->method()->validate_bci_from_bcp(bcp);
+          _method = method;
+          if (method->is_native()) {
+            // because is_interpreted_frame return true for native method frames too
+            bci = 0;
+            _bci = -1;
+            _inlined = false;
+            _compilation_level = -1;
+            set_state(STACKWALKER_NATIVE_FRAME);
+            return;
+          }
+          if (bci < 0) {
+            bci = 0;
+          }
+          _bci    = bci;
+          set_state(STACKWALKER_INTERPRETED_FRAME);
+          assert(!_inlined || in_c_on_top || !_st.invalid(), "have to advance somehow 2");
+          had_first_java_frame = true;
+          return;
+        }
+        set_state(STACKWALKER_INDECIPHERABLE_INTERPRETED_FRAME);
         return;
       }
       if (_method == nullptr) {
@@ -512,7 +546,7 @@ void StackWalker::process_normal(bool potentially_first_java_frame) {
 
 bool StackWalker::is_frame_indecipherable() {
   if (_frame.cb()->is_compiled()) {
-    if (!os::is_readable_pointer(_frame.cb()->as_compiled_method()->method())) {
+    if (!os::is_readable_pointer2(_frame.cb()->as_compiled_method()->method())) {
       return true;
     }
   }

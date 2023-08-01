@@ -23,6 +23,7 @@
  */
 
 #include "handshake.hpp"
+#include "code/compiledMethod.hpp"
 #include "memory/allocation.hpp"
 #include "precompiled.hpp"
 #include "classfile/javaClasses.hpp"
@@ -35,7 +36,7 @@
 #include "runtime/globals.hpp"
 #include "runtime/handshake.hpp"
 #include "runtime/interfaceSupport.inline.hpp"
-#include "runtime/javaFrameAnchor.hpp"
+#include "runtime/javaThread.hpp"
 #include "runtime/javaThread.inline.hpp"
 #include "runtime/os.hpp"
 #include "runtime/osThread.hpp"
@@ -561,12 +562,12 @@ void HandshakeState::remove_op(HandshakeOperation* op) {
   assert(ret == op, "Popped op must match requested op");
 };
 
-bool HandshakeState::process_by_self(bool allow_suspend, bool check_async_exception) {
+bool HandshakeState::process_by_self(bool allow_suspend, bool check_async_exception, frame* caller_frame, CompiledMethod* cm) {
   assert(Thread::current() == _handshakee, "should call from _handshakee");
   assert(!_handshakee->is_terminated(), "should not be a terminated thread");
   _handshakee->frame_anchor()->make_walkable();
   if (has_asgst_queues()) {
-    process_asgst_queue(_handshakee->frame_anchor());
+    process_asgst_queue(caller_frame == nullptr ? _handshakee->last_frame() : *caller_frame, cm);
   }
   // Threads shouldn't block if they are in the middle of printing, but...
   ttyLocker::break_tty_lock_for_safepoint(os::current_thread_id());
@@ -777,7 +778,9 @@ void ASGSTQueue::resize_if_needed() {
   // we know that this method is only called during safepoints
   // where no new elements are added
   if (_new_size != -1 && _new_size != _capacity) {
-    assert(length() == 0, "cannot resize a non-empty queue");
+    // we might loose some elements here, as they might be added
+    // between the pop loop and the resize here
+    transition_to_close_asgst_queue();
     ASGSTQueueElement* new_elements =
       (ASGSTQueueElement*)os::malloc(sizeof(ASGSTQueueElement) * _new_size, mtServiceability);
     _head = 0;
@@ -785,6 +788,7 @@ void ASGSTQueue::resize_if_needed() {
     _capacity = _new_size;
     os::free(_elements);
     _elements = new_elements;
+    open_asgst_queue();
   }
   _new_size == -1;
 }
@@ -797,18 +801,18 @@ ASGSTQueue::ASGSTQueue(int id, JavaThread *thread, size_t size,
       _capacity(size), _head(0), _tail(0), _attempts(0), _handler(handler),
       _new_size(-1) {}
 
-void ASGSTQueue::before(JavaFrameAnchor *frame_anchor) {
+void ASGSTQueue::before(frame top_frame, CompiledMethod* cm) {
   std::lock_guard<std::mutex> lock(_handler_lock);
   if (_before_handler != nullptr) {
-    (*_before_handler)(this, frame_anchor);
+    (*_before_handler)(this, top_frame, cm);
   }
 }
 
-void ASGSTQueue::after(JavaFrameAnchor *frame_anchor) {
+void ASGSTQueue::after(frame top_frame, CompiledMethod* cm) {
   {
     std::lock_guard<std::mutex> lock(_handler_lock);
     if (_after_handler != nullptr) {
-      (*_after_handler)(this, frame_anchor);
+      (*_after_handler)(this, top_frame, cm);
     }
   }
   resize_if_needed();
@@ -835,20 +839,26 @@ bool ASGSTQueue::in_current_thread() {
   return JavaThread::current_or_null_safe() == _thread;
 }
 
-ASGSTQueueElement ASGSTQueue::get(int n) {
+ASGSTQueueElement* ASGSTQueue::get(int n) {
   return n < length() && n >= 0 ?
-    _elements[(_head + n) % _capacity] :
-    ASGSTQueueElement{nullptr, nullptr};
+    &_elements[(_head + n) % _capacity] :
+    nullptr;
 }
 
-bool ASGSTQueue::push(ASGSTQueueElement element) {
+ASGSTQueuePushResult ASGSTQueue::push(ASGSTQueueElement element) {
+  if (!transition_to_push_to_asgst_queue()) {
+    printf("safepoint transition_to_push_to_asgst_queue failed\n");
+    return ASGST_QUEUE_PUSH_CLOSED;
+  }
   _attempts++;
   if ((_tail + 1) % _capacity == _head) {
-    return false;
+    finished_push_to_asgst_queue();
+    return ASGST_QUEUE_PUSH_FULL;
   }
   _elements[_tail] = element;
   _tail = (_tail + 1) % _capacity;
-  return true;
+  finished_push_to_asgst_queue();
+  return ASGST_QUEUE_PUSH_SUCCESS;
 }
 
 ASGSTQueueElement *ASGSTQueue::pop() {
@@ -950,17 +960,19 @@ bool HandshakeState::remove_asgst_queue(ASGSTQueue* queue) {
   }
 }
 
-bool HandshakeState::asgst_enqueue(ASGSTQueue* queue, ASGSTQueueElement element) {
-  if (!queue->push(element)) {
-    return false;
+ASGSTQueuePushResult HandshakeState::asgst_enqueue(ASGSTQueue* queue, ASGSTQueueElement element) {
+  auto result = queue->push(element);
+  if (result != ASGST_QUEUE_PUSH_SUCCESS) {
+    return result;
   }
   _asgst_queue_size++;
   assert(_handshakee == JavaThread::current(), "");
   SafepointMechanism::arm_local_poll_release(JavaThread::current());
-  return true;
+  //printf("enqueue asgst_queue poll_data %p is armed %d\n", JavaThread::current()->poll_data(), SafepointMechanism::local_poll_armed(JavaThread::current()));
+  return result;
 }
 
-void HandshakeState::process_asgst_queue(JavaFrameAnchor* frame_anchor) {
+void HandshakeState::process_asgst_queue(frame top_frame, CompiledMethod* cm) {
   if (_asgst_queue_size == 0) {
     return; // nothing to do
   }
@@ -969,12 +981,12 @@ void HandshakeState::process_asgst_queue(JavaFrameAnchor* frame_anchor) {
     if (q->length() == 0) {
       continue;
     }
-    q->before(frame_anchor);
+    q->before(top_frame, cm);
     while (q->length() > 0) {
       ASGSTQueueElement* element = q->pop();
-      q->handle(element, frame_anchor);
+      q->handle(element, top_frame, cm);
       _asgst_queue_size--;
     }
-    q->after(frame_anchor);
+    q->after(top_frame, cm);
   }
 }

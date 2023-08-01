@@ -25,6 +25,7 @@
 #ifndef SHARE_RUNTIME_SAFEPOINTMECHANISM_HPP
 #define SHARE_RUNTIME_SAFEPOINTMECHANISM_HPP
 
+#include "runtime/frame.hpp"
 #include "runtime/globals.hpp"
 #include "runtime/osInfo.hpp"
 #include "utilities/globalDefinitions.hpp"
@@ -49,7 +50,7 @@ class SafepointMechanism : public AllStatic {
 
   static inline bool global_poll();
 
-  static void process(JavaThread *thread, bool allow_suspend, bool check_async_exception);
+  static void process(JavaThread *thread, bool allow_suspend, bool check_async_exception, frame* top_frame = nullptr, CompiledMethod* cm = nullptr);
 
   static void default_initialize();
 
@@ -79,8 +80,9 @@ class SafepointMechanism : public AllStatic {
   static inline bool should_process(JavaThread* thread, bool allow_suspend = true);
 
   // Processes a pending requested operation.
-  static inline void process_if_requested(JavaThread* thread, bool allow_suspend, bool check_async_exception);
-  static inline void process_if_requested_with_exit_check(JavaThread* thread, bool check_async_exception);
+  // pass caller_frame if thread->last_frame() is not suitable
+  static inline void process_if_requested(JavaThread* thread, bool allow_suspend, bool check_async_exception, frame* caller_frame = nullptr, CompiledMethod* cm = nullptr);
+  static inline void process_if_requested_with_exit_check(JavaThread* thread, bool check_async_exception, frame* caller_frame = nullptr, CompiledMethod* cm = nullptr);
   // Compute what the poll values should be and install them.
   static void update_poll_values(JavaThread* thread);
 

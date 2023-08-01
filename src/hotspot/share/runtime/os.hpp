@@ -537,6 +537,8 @@ class os: AllStatic {
 
   // Check if pointer points to readable memory (by 4-byte read access)
   static bool    is_readable_pointer(const void* p);
+  // slightly optimized version, checks for nullptr first
+  static bool    is_readable_pointer2(const void* p);
   static bool    is_readable_range(const void* from, const void* to);
 
   // threads

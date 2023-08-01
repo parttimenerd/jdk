@@ -57,6 +57,8 @@ ASGST_DeregisterQueue
 ASGST_SetOnQueueProcessingStart
 ASGST_SetOnQueueProcessingEnd
 ASGST_Enqueue
+ASGST_EnqueueElement
+ASGST_GetEnqueuablePC
 ASGST_GetQueueSizeInfo
 ASGST_ResizeQueue
 ASGST_GetQueueElement
