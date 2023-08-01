@@ -2206,7 +2206,15 @@ void TemplateTable::_return(TosState state)
     __ safepoint_poll(slow_path, true /* at_return */, false /* acquire */, false /* in_nmethod */);
     __ br(Assembler::AL, fast_path);
     __ bind(slow_path);
+    address the_pc = __ pc();
+    __ push(state);
+
+    __ push_cont_fastpath(rthread);
+    __ set_last_Java_frame(esp, rfp, (address) the_pc, rscratch1);
     __ super_call_VM_leaf(CAST_FROM_FN_PTR(address, InterpreterRuntime::at_safepoint), rthread);
+    __ reset_last_Java_frame(true);
+    __ pop_cont_fastpath(rthread);
+    __ pop(state);
     __ bind(fast_path);
   }
 
