@@ -913,11 +913,13 @@ void ThreadSafepointState::handle_polling_page_exception() {
   set_at_safepoint(true);
   JavaThread* self = thread();
   assert(self == JavaThread::current(), "must be self");
+  self->handshake_state()->transition_to_close_asgst_queues();
 
   // Step 1: Find the nmethod from the return address
   address real_return_addr = self->saved_exception_pc();
 
   CodeBlob *cb = CodeCache::find_blob(real_return_addr);
+
   assert(cb != nullptr && cb->is_compiled(), "return address should be in nmethod");
   CompiledMethod* nm = (CompiledMethod*)cb;
 
@@ -952,16 +954,15 @@ void ThreadSafepointState::handle_polling_page_exception() {
       assert(oopDesc::is_oop_or_null(result), "must be oop");
       return_value = Handle(self, result);
       assert(Universe::heap()->is_in_or_null(result), "must be heap pointer");
+
     }
 
     // We get here if compiled return polls found a reason to call into the VM.
     // One condition for that is that the top frame is not yet safe to use.
     // The following stack watermark barrier poll will catch such situations.
     StackWatermarkSet::after_unwind(self);
-
     // Process pending operation
-    SafepointMechanism::process_if_requested_with_exit_check(self, true /* check asyncs */);
-
+    SafepointMechanism::process_if_requested_with_exit_check(self, true /* check asyncs */, &caller_fr, nm);
     // restore oop result, if any
     if (return_oop) {
       caller_fr.set_saved_oop_result(&map, return_value());
@@ -1014,6 +1015,7 @@ void ThreadSafepointState::handle_polling_page_exception() {
       }
     }
   }
+  self->handshake_state()->open_asgst_queues();
   set_at_safepoint(false);
 }
 

@@ -86,14 +86,15 @@ enum ASGST_TRACE_KIND {
 };
 
 enum ASGST_Error {
-  ASGST_NO_FRAME           =  0, // come to and end
-  ASGST_NO_THREAD          = -1, // thread is not here
-  ASGST_THREAD_EXIT        = -2, // dying thread
-  ASGST_UNSAFE_STATE       = -3, // thread is in unsafe state
-  ASGST_NO_TOP_JAVA_FRAME  = -4, // no top java frame
-  ASGST_ENQUEUE_NO_QUEUE   = -5, // no queue registered
-  ASGST_ENQUEUE_FULL_QUEUE = -6, // safepoint queue is full
-  // everything lower is implementation specific
+  ASGST_NO_FRAME            =  0, // come to and end
+  ASGST_NO_THREAD           = -1, // thread is not here
+  ASGST_THREAD_EXIT         = -2, // dying thread
+  ASGST_UNSAFE_STATE        = -3, // thread is in unsafe state
+  ASGST_NO_TOP_JAVA_FRAME   = -4, // no top java frame
+  ASGST_ENQUEUE_NO_QUEUE    = -5, // no queue registered
+  ASGST_ENQUEUE_FULL_QUEUE  = -6, // safepoint queue is full
+  ASGST_ENQUEUE_OTHER_ERROR = -7, // other error, like currently at safepoint
+  // everything lower than -16 is implementation specific
 };
 
 // Note: Safepoint == Thread Local Handshake
@@ -124,18 +125,35 @@ JNIEXPORT
 void ASGST_RewindIterator(ASGST_Iterator* iterator);
 
 // Obtains the next frame from the iterator
-// @returns 1 if successful, else error code
+// @returns 1 if successful, else error code / end
+// @see ASGST_State
+//
+// Typically used in a loop like:
+//
+// ASGST_Iterator* iterator = ...;
+// ASGST_Frame frame;
+// while (ASGST_NextFrame(iterator, &frame) == 1) {
+//   // do something with frame
+// }
+//
+// When using ASGST_END_ON_FIRST_JAVA_FRAME, then the first byte-code backed
+// frame (not native Java) causes ASGST_NextFrame to return 0 and to
+// only populate the pc, fp and sp fields of the frame, the frame
+// has type ASGST_FRAME_JAVA. On error the return value is the error
+// code and the frame type is 0, as well as all pointer fields.
 //
 // Signal safe, has to be called on thread that belongs to the frame.
 JNIEXPORT
-int ASGST_NextFrame(ASGST_Iterator* iter, ASGST_Frame* frame);
+int ASGST_NextFrame(ASGST_Iterator* iterator, ASGST_Frame* frame);
 
-// State of the iterator, corresponding to the next frame
+// State of the iterator, corresponding to the next frame return code
 // @returns error code or 1 if no error
+// if iterator is null or at end, return ASGST_NO_FRAME,
+// returns a value < -16 if the implementation encountered a specific error
 //
 // Signal safe, has to be called on thread that belongs to the frame.
 JNIEXPORT
-int ASGST_State(ASGST_Iterator* iter);
+int ASGST_State(ASGST_Iterator* iterator);
 
 // Returns state of the current thread, which is a subset
 // of the JVMTI thread state.
@@ -209,6 +227,12 @@ typedef struct {
 // Signal safe
 JNIEXPORT
 int ASGST_GetMethodLineNumberTable(ASGST_Method method, ASGST_MethodLineNumberEntry* entries, int length);
+
+// Returns the line number for a given BCI, or -1 if not available
+//
+// Signal safe
+JNIEXPORT
+jint ASGST_GetMethodLineNumber(ASGST_Method method, jint bci);
 
 // Similar to GetMethodInfo
 //
@@ -307,6 +331,7 @@ void ASGST_SetOnQueueProcessingEnd(ASGST_Queue* queue, int options, bool offerIt
 
 // Enqueue the processing of the current stack at the end of the queue and return the kind (or error if <= 0)
 // you have to deal with the top C and native frames yourself (but there is an option for this)
+//
 // @param argument argument passed through to the ASGST_Handler for the queue as the third argument
 // @return kind or error, returns ASGST_ENQUEUE_FULL_QUEUE if queue is full
 // or ASGST_ENQUEUE_NO_QUEUE if queue is null
@@ -316,6 +341,36 @@ void ASGST_SetOnQueueProcessingEnd(ASGST_Queue* queue, int options, bool offerIt
 // Requires ASGST_REGISTER_QUEUE capability
 JNIEXPORT
 int ASGST_Enqueue(ASGST_Queue* queue, void* ucontext, void* argument);
+
+// Obtains the PC that would be stored in the queue if Enqueue was called
+// Returns != 1 if an error occurred or kind is different
+//
+// Signal safe
+// Requires ASGST_REGISTER_QUEUE capability
+JNIEXPORT
+int ASGST_GetEnqueuablePC(void* ucontext, void** pc);
+
+typedef struct {
+  void* pc;  // program counter of the top most Java frame
+  void* fp;
+  void* sp;
+  void* arg; // argument passed through to the handler
+} ASGST_QueueElement;
+
+// Like ASGST_Enqueue, but enqueue a pc directly
+//
+// Important: The pc has to be the valid pc of the top most Java frame,
+// this can be obtained by running the iterator with
+// the ASGST_END_ON_FIRST_JAVA_FRAME option
+//
+// @return kind or error, returns ASGST_ENQUEUE_FULL_QUEUE if queue is full
+// or ASGST_ENQUEUE_NO_QUEUE if queue is null
+//
+// Signal safe, but has to be called with a queue that belongs to the current thread, or the thread
+// has to be stopped during the duration of this call
+// Requires ASGST_REGISTER_QUEUE capability
+JNIEXPORT
+int ASGST_EnqueueElement(ASGST_Queue* queue, ASGST_QueueElement element);
 
 typedef struct {
   jint size; // size of the queue
@@ -338,18 +393,19 @@ ASGST_QueueSizeInfo ASGST_GetQueueSizeInfo(ASGST_Queue* queue);
 JNIEXPORT
 void ASGST_ResizeQueue(ASGST_Queue* queue, int size);
 
-typedef struct {
-  void* pc;  // null if invalid
-  void* arg; // null if invalid
-} ASGST_QueueElement;
-
 // Returns the nth element in the queue (from the front),
 // 0 gives you the first/oldest element.
 // -1 gives you the youngest element, ..., -size the oldest.
 //
+// Modification of the returned element are allowed, as long as the
+// queue has not been modified between the call to ASGST_GetQueueElement
+// and the modification
+//
+// @returns null if n is out of bounds
+//
 // Signal safe
 JNIEXPORT
-ASGST_QueueElement ASGST_GetQueueElement(ASGST_Queue* queue, int n);
+ASGST_QueueElement* ASGST_GetQueueElement(ASGST_Queue* queue, int n);
 
 // the following requires ASGST_MARK_FRAME capabilities
 // and most methods are not signal safe

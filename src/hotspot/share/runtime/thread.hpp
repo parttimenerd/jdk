@@ -636,11 +636,20 @@ protected:
 #endif // __APPLE__ && AARCH64
 
  private:
-  bool _in_async_stack_walking = false;
+  volatile int _async_stack_walking_depth = 0;
  public:
    // to adapt assertions during asynchronous stack walking
-  inline bool in_async_stack_walking() { return _in_async_stack_walking; }
-  inline void set_in_async_stack_walking(bool b) { _in_async_stack_walking = b; }
+  inline bool in_async_stack_walking() { return _async_stack_walking_depth > 0; }
+  inline void set_in_async_stack_walking(bool b) {
+    // using a volatile integer to count the number of nested calls
+    // which might be caused by signal handler
+    if (b) {
+      _async_stack_walking_depth++;
+    } else {
+      assert(_async_stack_walking_depth > 0, "invariant");
+      _async_stack_walking_depth--;
+    }
+  }
 
   static bool currently_in_async_stack_walking() {
     Thread* thread = Thread::current_or_null_safe();

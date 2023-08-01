@@ -303,10 +303,11 @@ class frame {
 
  private:
   intptr_t* interpreter_frame_locals() const;
-  intptr_t* interpreter_frame_bcp_addr() const;
   intptr_t* interpreter_frame_mdp_addr() const;
 
  public:
+  intptr_t* interpreter_frame_bcp_addr() const;
+
   // Locals
 
   // The _at version returns a pointer because the address is used for GC.

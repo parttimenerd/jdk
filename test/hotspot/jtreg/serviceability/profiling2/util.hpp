@@ -220,7 +220,7 @@ void initASGCT() {
   if (asgct != nullptr) {
     return;
   }
-  void *mptr = dlsym((void*)nullptr, "AsyncGetCallTrace");
+  void *mptr = dlsym((void*)-2, "AsyncGetCallTrace");
   if (mptr == nullptr) {
     fprintf(stderr, "Error: could not find AsyncGetCallTrace!\n");
     exit(0);

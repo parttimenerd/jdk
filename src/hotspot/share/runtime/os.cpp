@@ -1160,6 +1160,10 @@ bool os::is_readable_pointer(const void* p) {
   return (SafeFetch32(aligned, cafebabe) != cafebabe) || (SafeFetch32(aligned, deadbeef) != deadbeef);
 }
 
+bool os::is_readable_pointer2(const void *p) {
+  return (size_t)p != 0 && is_readable_pointer(p);
+}
+
 bool os::is_readable_range(const void* from, const void* to) {
   if ((uintptr_t)from >= (uintptr_t)to) return false;
   for (uintptr_t p = align_down((uintptr_t)from, min_page_size()); p < (uintptr_t)to; p += min_page_size()) {

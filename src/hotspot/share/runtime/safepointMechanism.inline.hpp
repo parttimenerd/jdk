@@ -25,6 +25,9 @@
 #ifndef SHARE_RUNTIME_SAFEPOINTMECHANISM_INLINE_HPP
 #define SHARE_RUNTIME_SAFEPOINTMECHANISM_INLINE_HPP
 
+#include "code/compiledMethod.hpp"
+#include "runtime/frame.hpp"
+#include "runtime/javaFrameAnchor.hpp"
 #include "runtime/safepointMechanism.hpp"
 
 #include "runtime/atomic.hpp"
@@ -57,12 +60,15 @@ bool SafepointMechanism::global_poll() {
 }
 
 bool SafepointMechanism::should_process(JavaThread* thread, bool allow_suspend) {
+  if (thread->handshake_state() != nullptr && thread->handshake_state()->has_asgst_queues()) {
+   // printf("should_process %d\n", __LINE__);
+  }
   if (!local_poll_armed(thread)) {
     return false;
   }
 
   if (global_poll() || // Safepoint
-      thread->handshake_state()->has_operation(allow_suspend, false /* check_async_exception */) || // Handshake
+      thread->handshake_state()->can_run(allow_suspend, false /* check_async_exception */) || // Handshake
       !StackWatermarkSet::processing_started(thread)) { // StackWatermark processing is not started
     return true;
   }
@@ -75,17 +81,17 @@ bool SafepointMechanism::should_process(JavaThread* thread, bool allow_suspend) 
   return false;
 }
 
-void SafepointMechanism::process_if_requested(JavaThread* thread, bool allow_suspend, bool check_async_exception) {
+void SafepointMechanism::process_if_requested(JavaThread* thread, bool allow_suspend, bool check_async_exception, frame* caller_frame, CompiledMethod* cm) {
   // Check NoSafepointVerifier. This also clears unhandled oops if CheckUnhandledOops is used.
   thread->check_possible_safepoint();
 
   if (local_poll_armed(thread)) {
-    process(thread, allow_suspend, check_async_exception);
+    process(thread, allow_suspend, check_async_exception, caller_frame, cm);
   }
 }
 
-void SafepointMechanism::process_if_requested_with_exit_check(JavaThread* thread, bool check_async_exception) {
-  process_if_requested(thread, true /* allow_suspend */, check_async_exception);
+void SafepointMechanism::process_if_requested_with_exit_check(JavaThread* thread, bool check_async_exception, frame* caller_frame, CompiledMethod* cm) {
+  process_if_requested(thread, true /* allow_suspend */, check_async_exception, caller_frame, cm);
   if (thread->has_special_runtime_exit_condition()) {
     thread->handle_special_runtime_exit_condition();
   }

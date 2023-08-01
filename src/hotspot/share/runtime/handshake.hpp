@@ -25,12 +25,13 @@
 #ifndef SHARE_RUNTIME_HANDSHAKE_HPP
 #define SHARE_RUNTIME_HANDSHAKE_HPP
 
+#include "code/relocInfo.hpp"
 #include "memory/allStatic.hpp"
 #include "memory/allocation.hpp"
 #include "memory/iterator.hpp"
 #include "runtime/atomic.hpp"
 #include "runtime/flags/flagSetting.hpp"
-#include "runtime/javaFrameAnchor.hpp"
+#include "runtime/frame.hpp"
 #include "runtime/mutex.hpp"
 #include "runtime/orderAccess.hpp"
 #include "runtime/os.hpp"
@@ -39,13 +40,11 @@
 #include "utilities/globalDefinitions.hpp"
 #include "utilities/linkedlist.hpp"
 
+#include "utilities/vmassert_uninstall.hpp"
 #include <atomic>
 #include <functional>
 #include <mutex>
-#ifdef assert
-#undef assert
-#endif
-#define assert(p, ...) vmassert(p, __VA_ARGS__)
+#include "utilities/vmassert_reinstall.hpp"
 
 class HandshakeOperation;
 class AsyncHandshakeOperation;
@@ -102,24 +101,34 @@ class ASGSTQueue;
 
 class ASGSTQueueElement {
   void* _pc;
+  void* _fp;
+  void* _sp;
   void* _argument;
 public:
-  ASGSTQueueElement(void* pc, void* argument) : _pc(pc), _argument(argument) {}
-  ASGSTQueueElement(): ASGSTQueueElement(nullptr, nullptr) {}
+  ASGSTQueueElement(void* pc, void* fp, void *sp, void* argument) : _pc(pc), _fp(fp), _sp(sp), _argument(argument) {}
+  ASGSTQueueElement(): ASGSTQueueElement(nullptr, nullptr, nullptr, nullptr) {}
   void* pc() const { return _pc; }
+  void* fp() const { return _fp; }
+  void* sp() const { return _sp; }
   void* argument() const { return _argument; }
 };
 
 class ASGSTQueueElementHandler : public CHeapObj<mtServiceability> {
  public:
-  virtual void operator()(ASGSTQueueElement*, JavaFrameAnchor*) = 0;
+  virtual void operator()(ASGSTQueueElement*, frame top_frame, CompiledMethod* cm = nullptr) = 0;
   virtual ~ASGSTQueueElementHandler() {}
 };
 
 class ASGSTQueueOnSafepointHandler : public CHeapObj<mtServiceability> {
  public:
-  virtual void operator()(ASGSTQueue*, JavaFrameAnchor*) = 0;
+  virtual void operator()(ASGSTQueue*, frame top_frame, CompiledMethod* cm = nullptr) = 0;
   virtual ~ASGSTQueueOnSafepointHandler() {}
+};
+
+enum ASGSTQueuePushResult: int8_t {
+  ASGST_QUEUE_PUSH_SUCCESS = 0,
+  ASGST_QUEUE_PUSH_FULL = 1,
+  ASGST_QUEUE_PUSH_CLOSED = 2
 };
 
 class ASGSTQueue : public CHeapObj<mtServiceability> {
@@ -132,6 +141,13 @@ class ASGSTQueue : public CHeapObj<mtServiceability> {
   // push: tail increase
   volatile int _tail;
   volatile int _attempts;
+
+  const int STATE_CLOSED             = 0;
+  const int STATE_OPEN               = 1;
+  const int STATE_CURRENTLY_PUSHING  = 2;
+
+  volatile int _state = STATE_OPEN;
+
   ASGSTQueueElementHandler* _handler;
   ASGSTQueueOnSafepointHandler* _before_handler = nullptr;
   ASGSTQueueOnSafepointHandler* _after_handler = nullptr;
@@ -146,6 +162,15 @@ class ASGSTQueue : public CHeapObj<mtServiceability> {
   // resize if new size is set, drops all elements still enqueued,
   // so clean it
   void resize_if_needed();
+
+  bool transition_to_push_to_asgst_queue() {
+    return Atomic::cmpxchg(&_state, STATE_OPEN, STATE_CURRENTLY_PUSHING) == STATE_OPEN;
+  }
+
+  void finished_push_to_asgst_queue() {
+    assert(_state == STATE_CURRENTLY_PUSHING, "wrong state");
+    _state = STATE_OPEN;
+  }
 public:
 
   // Constructor
@@ -157,35 +182,35 @@ public:
   int length() const { return (_tail < _head ? (_tail + _capacity) : _tail) - _head; }
   bool is_full() const { return length() >= capacity(); }
   bool is_empty() const { return length() <= 0; }
-  ASGSTQueueElement get(int n);
+  // or null if no such element
+  ASGSTQueueElement* get(int n);
+
   // use the methods in HandshakeState to enqueue/dequeue
 
-  bool push(ASGSTQueueElement element);
+  ASGSTQueuePushResult push(ASGSTQueueElement element);
 
   // element or null if empty
   ASGSTQueueElement *pop();
 
   ~ASGSTQueue() {
+    transition_to_close_asgst_queue();
     delete _handler;
     os::free(_elements);
     delete _before_handler;
     delete _after_handler;
-  }
-
-  void handle(ASGSTQueueElement* element, JavaFrameAnchor* frame_anchor) {
-    (*_handler)(element, frame_anchor);
+    // no need to open the queue, as it is removed anyway
   }
 
   // called directly before the handle method invocations at a safe-point
   //
   // triggers the registered handle
-  void before(JavaFrameAnchor *frame_anchor);
+  void before(frame top_frame, CompiledMethod* cm = nullptr);
 
   // called directly after the handle method invocations at a safe-point
   //
   // triggers the registered handle, resizes the queue if requested,
   // and resets the attempts
-  void after(JavaFrameAnchor *frame_anchor);
+  void after(frame top_frame, CompiledMethod* cm = nullptr);
 
   // sets the before handler and deletes the previous handler if present
   void set_before(ASGSTQueueOnSafepointHandler *handler);
@@ -212,6 +237,24 @@ public:
   void trigger_resize(int new_size) {
     assert(in_current_thread(), "only call from current thread");
     _new_size = new_size;
+  }
+
+  void handle(ASGSTQueueElement* element, frame top_frame, CompiledMethod* cm = nullptr) const {
+    (*_handler)(element, top_frame, cm);
+  }
+
+  // e.g. during return safepoint handling
+  void transition_to_close_asgst_queue() {
+    while (Atomic::cmpxchg(&_state, STATE_OPEN, STATE_CLOSED) != STATE_OPEN) {
+      // spin, the same thread is currently pushing to the queues in a signal handler, or some other method
+      // maybe we don't need this, but I'm unsure, so I leave it in to be on the safe side
+    }
+  }
+
+  // reversal of transition_to_close_asgst_queues
+  void open_asgst_queue() {
+    assert(_state == STATE_CLOSED, "wrong state");
+    _state = STATE_OPEN;
   }
 };
 
@@ -254,7 +297,9 @@ class HandshakeState {
       return op == _op;
     }
   };
+  bool has_operation() { return !_queue.is_empty(); }
 
+  bool has_operation(bool allow_suspend, bool check_async_exception);
  public:
 
   HandshakeState(JavaThread* thread);
@@ -262,10 +307,12 @@ class HandshakeState {
 
   void add_operation(HandshakeOperation* op);
 
-  bool has_operation() { return !_queue.is_empty(); }
+
   // does calling process_by_self make sense?
-  bool can_run() { return has_operation() || has_asgst_queues(); }
-  bool has_operation(bool allow_suspend, bool check_async_exception);
+  bool can_run() { return has_operation() || has_asgst_entries(); }
+  bool can_run(bool allow_suspend, bool check_async_exception) {
+    return has_operation(allow_suspend, check_async_exception) || has_asgst_entries();
+  }
   bool has_async_exception_operation();
   void clean_async_exception_operation();
 
@@ -274,7 +321,7 @@ class HandshakeState {
   // If the method returns true we need to check for a possible safepoint.
   // This is due to a suspension handshake which put the JavaThread in blocked
   // state so a safepoint may be in-progress.
-  bool process_by_self(bool allow_suspend, bool check_async_exception);
+  bool process_by_self(bool allow_suspend, bool check_async_exception, frame* top_frame = nullptr, CompiledMethod* cm = nullptr);
 
   enum ProcessResult {
     _no_operation = 0,
@@ -292,7 +339,7 @@ class HandshakeState {
 
   bool remove_asgst_queue(ASGSTQueue* queue);
 
-  bool asgst_enqueue(ASGSTQueue* queue, ASGSTQueueElement element);
+  ASGSTQueuePushResult asgst_enqueue(ASGSTQueue* queue, ASGSTQueueElement element);
 
   int asgst_queue_size() const { return _asgst_queue_size; }
 
@@ -323,9 +370,28 @@ class HandshakeState {
   std::atomic<int> _asgst_queue_size = {0};
   StackWatermark* volatile _asgst_watermark = 0;
 
-  void process_asgst_queue(JavaFrameAnchor* frame_anchor);
+public:
+
+
+  // e.g. during return safepoint handling
+  void transition_to_close_asgst_queues() {
+    for (ASGSTQueue* queue = _asgst_queue_start; queue != nullptr; queue = queue->next()) {
+      queue->transition_to_close_asgst_queue();
+    }
+  }
+
+  // reversal of transition_to_close_asgst_queues
+  void open_asgst_queues() {
+    for (ASGSTQueue* queue = _asgst_queue_start; queue != nullptr; queue = queue->next()) {
+      queue->open_asgst_queue();
+    }
+  }
 
   bool has_asgst_queues() const { return _asgst_queue_start != nullptr; }
+  bool has_asgst_entries() const { return _asgst_queue_start != nullptr && _asgst_queue_size > 0; }
+
+private:
+  void process_asgst_queue(frame top_frame, CompiledMethod* cm = nullptr);
 
   // Called from the suspend handshake.
   bool suspend_with_handshake();

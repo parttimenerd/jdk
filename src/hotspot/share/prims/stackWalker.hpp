@@ -26,6 +26,7 @@
 #ifndef SHARE_JFR_RECORDER_STACKTRACE_STACKWALKER_HPP
 #define SHARE_JFR_RECORDER_STACKTRACE_STACKWALKER_HPP
 
+#include "code/compiledMethod.hpp"
 #include "runtime/frame.hpp"
 #include "runtime/registerMap.hpp"
 #include "runtime/thread.hpp"
@@ -52,7 +53,9 @@ class compiledFrameStream : public vframeStreamCommon {
 enum StackWalkerError {
   STACKWALKER_NO_JAVA_FRAME        =  0,  // too many c frames to skip and no java frame found
   STACKWALKER_INDECIPHERABLE_FRAME = -1,
-  STACKWALKER_GC_ACTIVE            = -2,
+  STACKWALKER_INDECIPHERABLE_NATIVE_FRAME = -2,
+  STACKWALKER_INDECIPHERABLE_INTERPRETED_FRAME = -3,
+  STACKWALKER_GC_ACTIVE            = -3,
   STACKWALKER_NOT_WALKABLE         = -6
 };
 
@@ -62,7 +65,9 @@ enum StackWalkerReturn {
   STACKWALKER_COMPILED_FRAME = 3,
   STACKWALKER_NATIVE_FRAME = 4,
   STACKWALKER_C_FRAME = 5, // might be runtime, stub or real C frame
-  STACKWALKER_START = 6
+  // at first bytecode backed Java frame, related to end_at_first_java_frame
+  STACKWALKER_FIRST_JAVA_FRAME = 6,
+  STACKWALKER_START = 7
 };
 
 // walk the stack of a thread from any given frame
@@ -74,6 +79,7 @@ class StackWalker {
   // can be null for non java threads (only c frames then)
   JavaThread* _thread;
 
+  // skip C frames between the Java frames
   bool _skip_c_frames;
 
   // end at the first/top most java frame, but don't process it, just obtain pc, fp and sp
@@ -81,6 +87,13 @@ class StackWalker {
   // java frame = bytecode backed frame
   bool _end_at_first_java_frame;
 
+  // method of the top Java frame if the frames method is not available
+  // currently only supported for interpreted Java frames
+  // TODO: Maybe replace with Method*
+  CompiledMethod* _top_method;
+
+  // maximum number of C frames to skip, use this if there a problems with too large C stacks
+  // in JNI libraries. ASGST limits it too.
   int _max_c_frames_skip;
 
   // allow to use _thread->last_java_frame()
@@ -106,12 +119,16 @@ class StackWalker {
 
   RegisterMap _map;
 
+  // frame stream to walk the inner frames of compiled frames
   compiledFrameStream _st;
 
+  // just walking the stack till the thread initiating frame
   bool in_c_on_top;
 
+  // had first java frame (bytecode backed or native)
   bool had_first_java_frame;
 
+  // is at first byte code backed Java frame
   bool is_at_first_java_frame = false;
 
   frame next_c_frame(frame fr);
@@ -144,7 +161,7 @@ class StackWalker {
 
 public:
 
-  StackWalker(JavaThread* thread, frame top_frame, bool skip_c_frames = true, bool end_at_first_java_frame = false, bool allow_thread_last_frame_use = true, int max_c_frames_skip = -1);
+  StackWalker(JavaThread* thread, frame top_frame, bool skip_c_frames = true, bool end_at_first_java_frame = false, bool allow_thread_last_frame_use = true, CompiledMethod* top_method = nullptr, int max_c_frames_skip = -1);
 
   // requires a non null thread
   StackWalker(JavaThread* thread, bool skip_c_frames = true, int max_c_frames_skip = -1);
@@ -172,6 +189,10 @@ public:
 
   // not at and and not at error
   bool has_frame() const { return !at_end_or_error() || is_at_first_java_frame; }
+
+  // only if end_at_first_java_frame is true, stops afterwards
+  // only base_frame is valid
+  bool is_at_first_bc_java_frame() const { return _state == STACKWALKER_FIRST_JAVA_FRAME; }
 
   bool is_interpreted_frame() const { return _state == STACKWALKER_INTERPRETED_FRAME; }
 
@@ -207,7 +228,6 @@ public:
 
   // return frame count
   int walk_till_end_or_error();
-
 
   // true: found Java frame
   bool walk_till_first_java_frame();

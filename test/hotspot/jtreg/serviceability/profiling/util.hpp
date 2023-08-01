@@ -329,7 +329,7 @@ void printGSTFrame(FILE* stream, jvmtiFrameInfo frame) {
   } else {
     fprintf(stream, "Java frame   ");
     printMethod(stream, frame.method);
-    fprintf(stream, ": %d", frame.location);
+    fprintf(stream, ": %d", (int)frame.location);
   }
 }
 
