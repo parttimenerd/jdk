@@ -206,7 +206,7 @@ typedef struct {
 // Safe to call from signal handlers.
 // A field is set to null if the information is not available.
 //
-// Signal safe
+// Signal safe, but methods can be unloaded concurrently, use unload handler
 JNIEXPORT
 void ASGST_GetMethodInfo(ASGST_Method method, ASGST_MethodInfo* info);
 
@@ -342,14 +342,6 @@ void ASGST_SetOnQueueProcessingEnd(ASGST_Queue* queue, int options, bool offerIt
 JNIEXPORT
 int ASGST_Enqueue(ASGST_Queue* queue, void* ucontext, void* argument);
 
-// Obtains the PC that would be stored in the queue if Enqueue was called
-// Returns != 1 if an error occurred or kind is different
-//
-// Signal safe
-// Requires ASGST_REGISTER_QUEUE capability
-JNIEXPORT
-int ASGST_GetEnqueuablePC(void* ucontext, void** pc);
-
 typedef struct {
   void* pc;  // program counter of the top most Java frame
   void* fp;
@@ -357,20 +349,31 @@ typedef struct {
   void* arg; // argument passed through to the handler
 } ASGST_QueueElement;
 
-// Like ASGST_Enqueue, but enqueue a pc directly
+// Obtains the element that would be stored in the queue if Enqueue was called
+// Returns != 1 if an error occurred or kind is different
 //
-// Important: The pc has to be the valid pc of the top most Java frame,
-// this can be obtained by running the iterator with
-// the ASGST_END_ON_FIRST_JAVA_FRAME option
+// arg is set to null
 //
-// @return kind or error, returns ASGST_ENQUEUE_FULL_QUEUE if queue is full
-// or ASGST_ENQUEUE_NO_QUEUE if queue is null
-//
-// Signal safe, but has to be called with a queue that belongs to the current thread, or the thread
-// has to be stopped during the duration of this call
+// Signal safe
 // Requires ASGST_REGISTER_QUEUE capability
 JNIEXPORT
-int ASGST_EnqueueElement(ASGST_Queue* queue, ASGST_QueueElement element);
+int ASGST_GetEnqueuableElement(void* ucontext, ASGST_QueueElement* element);
+
+// Returns the nth element in the queue (from the front),
+// 0 gives you the first/oldest element.
+// -1 gives you the youngest element, ..., -size the oldest.
+//
+// Modification of the returned element are allowed, as long as the
+// queue's size has not been modified between the call to ASGST_GetQueueElement
+// and the modification (e.g. by calling ASGST_ResizeQueue).
+//
+// Modifiying anything besides the arg field is highly discouraged.
+//
+// @returns null if n is out of bounds
+//
+// Signal safe
+JNIEXPORT
+ASGST_QueueElement* ASGST_GetQueueElement(ASGST_Queue* queue, int n);
 
 typedef struct {
   jint size; // size of the queue
@@ -392,20 +395,6 @@ ASGST_QueueSizeInfo ASGST_GetQueueSizeInfo(ASGST_Queue* queue);
 // Requires ASGST_REGISTER_QUEUE capability
 JNIEXPORT
 void ASGST_ResizeQueue(ASGST_Queue* queue, int size);
-
-// Returns the nth element in the queue (from the front),
-// 0 gives you the first/oldest element.
-// -1 gives you the youngest element, ..., -size the oldest.
-//
-// Modification of the returned element are allowed, as long as the
-// queue has not been modified between the call to ASGST_GetQueueElement
-// and the modification
-//
-// @returns null if n is out of bounds
-//
-// Signal safe
-JNIEXPORT
-ASGST_QueueElement* ASGST_GetQueueElement(ASGST_Queue* queue, int n);
 
 // the following requires ASGST_MARK_FRAME capabilities
 // and most methods are not signal safe

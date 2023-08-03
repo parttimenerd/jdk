@@ -322,6 +322,10 @@ class frame {
   address interpreter_frame_bcp() const;
   void    interpreter_frame_set_bcp(address bcp);
 
+  // returns a bcp which is only valid if the frame is interpreted and not native
+  // otherwise undefined but safe
+  address potential_interpreter_frame_bcp_safe() const;
+
   // method data pointer
   address interpreter_frame_mdp() const;
   void    interpreter_frame_set_mdp(address dp);

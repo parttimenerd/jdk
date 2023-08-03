@@ -156,6 +156,9 @@ do {                                                                           \
 } while (0)
 #endif
 
+#ifdef assert
+#undef assert
+#endif
 // For backward compatibility.
 #define assert(p, ...) vmassert(p, __VA_ARGS__)
 

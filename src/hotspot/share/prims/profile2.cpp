@@ -61,14 +61,14 @@ struct _ASGST_InitialIteratorArgs {
   bool allowThreadLastFrameUse;
   bool invalidSpAndFp;
   bool switchToThreadBased;
-  CompiledMethod* cm;
+  StackWalkerMiscArguments misc;
 
   void reset() {
     frame = {};
     allowThreadLastFrameUse = true;
     invalidSpAndFp = false;
     switchToThreadBased = false;
-    cm = nullptr;
+    misc = {};
   }
 };
 
@@ -91,11 +91,11 @@ struct _ASGST_Iterator {
   }
 };
 
-static int initStackWalker(_ASGST_Iterator *iterator, int options, frame frame, bool allow_thread_last_frame_use = true, CompiledMethod* cm = nullptr) {
+static int initStackWalker(_ASGST_Iterator *iterator, int options, frame frame, bool allow_thread_last_frame_use = true, StackWalkerMiscArguments misc = {}) {
   iterator->walker = StackWalker(iterator->thread, frame,
     (options & ASGST_INCLUDE_NON_JAVA_FRAMES) == 0,
     (options & ASGST_END_ON_FIRST_JAVA_FRAME) != 0,
-    allow_thread_last_frame_use, cm);
+    allow_thread_last_frame_use, misc);
   iterator->options = options;
   return ASGST_JAVA_TRACE;
 }
@@ -252,6 +252,7 @@ int ASGST_CreateIterFromFrame(_ASGST_Iterator* iterator, void* sp, void* fp, voi
   return ret < 1 ? ret : ASGST_JAVA_TRACE;
 }
 
+
 void resetFrame(ASGST_Frame* frame) {
   frame->pc = nullptr;
   frame->sp = nullptr;
@@ -262,11 +263,11 @@ void resetFrame(ASGST_Frame* frame) {
   frame->type = 0;
 }
 
-void setFrame(ASGST_Iterator *iter, ASGST_Frame *frame) {
+void setFrame(ASGST_Iterator *iter, ASGST_Frame *frame, bool invalidSpAndFp = false) {
   auto* f = iter->walker.base_frame();
   frame->pc = f->pc();
-  frame->sp = iter->invalidSpAndFp ? nullptr : f->sp();
-  frame->fp = iter->invalidSpAndFp ? nullptr : f->fp();
+  frame->sp = invalidSpAndFp ? nullptr : f->sp();
+  frame->fp = invalidSpAndFp ? nullptr : f->fp();
 }
 
 int ASGST_NextFrame(ASGST_Iterator *iter, ASGST_Frame *frame) {
@@ -299,7 +300,8 @@ int ASGST_NextFrame(ASGST_Iterator *iter, ASGST_Frame *frame) {
   } else {
     frame->type = ASGST_FRAME_NON_JAVA;
   }
-  if (iter->switchToThreadBased && !iter->walker.is_inlined() && iter->top_frame.pc() != nullptr) {
+  if (iter->switchToThreadBased && !iter->walker.is_inlined() && iter->top_frame.pc() != nullptr && !iter->walker.at_first_java_frame()) {
+    printf("switch\n");
     iter->switchToThreadBased = false;
     iter->invalidSpAndFp = false;
     int8_t walkerBytes[sizeof(StackWalker)]; // backup the old walker
@@ -394,7 +396,8 @@ int ASGST_RunWithIteratorFromFrame(void* sp, void* fp, void* pc, int options, vo
 void ASGST_RewindIterator(ASGST_Iterator* iterator) {
   iterator->switchToThreadBased = iterator->initialArgs.switchToThreadBased;
   iterator->invalidSpAndFp = iterator->initialArgs.invalidSpAndFp;
-  initStackWalker(iterator, iterator->options, iterator->initialArgs.frame, iterator->initialArgs.allowThreadLastFrameUse, iterator->initialArgs.cm);
+  initStackWalker(iterator, iterator->options, iterator->initialArgs.frame,
+    iterator->initialArgs.allowThreadLastFrameUse, iterator->initialArgs.misc);
 }
 
 // state or -1
@@ -473,11 +476,11 @@ public:
 
     frame fExtended = frame(element->sp(), element->fp(),
       element->pc() != nullptr ? (address)element->pc() : top_frame.pc());
-
-    initStackWalker(iterator, options, fExtended, false, cm);
+    StackWalkerMiscArguments misc{cm != nullptr ? cm->method() : nullptr, (address)element->bcp()};
+    initStackWalker(iterator, options, fExtended, false, misc);
     iterator->initialArgs.allowThreadLastFrameUse = false;
     iterator->initialArgs.frame = fExtended;
-    iterator->initialArgs.cm = cm;
+    iterator->initialArgs.misc = misc;
 
     if (element->pc() != nullptr && fExtended.pc() != top_frame.pc() && top_frame.pc() != nullptr) {
       iterator->switchToThreadBased = true;
@@ -528,10 +531,12 @@ public:
         return;
       }
       frame f = top_frame;
-      initStackWalker(iterator, options, f, false, cm);
+      StackWalkerMiscArguments misc{cm != nullptr ? cm->method() : nullptr,
+        (address)top_frame.potential_interpreter_frame_bcp_safe()};
+      initStackWalker(iterator, options, f, false, misc);
       iterator->initialArgs.frame = f;
       iterator->initialArgs.allowThreadLastFrameUse = false;
-      iterator->initialArgs.cm = cm;
+      iterator->initialArgs.misc = misc;
       fun((ASGST_Queue*)queue, iterator, on_queue_arg);
     } else {
       fun((ASGST_Queue*)queue, nullptr, on_queue_arg);
@@ -559,9 +564,7 @@ void ASGST_SetOnQueueProcessingEnd(ASGST_Queue* queue, int options, bool offerIt
 
 struct EnqueueFindFirstJavaFrameStruct {
   int kindOrError; // 1, no error, 2 no Java frame, < 0 error
-  void* pc;
-  void* fp;
-  void* sp;
+  ASGSTQueueElement elem;
   JavaThread* thread;
 };
 
@@ -572,9 +575,8 @@ void enqueueFindFirstJavaFrame(ASGST_Iterator* iterator, void* arg) {
     return;
   }
   argument->kindOrError = 1;
-  argument->pc = iterator->walker.base_frame()->pc();
-  argument->fp = iterator->walker.base_frame()->fp();
-  argument->sp = iterator->walker.base_frame()->sp();
+  const frame* base_frame = iterator->walker.base_frame();
+  argument->elem = {base_frame->pc(), base_frame->fp(), base_frame->sp(), nullptr, base_frame->potential_interpreter_frame_bcp_safe()};
   argument->thread = iterator->thread;
 }
 
@@ -594,33 +596,12 @@ int ASGST_Enqueue(ASGST_Queue* queue, void* ucontext, void* argument) {
   if (runArgument.kindOrError != ASGST_JAVA_TRACE) {
     return 0;
   }
-  return ASGST_EnqueueElement(queue, {runArgument.pc, runArgument.fp, runArgument.sp, argument});
-}
-
-int ASGST_GetEnqueuablePC(void* ucontext, void** pc) {
-  EnqueueFindFirstJavaFrameStruct runArgument;
-  int kind = ASGST_RunWithIterator(ucontext, ASGST_END_ON_FIRST_JAVA_FRAME, &enqueueFindFirstJavaFrame, &runArgument);
-  if (kind != ASGST_JAVA_TRACE) {
-    return kind;
-  }
-  if (runArgument.kindOrError != ASGST_JAVA_TRACE) {
-    return runArgument.kindOrError;
-  }
-  *pc = runArgument.pc;
-  return 1;
-}
-
-int ASGST_EnqueueElement(ASGST_Queue* queue, ASGST_QueueElement element) {
-  if (queue == nullptr) {
-    return ASGST_ENQUEUE_NO_QUEUE;
-  }
-  assert(JavaThread::current_or_null() != nullptr, "must be called from a JavaThread");
-  ASGSTQueue *q = (ASGSTQueue*)queue;
   assert(q->in_current_thread(), "must be called from the same thread");
   if (q->is_full()) {
     return ASGST_ENQUEUE_FULL_QUEUE;
   }
-  ASGSTQueuePushResult worked = JavaThread::current()->handshake_state()->asgst_enqueue(q, {element.pc, element.fp, element.sp, element.arg});
+  ASGSTQueueElement elem = runArgument.elem.set_argument(argument);
+  ASGSTQueuePushResult worked = JavaThread::current()->handshake_state()->asgst_enqueue(q, elem);
   switch (worked) {
     case ASGST_QUEUE_PUSH_SUCCESS:
       return ASGST_JAVA_TRACE;
@@ -633,6 +614,24 @@ int ASGST_EnqueueElement(ASGST_Queue* queue, ASGST_QueueElement element) {
   }
 }
 
+int ASGST_GetEnqueuableElement(void* ucontext, ASGST_QueueElement* element) {
+  EnqueueFindFirstJavaFrameStruct runArgument;
+  int kind = ASGST_RunWithIterator(ucontext, ASGST_END_ON_FIRST_JAVA_FRAME, &enqueueFindFirstJavaFrame, &runArgument);
+  if (kind != ASGST_JAVA_TRACE) {
+    return kind;
+  }
+  if (runArgument.kindOrError != ASGST_JAVA_TRACE) {
+    return runArgument.kindOrError;
+  }
+  *element = {runArgument.elem.pc(), runArgument.elem.fp(), runArgument.elem.sp(), nullptr};
+  return 1;
+}
+
+ASGST_QueueElement* ASGST_GetQueueElement(ASGST_Queue* queue, int n) {
+  ASGSTQueue* q = (ASGSTQueue*)queue;
+  auto elem = q->get(n < 0 ? (q->length() + n) : n);
+  return (ASGST_QueueElement*)elem;
+}
 
 ASGST_QueueSizeInfo ASGST_GetQueueSizeInfo(ASGST_Queue* queue) {
   ASGSTQueue* q = (ASGSTQueue*)queue;
@@ -644,13 +643,24 @@ void ASGST_ResizeQueue(ASGST_Queue* queue, int size) {
   q->trigger_resize(size);
 }
 
-ASGST_QueueElement* ASGST_GetQueueElement(ASGST_Queue* queue, int n) {
-  ASGSTQueue* q = (ASGSTQueue*)queue;
-  auto elem = q->get(n < 0 ? (q->length() + n) : n);
-  return (ASGST_QueueElement*)elem;
+static bool isClassValid(ASGST_Class klass) {
+  Klass* k = (Klass*)klass;
+  return os::is_readable_pointer2(k);
+}
+
+// checks that a method and it's constant pool are readable
+static bool isMethodValid(ASGST_Method method) {
+  Method* m = (Method*)method;
+  return os::is_readable_pointer2(m) && Method::is_valid_method(m) &&
+      os::is_readable_pointer2(m->constMethod()) &&
+      os::is_readable_pointer2(m->constMethod()->constants()) &&
+      isClassValid((ASGST_Class) m->method_holder());
 }
 
 jmethodID ASGST_MethodToJMethodID(ASGST_Method method) {
+  if (!isMethodValid(method)) {
+    return nullptr;
+  }
   return (jmethodID)((Method*)method)->find_jmethod_id_or_null();
 }
 
@@ -689,8 +699,7 @@ void nullField(char* char_field, jint* length_field) {
 }
 
 void ASGST_GetMethodInfo(ASGST_Method method, ASGST_MethodInfo* info) {
-  Method *m = (Method*)method;
-  if (m == nullptr || !os::is_readable_pointer2(m->constMethod())) {
+  if (!isMethodValid(method)) {
     nullField(info->method_name, &info->method_name_length);
     nullField(info->signature, &info->signature_length);
     nullField(info->generic_signature, &info->generic_signature_length);
@@ -700,9 +709,11 @@ void ASGST_GetMethodInfo(ASGST_Method method, ASGST_MethodInfo* info) {
     info->class_idnum = 0;
     return;
   }
+  Method *m = (Method*)method;
   auto cm = m->constMethod();
 
   auto constants = cm->constants();
+
   InstanceKlass *klass = constants->pool_holder();
   info->klass = (ASGST_Class)klass;
   info->idnum = cm->orig_method_idnum();
@@ -714,7 +725,7 @@ void ASGST_GetMethodInfo(ASGST_Method method, ASGST_MethodInfo* info) {
 }
 
 jint ASGST_GetMethodIdNum(ASGST_Method method) {
-  if (method == nullptr) {
+  if (!isMethodValid(method)) {
     return 0;
   }
   return ((Method*)method)->orig_method_idnum();
@@ -735,7 +746,7 @@ int ASGST_GetMethodLineNumberTable(ASGST_Method method, ASGST_MethodLineNumberEn
 }
 
 jint ASGST_GetMethodLineNumber(ASGST_Method method, jint bci) {
-  if (method == nullptr || bci == -1) {
+  if (!isMethodValid(method) || bci == -1) {
     return -1;
   }
   Method* m = (Method*)method;
@@ -753,7 +764,7 @@ jint ASGST_GetMethodLineNumber(ASGST_Method method, jint bci) {
 }
 
 void ASGST_GetClassInfo(ASGST_Class klass, ASGST_ClassInfo *info) {
-  if (!os::is_readable_pointer2(klass)) {
+  if (!isClassValid(klass)) {
     nullField(info->class_name, &info->class_name_length);
     nullField(info->generic_class_name, &info->generic_class_name_length);
     info->modifiers = 0;
@@ -774,10 +785,13 @@ void ASGST_GetClassInfo(ASGST_Class klass, ASGST_ClassInfo *info) {
 }
 
 jlong ASGST_GetClassIdNum(ASGST_Class klass) {
-  return klass == nullptr || !((Klass*)klass)->is_instance_klass() ? 0 : ((InstanceKlass*)klass)->orig_idnum();
+  return !isClassValid(klass) || !((Klass*)klass)->is_instance_klass() ? 0 : ((InstanceKlass*)klass)->orig_idnum();
 }
 
 ASGST_Class ASGST_GetClass(ASGST_Method method) {
+  if (!isMethodValid(method)) {
+    return nullptr;
+  }
   Method *m = (Method*)method;
   InstanceKlass *klass = m->method_holder();
   return (ASGST_Class)klass;
@@ -789,7 +803,7 @@ ASGST_Class ASGST_JClassToClass(jclass klass) {
 
 jclass ASGST_ClassToJClass(ASGST_Class klass) {
   JavaThread* thread = JavaThread::current_or_null();
-  return klass != nullptr && thread != nullptr ?
+  return isClassValid(klass) && thread != nullptr ?
     (jclass)JNIHandles::make_local(thread, ((Klass*)klass)->java_mirror()) : nullptr;
 }
 
