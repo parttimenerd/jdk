@@ -27,6 +27,7 @@
 #define SHARE_JFR_RECORDER_STACKTRACE_STACKWALKER_HPP
 
 #include "code/compiledMethod.hpp"
+#include "oops/method.hpp"
 #include "runtime/frame.hpp"
 #include "runtime/registerMap.hpp"
 #include "runtime/thread.hpp"
@@ -70,10 +71,26 @@ enum StackWalkerReturn {
   STACKWALKER_START = 7
 };
 
+// miscelaneous arguments for StackWalker,
+// mainly used for walking the stack at safepoints
+class StackWalkerMiscArguments {
+  // method of the top Java frame if the frames method is not available
+  // currently only supported for interpreted Java frames
+  Method* _top_method = nullptr;
+  // bcp of the first Java frame if this frame is interpreted and valid
+  address _top_interp_bcp = nullptr;
+public:
+  StackWalkerMiscArguments() {};
+  StackWalkerMiscArguments(Method* top_method, address top_interp_bcp):
+    _top_method(top_method), _top_interp_bcp(top_interp_bcp) {};
+  Method* top_method() const { return _top_method; }
+  address top_interp_bcp() const { return _top_interp_bcp; }
+};
+
 // walk the stack of a thread from any given frame
 // includes all c frames and lot's of checks
 // borrowed from forte.hpp
-class StackWalker {
+class  StackWalker {
 
   // Java thread to walk
   // can be null for non java threads (only c frames then)
@@ -87,10 +104,7 @@ class StackWalker {
   // java frame = bytecode backed frame
   bool _end_at_first_java_frame;
 
-  // method of the top Java frame if the frames method is not available
-  // currently only supported for interpreted Java frames
-  // TODO: Maybe replace with Method*
-  CompiledMethod* _top_method;
+  StackWalkerMiscArguments _misc;
 
   // maximum number of C frames to skip, use this if there a problems with too large C stacks
   // in JNI libraries. ASGST limits it too.
@@ -133,6 +147,8 @@ class StackWalker {
 
   frame next_c_frame(frame fr);
 
+  int get_bci_from_interp_frame(Method* method);
+
   void init();
 
   void process(bool potentially_first_java_frame = false);
@@ -161,7 +177,9 @@ class StackWalker {
 
 public:
 
-  StackWalker(JavaThread* thread, frame top_frame, bool skip_c_frames = true, bool end_at_first_java_frame = false, bool allow_thread_last_frame_use = true, CompiledMethod* top_method = nullptr, int max_c_frames_skip = -1);
+  StackWalker(JavaThread* thread, frame top_frame, bool skip_c_frames = true,
+    bool end_at_first_java_frame = false, bool allow_thread_last_frame_use = true,
+    StackWalkerMiscArguments misc = {}, int max_c_frames_skip = -1);
 
   // requires a non null thread
   StackWalker(JavaThread* thread, bool skip_c_frames = true, int max_c_frames_skip = -1);
@@ -223,7 +241,8 @@ public:
   // -1 if not at a Java frame
   int compilation_level() const;
 
-  // at_end and at first Java frame, only base_frame is valid
+  // is the current frame the first/youngest Java frame
+  // if at_end and at first Java frame, only base_frame is valid
   bool at_first_java_frame() const { return is_at_first_java_frame; }
 
   // return frame count

@@ -104,13 +104,16 @@ class ASGSTQueueElement {
   void* _fp;
   void* _sp;
   void* _argument;
+  address _bcp; // might be null for some elements
 public:
-  ASGSTQueueElement(void* pc, void* fp, void *sp, void* argument) : _pc(pc), _fp(fp), _sp(sp), _argument(argument) {}
-  ASGSTQueueElement(): ASGSTQueueElement(nullptr, nullptr, nullptr, nullptr) {}
+  ASGSTQueueElement(void* pc, void* fp, void *sp, void* argument, address bcp) : _pc(pc), _fp(fp), _sp(sp), _argument(argument), _bcp(bcp) {}
+  ASGSTQueueElement(): ASGSTQueueElement(nullptr, nullptr, nullptr, nullptr, nullptr) {}
   void* pc() const { return _pc; }
   void* fp() const { return _fp; }
   void* sp() const { return _sp; }
   void* argument() const { return _argument; }
+  void* bcp() const { return _bcp; }
+  ASGSTQueueElement set_argument(void* argument) const { return ASGSTQueueElement(_pc, _fp, _sp, argument, _bcp); }
 };
 
 class ASGSTQueueElementHandler : public CHeapObj<mtServiceability> {

@@ -229,11 +229,13 @@ static bool is_decipherable_native_frame(frame* fr, CompiledMethod* nm) {
   return fr->cb()->frame_size() >= 0;
 }
 
-StackWalker::StackWalker(JavaThread* thread, frame top_frame, bool skip_c_frames, bool end_at_first_java_frame, bool allow_thread_last_frame_use, CompiledMethod* top_method, int max_c_frames_skip):
+StackWalker::StackWalker(JavaThread* thread, frame top_frame, bool skip_c_frames,
+  bool end_at_first_java_frame, bool allow_thread_last_frame_use,
+  StackWalkerMiscArguments misc, int max_c_frames_skip):
   _thread(thread),
   _skip_c_frames(skip_c_frames),
   _end_at_first_java_frame(end_at_first_java_frame),
-  _top_method(top_method),
+  _misc(misc),
   _max_c_frames_skip(max_c_frames_skip),
   _allow_thread_last_frame_use(allow_thread_last_frame_use),
   _frame(top_frame),
@@ -265,7 +267,6 @@ StackWalker::StackWalker(JavaThread* thread, bool skip_c_frames, int max_c_frame
     set_state(STACKWALKER_END);
     return;
   }
-
   _frame = _thread->last_frame();
   init();
 }
@@ -321,6 +322,20 @@ frame StackWalker::next_c_frame(frame fr) {
     return invalid;
   }
   return os::get_sender_for_C_frame(&fr);
+}
+
+int StackWalker::get_bci_from_interp_frame(Method* method) {
+  assert(_frame.is_interpreted_frame(), "only valid for interpreted frames");
+  if (method->is_native()) {
+    return 0;
+  }
+  address bcp;
+  if (os::is_readable_pointer2(_misc.top_interp_bcp())) {
+    bcp = _misc.top_interp_bcp();
+  } else {
+    bcp = (address)*_frame.interpreter_frame_bcp_addr();
+  }
+  return method->validate_bci_from_bcp(bcp);
 }
 
 void StackWalker::reset() {
@@ -424,7 +439,8 @@ void StackWalker::process_normal(bool potentially_first_java_frame) {
     had_first_java_frame = true;
     return;
   } else if (_frame.is_java_frame()) { // another validity check
-        had_first_java_frame = true;
+    is_at_first_java_frame = !had_first_java_frame;
+    had_first_java_frame = true;
     if (_end_at_first_java_frame) {
       // native frames seems to cause problems
       is_at_first_java_frame = true;
@@ -444,14 +460,12 @@ void StackWalker::process_normal(bool potentially_first_java_frame) {
       _compilation_level = 0;
       if (!_frame.is_interpreted_frame_valid(_thread) ||
           (potentially_first_java_frame && !is_decipherable_first_interpreted_frame(_thread, &_frame, &_method, &_bci))) {
-        if (potentially_first_java_frame && _top_method != nullptr && Method::is_valid_method(_top_method->method())) {
+        if (potentially_first_java_frame && os::is_readable_pointer2(_misc.top_method()) && Method::is_valid_method(_misc.top_method())) {
           // handle first Java frame differently if we know the method
           // this happens currently only when we're at a return safepoint of an interpreted method
-         Method* method = _top_method->method();
-          address bcp = method->bcp_from((address)*_frame.interpreter_frame_bcp_addr());
-          int bci = _top_method->method()->validate_bci_from_bcp(bcp);
-          _method = method;
-          if (method->is_native()) {
+          int bci = get_bci_from_interp_frame(_misc.top_method());
+          _method = _misc.top_method();
+          if (_method->is_native()) {
             // because is_interpreted_frame return true for native method frames too
             bci = 0;
             _bci = -1;
@@ -463,44 +477,44 @@ void StackWalker::process_normal(bool potentially_first_java_frame) {
           if (bci < 0) {
             bci = 0;
           }
-          _bci    = bci;
+          _bci  = bci;
           set_state(STACKWALKER_INTERPRETED_FRAME);
           assert(!_inlined || in_c_on_top || !_st.invalid(), "have to advance somehow 2");
+          is_at_first_java_frame = !had_first_java_frame;
           had_first_java_frame = true;
           return;
         }
         set_state(STACKWALKER_INDECIPHERABLE_INTERPRETED_FRAME);
         return;
       }
-      if (_method == nullptr) {
-        // copied from inline void vframeStreamCommon::fill_from_interpreter_frame()
-        Method* method;
-        address bcp;
-        if (!_map.in_cont()) {
-          method = _frame.interpreter_frame_method();
-          bcp    = _frame.interpreter_frame_bcp();
-        } else {
-          method = _map.stack_chunk()->interpreter_frame_method(_frame);
-          bcp    = _map.stack_chunk()->interpreter_frame_bcp(_frame);
-        }
-        int bci  = method->validate_bci_from_bcp(bcp);
-        // 6379830 AsyncGetCallTrace sometimes feeds us wild frames.
-        // AsyncGetCallTrace interrupts the VM asynchronously. As a result
-        // it is possible to access an interpreter frame for which
-        // no Java-level information is yet available (e.g., because
-        // the frame was being created when the VM interrupted it).
-        // In this scenario, pretend that the interpreter is at the point
-        // of entering the method.
-        if (method->is_native()) {
-          bci = 0;
-        }
-        assert(bci >= 0, "bci must be valid");
-        if (bci < 0) {
-          bci = 0;
-        }
-        _method = method;
-        _bci    = bci;
+      // copied from inline void vframeStreamCommon::fill_from_interpreter_frame()
+      Method* method;
+      int bci;
+      if (!_map.in_cont()) {
+        method = _frame.interpreter_frame_method();
+        bci = get_bci_from_interp_frame(method);
+      } else {
+        method = _map.stack_chunk()->interpreter_frame_method(_frame);
+        // TODO handle bcp at safepoints
+        address bcp = _map.stack_chunk()->interpreter_frame_bcp(_frame);
+        bci  = method->validate_bci_from_bcp(bcp);
       }
+      // 6379830 AsyncGetCallTrace sometimes feeds us wild frames.
+      // AsyncGetCallTrace interrupts the VM asynchronously. As a result
+      // it is possible to access an interpreter frame for which
+      // no Java-level information is yet available (e.g., because
+      // the frame was being created when the VM interrupted it).
+      // In this scenario, pretend that the interpreter is at the point
+      // of entering the method.
+      if (method->is_native()) {
+        bci = 0;
+      }
+      //assert(bci >= 0, "bci must be valid");
+      if (bci < 0) {
+        bci = 0;
+      }
+      _method = method;
+      _bci    = bci;
       if (!Method::is_valid_method(_method)) {
         // we throw away everything we've gathered in this sample since
         // none of it is safe
@@ -517,6 +531,7 @@ void StackWalker::process_normal(bool potentially_first_java_frame) {
       }
       set_state(STACKWALKER_INTERPRETED_FRAME);
       assert(!_inlined || in_c_on_top || !_st.invalid(), "have to advance somehow 2");
+      is_at_first_java_frame = !had_first_java_frame;
       had_first_java_frame = true;
       return;
     } else if (_frame.is_compiled_frame()) {

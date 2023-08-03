@@ -127,7 +127,7 @@ public class ASGSTStabilityTest {
     System.out.println("===> Classpath: " + testCp);
     ProcessBuilder pb = ProcessTools.createJavaProcessBuilder(
       List.of(
-        "-Xbootclasspath/a:/home/i560383/code/asgct2/jdk/build/linux-x86_64-server-fastdebug/support/test/lib/wb.jar",
+        "-Xbootclasspath/a:./WhiteBox.jar",
         "-XX:+UnlockDiagnosticVMOptions",
         "-XX:+WhiteBoxAPI",
         "-agentlib:AsyncGetStackTraceSampler2",
