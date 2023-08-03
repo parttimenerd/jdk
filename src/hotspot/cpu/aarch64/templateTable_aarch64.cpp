@@ -2211,7 +2211,7 @@ void TemplateTable::_return(TosState state)
 
     __ push_cont_fastpath(rthread);
     __ set_last_Java_frame(esp, rfp, (address) the_pc, rscratch1);
-    __ super_call_VM_leaf(CAST_FROM_FN_PTR(address, InterpreterRuntime::at_safepoint), rthread);
+    __ call_VM(noreg, CAST_FROM_FN_PTR(address, InterpreterRuntime::at_safepoint), rthread);
     __ reset_last_Java_frame(true);
     __ pop_cont_fastpath(rthread);
     __ pop(state);
