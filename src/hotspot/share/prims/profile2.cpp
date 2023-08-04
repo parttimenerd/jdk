@@ -367,7 +367,7 @@ public:
   }
 };
 
-int ASGST_RunWithIterator(void* ucontext, int options, void (*fun)(ASGST_Iterator*, void*), void* argument) {
+int ASGST_RunWithIterator(void* ucontext, int options, ASGST_IteratorHandler fun, void* argument) {
   int8_t iter[sizeof(ASGST_Iterator)]; // no need for default constructor
   ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
   iterator->reset();
@@ -380,7 +380,7 @@ int ASGST_RunWithIterator(void* ucontext, int options, void (*fun)(ASGST_Iterato
   return ret;
 }
 
-int ASGST_RunWithIteratorFromFrame(void* sp, void* fp, void* pc, int options, void (*fun)(ASGST_Iterator*, void*), void* argument) {
+int ASGST_RunWithIteratorFromFrame(void* sp, void* fp, void* pc, int options, ASGST_IteratorHandler fun, void* argument) {
   int8_t iter[sizeof(ASGST_Iterator)]; // no need for default constructor
   ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
   iterator->reset();

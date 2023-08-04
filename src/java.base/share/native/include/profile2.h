@@ -66,8 +66,8 @@ typedef struct {
   int bci;              // -1 if the bci is not available (like in native frames)
   ASGST_Method method;  // method or nullptr if not available
   void *pc;             // current program counter inside this frame
-  void *sp;             // current stack pointer inside this frame, might be null (for top inlined frames)
-  void *fp;             // current frame pointer inside this frame, might be null (for top inlined frames)
+  void *sp;             // current stack pointer inside this frame, might be null
+  void *fp;             // current frame pointer inside this frame, might be null
 } ASGST_Frame;
 
 enum ASGST_Options {
@@ -105,18 +105,20 @@ extern "C" {
 JNIEXPORT
 int ASGST_Capabilities();
 
+typedef void (*ASGST_IteratorHandler)(ASGST_Iterator* iterator, void* arg);
+
 // Create an iterator and pass it to fun alongside the passed argument.
 // @return error or kind
 //
 // Signal safe, has to be called on thread that belongs to the frame.
 JNIEXPORT
-int ASGST_RunWithIterator(void* ucontext, int32_t options, void (*fun)(ASGST_Iterator*, void*), void* argument);
+int ASGST_RunWithIterator(void* ucontext, int32_t options, ASGST_IteratorHandler fun, void* argument);
 
 // Similar to RunWithIterator, but starting from a frame (sp, fp, pc) instead of a ucontext.
 //
 // Signal safe, has to be called on thread that belongs to the frame.
 JNIEXPORT
-int ASGST_RunWithIteratorFromFrame(void* sp, void* fp, void* pc, int options, void (*fun)(ASGST_Iterator*, void*), void* argument);
+int ASGST_RunWithIteratorFromFrame(void* sp, void* fp, void* pc, int options, ASGST_IteratorHandler fun, void* argument);
 
 // Rewind an interator to the top most frame
 //
@@ -125,15 +127,14 @@ JNIEXPORT
 void ASGST_RewindIterator(ASGST_Iterator* iterator);
 
 // Obtains the next frame from the iterator
-// @returns 1 if successful, else error code / end
+// @returns 1 if successful, else error code (< 0) / end (0)
 // @see ASGST_State
 //
 // Typically used in a loop like:
 //
-// ASGST_Iterator* iterator = ...;
 // ASGST_Frame frame;
 // while (ASGST_NextFrame(iterator, &frame) == 1) {
-//   // do something with frame
+//   // do something with the frame
 // }
 //
 // When using ASGST_END_ON_FIRST_JAVA_FRAME, then the first byte-code backed
