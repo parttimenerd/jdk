@@ -57,18 +57,18 @@ int ASGST_Capabilities() {
 }
 
 struct _ASGST_InitialIteratorArgs {
-  frame frame;
-  bool allowThreadLastFrameUse;
-  bool invalidSpAndFp;
-  bool switchToThreadBased;
-  StackWalkerMiscArguments misc;
+  frame _frame;
+  bool _allowThreadLastFrameUse;
+  bool _invalidSpAndFp;
+  bool _switchToThreadBased;
+  StackWalkerMiscArguments _misc;
 
   void reset() {
-    frame = {};
-    allowThreadLastFrameUse = true;
-    invalidSpAndFp = false;
-    switchToThreadBased = false;
-    misc = {};
+    _frame = {};
+    _allowThreadLastFrameUse = true;
+    _invalidSpAndFp = false;
+    _switchToThreadBased = false;
+    _misc = {};
   }
 };
 
@@ -135,7 +135,7 @@ static int initNonJavaStackWalker(_ASGST_Iterator* iter, void* ucontext, int32_t
     return ASGST_NO_FRAME;
   }
   iter->thread = nullptr;
-  iter->initialArgs.frame = ret_frame;
+  iter->initialArgs._frame = ret_frame;
   int ret = initStackWalker(iter, options, ret_frame);
   return ret > 0 ? ASGST_NON_JAVA_TRACE : ret;
 }
@@ -204,7 +204,7 @@ int ASGST_CreateIter(_ASGST_Iterator* iterator, void* ucontext, int32_t options,
           return ASGST_NO_FRAME;
         }
       }
-      iterator->initialArgs.frame = ret_frame;
+      iterator->initialArgs._frame = ret_frame;
       return initStackWalker(iterator, options, ret_frame);
     }
     break;
@@ -218,7 +218,7 @@ int ASGST_CreateIter(_ASGST_Iterator* iterator, void* ucontext, int32_t options,
           return ASGST_NO_TOP_JAVA_FRAME;
         }
       }
-      iterator->initialArgs.frame = ret_frame;
+      iterator->initialArgs._frame = ret_frame;
       return initStackWalker(iterator, options, ret_frame);
     }
     break;
@@ -241,7 +241,7 @@ int ASGST_CreateIterFromFrame(_ASGST_Iterator* iterator, void* sp, void* fp, voi
   }
 
   frame f{sp, fp, pc};
-  iterator->initialArgs.frame = f;
+  iterator->initialArgs._frame = f;
   iterator->thread = JavaThread::current_or_null();
   // handle non-java case
   if (kindOrError > ASGST_JAVA_TRACE) {
@@ -301,7 +301,6 @@ int ASGST_NextFrame(ASGST_Iterator *iter, ASGST_Frame *frame) {
     frame->type = ASGST_FRAME_NON_JAVA;
   }
   if (iter->switchToThreadBased && !iter->walker.is_inlined() && iter->top_frame.pc() != nullptr && !iter->walker.at_first_java_frame()) {
-    printf("switch\n");
     iter->switchToThreadBased = false;
     iter->invalidSpAndFp = false;
     int8_t walkerBytes[sizeof(StackWalker)]; // backup the old walker
@@ -394,10 +393,10 @@ int ASGST_RunWithIteratorFromFrame(void* sp, void* fp, void* pc, int options, AS
 }
 
 void ASGST_RewindIterator(ASGST_Iterator* iterator) {
-  iterator->switchToThreadBased = iterator->initialArgs.switchToThreadBased;
-  iterator->invalidSpAndFp = iterator->initialArgs.invalidSpAndFp;
-  initStackWalker(iterator, iterator->options, iterator->initialArgs.frame,
-    iterator->initialArgs.allowThreadLastFrameUse, iterator->initialArgs.misc);
+  iterator->switchToThreadBased = iterator->initialArgs._switchToThreadBased;
+  iterator->invalidSpAndFp = iterator->initialArgs._invalidSpAndFp;
+  initStackWalker(iterator, iterator->options, iterator->initialArgs._frame,
+    iterator->initialArgs._allowThreadLastFrameUse, iterator->initialArgs._misc);
 }
 
 // state or -1
@@ -478,16 +477,16 @@ public:
       element->pc() != nullptr ? (address)element->pc() : top_frame.pc());
     StackWalkerMiscArguments misc{cm != nullptr ? cm->method() : nullptr, (address)element->bcp()};
     initStackWalker(iterator, options, fExtended, false, misc);
-    iterator->initialArgs.allowThreadLastFrameUse = false;
-    iterator->initialArgs.frame = fExtended;
-    iterator->initialArgs.misc = misc;
+    iterator->initialArgs._allowThreadLastFrameUse = false;
+    iterator->initialArgs._frame = fExtended;
+    iterator->initialArgs._misc = misc;
 
     if (element->pc() != nullptr && fExtended.pc() != top_frame.pc() && top_frame.pc() != nullptr) {
       iterator->switchToThreadBased = true;
       iterator->invalidSpAndFp = true;
       iterator->top_frame = top_frame;
-      iterator->initialArgs.invalidSpAndFp = true;
-      iterator->initialArgs.switchToThreadBased = true;
+      iterator->initialArgs._invalidSpAndFp = true;
+      iterator->initialArgs._switchToThreadBased = true;
     }
     fun(iterator, queue_arg, element->argument());
     return;
@@ -534,9 +533,9 @@ public:
       StackWalkerMiscArguments misc{cm != nullptr ? cm->method() : nullptr,
         (address)top_frame.potential_interpreter_frame_bcp_safe()};
       initStackWalker(iterator, options, f, false, misc);
-      iterator->initialArgs.frame = f;
-      iterator->initialArgs.allowThreadLastFrameUse = false;
-      iterator->initialArgs.misc = misc;
+      iterator->initialArgs._frame = f;
+      iterator->initialArgs._allowThreadLastFrameUse = false;
+      iterator->initialArgs._misc = misc;
       fun((ASGST_Queue*)queue, iterator, on_queue_arg);
     } else {
       fun((ASGST_Queue*)queue, nullptr, on_queue_arg);
@@ -611,6 +610,7 @@ int ASGST_Enqueue(ASGST_Queue* queue, void* ucontext, void* argument) {
       return ASGST_ENQUEUE_FULL_QUEUE;
     default:
       assert(false, "unknown result");
+      return -1;
   }
 }
 
@@ -737,7 +737,7 @@ int ASGST_GetMethodLineNumberTable(ASGST_Method method, ASGST_MethodLineNumberEn
   CompressedLineNumberReadStream stream(m->compressed_linenumber_table());
   while (stream.read_pair()) {
     if (num_entries < length) {
-      *entries = {.line_number = stream.bci(), .start_bci = stream.line()};
+      *entries = {.start_bci = stream.line(), .line_number = stream.bci()};
       entries++;
     }
     num_entries++;
