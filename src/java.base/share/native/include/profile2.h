@@ -43,7 +43,7 @@ typedef struct _ASGST_Class* ASGST_Class;
 
 typedef struct _ASGST_FrameMark ASGST_FrameMark;
 
-// implementations don't have to implement all methods,
+// Implementations don't have to implement all methods,
 // only the iterator related and those that match their capabilities
 enum ASGST_Capabilities {
   ASGST_REGISTER_QUEUE = 1, // everything safepoint queue related
@@ -307,7 +307,7 @@ ASGST_Queue* ASGST_RegisterQueue(JNIEnv* env, int size, int options, ASGST_Handl
 JNIEXPORT
 bool ASGST_DeregisterQueue(JNIEnv* env, ASGST_Queue* queue);
 
-// handler that is called at a safe point with enqueued samples before and after processing
+// Handler that is called at a safe point with enqueued samples before and after processing
 // called with the queue, a frame iterator, and the OnQueue argument
 // frame iterator is null if offerIterator at handler registration was false
 typedef void (*ASGST_OnQueueSafepointHandler)(ASGST_Queue*, ASGST_Iterator*, void*);
