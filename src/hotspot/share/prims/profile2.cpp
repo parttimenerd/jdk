@@ -301,6 +301,9 @@ int ASGST_NextFrame(ASGST_Iterator *iter, ASGST_Frame *frame) {
     frame->type = ASGST_FRAME_NON_JAVA;
   }
   if (iter->switchToThreadBased && !iter->walker.is_inlined() && iter->top_frame.pc() != nullptr && !iter->walker.at_first_java_frame()) {
+    // we take switching to the iterator at safepoint frame into account,
+    // if the current frame is not inlined (and the top frame pc is not null) and the walker
+    // is not at its first bytecode backed java frame
     iter->switchToThreadBased = false;
     iter->invalidSpAndFp = false;
     int8_t walkerBytes[sizeof(StackWalker)]; // backup the old walker
@@ -472,7 +475,7 @@ public:
     if (element->pc() == nullptr && top_frame.pc() == nullptr) {
       return;
     }
-
+    // fExtended is the current frame + info from the element
     frame fExtended = frame(element->sp(), element->fp(),
       element->pc() != nullptr ? (address)element->pc() : top_frame.pc());
     StackWalkerMiscArguments misc{cm != nullptr ? cm->method() : nullptr, (address)element->bcp()};
@@ -481,13 +484,18 @@ public:
     iterator->initialArgs._frame = fExtended;
     iterator->initialArgs._misc = misc;
 
-    if (element->pc() != nullptr && fExtended.pc() != top_frame.pc() && top_frame.pc() != nullptr) {
+    if (element->pc() != nullptr && fExtended.pc() != top_frame.pc() && top_frame.pc() != nullptr && !top_frame.is_native_frame()) {
       iterator->switchToThreadBased = true;
       iterator->invalidSpAndFp = true;
       iterator->top_frame = top_frame;
       iterator->initialArgs._invalidSpAndFp = true;
       iterator->initialArgs._switchToThreadBased = true;
     }
+    // we ignore top native frames
+    while (iterator->walker.is_native_frame()) {
+      iterator->walker.next();
+    }
+    // call the handler
     fun(iterator, queue_arg, element->argument());
     return;
   }
