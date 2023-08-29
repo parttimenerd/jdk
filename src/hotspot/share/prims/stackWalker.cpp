@@ -445,7 +445,26 @@ void StackWalker::process_normal(bool potentially_first_java_frame) {
       // native frames seems to cause problems
       is_at_first_java_frame = true;
       set_state(STACKWALKER_FIRST_JAVA_FRAME);
-      return;
+      if (_frame.is_interpreted_frame()) {
+        _method = _frame.interpreter_frame_method();
+        _bci = get_bci_from_interp_frame(_method);
+        _inlined = false;
+        _compilation_level = 0;
+      } else if (_frame.is_compiled_frame()) {
+        CompiledMethod* nm = _frame.cb()->as_compiled_method();
+        _method = nm->method();
+        _bci = -1;
+        _inlined = false;
+        _compilation_level = nm->comp_level();
+      } else {
+        _method = nullptr;
+        _bci = -1;
+        _inlined = false;
+        _compilation_level = -1;
+      }
+      if (_method != nullptr && !_method->is_native()) {
+        return;
+      }
     }
     if (_allow_thread_last_frame_use && potentially_first_java_frame && _thread != nullptr && _thread->has_last_Java_frame()) {
       frame f = _frame;
@@ -536,7 +555,7 @@ void StackWalker::process_normal(bool potentially_first_java_frame) {
       return;
     } else if (_frame.is_compiled_frame()) {
       CompiledMethod* nm = _frame.cb()->as_compiled_method();
-      if (!nm->is_native_method() && potentially_first_java_frame){
+      if (!nm->is_native_method() && potentially_first_java_frame && _allow_thread_last_frame_use){
         make_first_compiled_frame_more_precise(_thread, &_frame, nm);
       }
       if (nm->is_native_method()) {
@@ -642,12 +661,18 @@ int StackWalker::walk_till_end_or_error() {
   int count = 0;
   while (!at_end() && !at_error()) {
     count++;
+    /*ResourceMark rm;
+    char* _method_name = _method == nullptr ? nullptr : _method->name()->as_C_string();
+    // klass name
+    char* _klass_name = _method == nullptr ? nullptr : _method->method_holder()->name()->as_C_string();
+    printf("                          walk till end method: %s.%s %d\n", _klass_name, _method_name, _bci);*/
     advance();
   }
   return count;
 }
 
 bool StackWalker::walk_till_first_java_frame() {
+  assert(_end_at_first_java_frame, "requires end_at_first_java_frame");
   walk_till_end_or_error();
   return is_at_first_java_frame;
 }
