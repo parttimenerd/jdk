@@ -97,47 +97,47 @@ class Handshake : public AllStatic {
 
 class JvmtiRawMonitor;
 
-class ASGSTQueue;
+class JFRLLQueue;
 
-class ASGSTQueueElement {
+class JFRLLQueueElement {
   void* _pc;
   void* _fp;
   void* _sp;
   void* _argument;
   address _bcp; // might be null for some elements
 public:
-  ASGSTQueueElement(void* pc, void* fp, void *sp, void* argument, address bcp) : _pc(pc), _fp(fp), _sp(sp), _argument(argument), _bcp(bcp) {}
-  ASGSTQueueElement(): ASGSTQueueElement(nullptr, nullptr, nullptr, nullptr, nullptr) {}
+  JFRLLQueueElement(void* pc, void* fp, void *sp, void* argument, address bcp) : _pc(pc), _fp(fp), _sp(sp), _argument(argument), _bcp(bcp) {}
+  JFRLLQueueElement(): JFRLLQueueElement(nullptr, nullptr, nullptr, nullptr, nullptr) {}
   void* pc() const { return _pc; }
   void* fp() const { return _fp; }
   void* sp() const { return _sp; }
   void* argument() const { return _argument; }
   void* bcp() const { return _bcp; }
-  ASGSTQueueElement set_argument(void* argument) const { return ASGSTQueueElement(_pc, _fp, _sp, argument, _bcp); }
+  JFRLLQueueElement set_argument(void* argument) const { return JFRLLQueueElement(_pc, _fp, _sp, argument, _bcp); }
 };
 
-class ASGSTQueueElementHandler : public CHeapObj<mtServiceability> {
+class JFRLLQueueElementHandler : public CHeapObj<mtServiceability> {
  public:
-  virtual void operator()(ASGSTQueueElement*, frame top_frame, CompiledMethod* cm = nullptr) = 0;
-  virtual ~ASGSTQueueElementHandler() {}
+  virtual void operator()(JFRLLQueueElement*, frame top_frame, CompiledMethod* cm = nullptr) = 0;
+  virtual ~JFRLLQueueElementHandler() {}
 };
 
-class ASGSTQueueOnSafepointHandler : public CHeapObj<mtServiceability> {
+class JFRLLQueueOnSafepointHandler : public CHeapObj<mtServiceability> {
  public:
-  virtual void operator()(ASGSTQueue*, frame top_frame, CompiledMethod* cm = nullptr) = 0;
-  virtual ~ASGSTQueueOnSafepointHandler() {}
+  virtual void operator()(JFRLLQueue*, frame top_frame, CompiledMethod* cm = nullptr) = 0;
+  virtual ~JFRLLQueueOnSafepointHandler() {}
 };
 
-enum ASGSTQueuePushResult: int8_t {
-  ASGST_QUEUE_PUSH_SUCCESS = 0,
-  ASGST_QUEUE_PUSH_FULL = 1,
-  ASGST_QUEUE_PUSH_CLOSED = 2
+enum JFRLLQueuePushResult: int8_t {
+  JFRLL_QUEUE_PUSH_SUCCESS = 0,
+  JFRLL_QUEUE_PUSH_FULL = 1,
+  JFRLL_QUEUE_PUSH_CLOSED = 2
 };
 
-class ASGSTQueue : public CHeapObj<mtServiceability> {
+class JFRLLQueue : public CHeapObj<mtServiceability> {
   int _id;
   JavaThread* _thread;
-  ASGSTQueueElement* _elements;
+  JFRLLQueueElement* _elements;
   int _capacity;
   // pop: head increase
   volatile int _head;
@@ -151,13 +151,13 @@ class ASGSTQueue : public CHeapObj<mtServiceability> {
 
   volatile int _state = STATE_OPEN;
 
-  ASGSTQueueElementHandler* _handler;
-  ASGSTQueueOnSafepointHandler* _before_handler = nullptr;
-  ASGSTQueueOnSafepointHandler* _after_handler = nullptr;
+  JFRLLQueueElementHandler* _handler;
+  JFRLLQueueOnSafepointHandler* _before_handler = nullptr;
+  JFRLLQueueOnSafepointHandler* _after_handler = nullptr;
 
   std::mutex _handler_lock;
 
-  ASGSTQueue* _next = nullptr;
+  JFRLLQueue* _next = nullptr;
 
   // suggested new size, -1 for no resize
   int _new_size;
@@ -166,37 +166,37 @@ class ASGSTQueue : public CHeapObj<mtServiceability> {
   // so clean it
   void resize_if_needed();
 
-  bool transition_to_push_to_asgst_queue() {
+  bool transition_to_push_to_jfrll_queue() {
     return Atomic::cmpxchg(&_state, STATE_OPEN, STATE_CURRENTLY_PUSHING) == STATE_OPEN;
   }
 
-  void finished_push_to_asgst_queue() {
+  void finished_push_to_jfrll_queue() {
     assert(_state == STATE_CURRENTLY_PUSHING, "wrong state");
     _state = STATE_OPEN;
   }
 public:
 
   // Constructor
-  // @param handler pointer to the handler, deleted when the ASGSTQueue is destroyed
-  ASGSTQueue(int id, JavaThread *thread, size_t size,
-             ASGSTQueueElementHandler *handler);
+  // @param handler pointer to the handler, deleted when the JFRLLQueue is destroyed
+  JFRLLQueue(int id, JavaThread *thread, size_t size,
+             JFRLLQueueElementHandler *handler);
 
   int capacity() const { return _capacity; }
   int length() const { return (_tail < _head ? (_tail + _capacity) : _tail) - _head; }
   bool is_full() const { return length() >= capacity(); }
   bool is_empty() const { return length() <= 0; }
   // or null if no such element
-  ASGSTQueueElement* get(int n);
+  JFRLLQueueElement* get(int n);
 
   // use the methods in HandshakeState to enqueue/dequeue
 
-  ASGSTQueuePushResult push(ASGSTQueueElement element);
+  JFRLLQueuePushResult push(JFRLLQueueElement element);
 
   // element or null if empty
-  ASGSTQueueElement *pop();
+  JFRLLQueueElement *pop();
 
-  ~ASGSTQueue() {
-    transition_to_close_asgst_queue();
+  ~JFRLLQueue() {
+    transition_to_close_jfrll_queue();
     delete _handler;
     os::free(_elements);
     delete _before_handler;
@@ -216,20 +216,20 @@ public:
   void after(frame top_frame, CompiledMethod* cm = nullptr);
 
   // sets the before handler and deletes the previous handler if present
-  void set_before(ASGSTQueueOnSafepointHandler *handler);
+  void set_before(JFRLLQueueOnSafepointHandler *handler);
 
   // sets the after handler and deletes the previous handler if present
-  void set_after(ASGSTQueueOnSafepointHandler *handler);
+  void set_after(JFRLLQueueOnSafepointHandler *handler);
 
-  bool equals(const ASGSTQueue* other) const {
+  bool equals(const JFRLLQueue* other) const {
     return other != nullptr && _id == other->_id;
   }
 
   bool in_current_thread();
 
-  ASGSTQueue* next() const { return _next; }
+  JFRLLQueue* next() const { return _next; }
 
-  void set_next(ASGSTQueue* next) { _next = next; }
+  void set_next(JFRLLQueue* next) { _next = next; }
 
   bool has_next() const { return _next != nullptr; }
 
@@ -242,20 +242,20 @@ public:
     _new_size = new_size;
   }
 
-  void handle(ASGSTQueueElement* element, frame top_frame, CompiledMethod* cm = nullptr) const {
+  void handle(JFRLLQueueElement* element, frame top_frame, CompiledMethod* cm = nullptr) const {
     (*_handler)(element, top_frame, cm);
   }
 
   // e.g. during return safepoint handling
-  void transition_to_close_asgst_queue() {
+  void transition_to_close_jfrll_queue() {
     while (Atomic::cmpxchg(&_state, STATE_OPEN, STATE_CLOSED) != STATE_OPEN) {
       // spin, the same thread is currently pushing to the queues in a signal handler, or some other method
       // maybe we don't need this, but I'm unsure, so I leave it in to be on the safe side
     }
   }
 
-  // reversal of transition_to_close_asgst_queues
-  void open_asgst_queue() {
+  // reversal of transition_to_close_jfrll_queues
+  void open_jfrll_queue() {
     assert(_state == STATE_CLOSED, "wrong state");
     _state = STATE_OPEN;
   }
@@ -312,9 +312,9 @@ class HandshakeState {
 
 
   // does calling process_by_self make sense?
-  bool can_run() { return has_operation() || has_asgst_entries(); }
+  bool can_run() { return has_operation() || has_jfrll_entries(); }
   bool can_run(bool allow_suspend, bool check_async_exception) {
-    return has_operation(allow_suspend, check_async_exception) || has_asgst_entries();
+    return has_operation(allow_suspend, check_async_exception) || has_jfrll_entries();
   }
   bool has_async_exception_operation();
   void clean_async_exception_operation();
@@ -338,13 +338,13 @@ class HandshakeState {
 
   Thread* active_handshaker() const { return Atomic::load(&_active_handshaker); }
 
-  ASGSTQueue* register_asgst_queue(JavaThread* thread, size_t size, ASGSTQueueElementHandler* handler);
+  JFRLLQueue* register_jfrll_queue(JavaThread* thread, size_t size, JFRLLQueueElementHandler* handler);
 
-  bool remove_asgst_queue(ASGSTQueue* queue);
+  bool remove_jfrll_queue(JFRLLQueue* queue);
 
-  ASGSTQueuePushResult asgst_enqueue(ASGSTQueue* queue, ASGSTQueueElement element);
+  JFRLLQueuePushResult jfrll_enqueue(JFRLLQueue* queue, JFRLLQueueElement element);
 
-  int asgst_queue_size() const { return _asgst_queue_size; }
+  int jfrll_queue_size() const { return _jfrll_queue_size; }
 
 
   // Support for asynchronous exceptions
@@ -366,35 +366,35 @@ class HandshakeState {
   // and we have not yet processed it.
   bool _async_suspend_handshake;
 
-  int _current_asgst_queue_id = 0;
+  int _current_jfrll_queue_id = 0;
   // linked list
-  ASGSTQueue* _asgst_queue_start = nullptr;
-  std::mutex _asgst_queue_mutex;
-  std::atomic<int> _asgst_queue_size = {0};
-  StackWatermark* volatile _asgst_watermark = 0;
+  JFRLLQueue* _jfrll_queue_start = nullptr;
+  std::mutex _jfrll_queue_mutex;
+  std::atomic<int> _jfrll_queue_size = {0};
+  StackWatermark* volatile _jfrll_watermark = 0;
 
 public:
 
 
   // e.g. during return safepoint handling
-  void transition_to_close_asgst_queues() {
-    for (ASGSTQueue* queue = _asgst_queue_start; queue != nullptr; queue = queue->next()) {
-      queue->transition_to_close_asgst_queue();
+  void transition_to_close_jfrll_queues() {
+    for (JFRLLQueue* queue = _jfrll_queue_start; queue != nullptr; queue = queue->next()) {
+      queue->transition_to_close_jfrll_queue();
     }
   }
 
-  // reversal of transition_to_close_asgst_queues
-  void open_asgst_queues() {
-    for (ASGSTQueue* queue = _asgst_queue_start; queue != nullptr; queue = queue->next()) {
-      queue->open_asgst_queue();
+  // reversal of transition_to_close_jfrll_queues
+  void open_jfrll_queues() {
+    for (JFRLLQueue* queue = _jfrll_queue_start; queue != nullptr; queue = queue->next()) {
+      queue->open_jfrll_queue();
     }
   }
 
-  bool has_asgst_queues() const { return _asgst_queue_start != nullptr; }
-  bool has_asgst_entries() const { return _asgst_queue_start != nullptr && _asgst_queue_size > 0; }
+  bool has_jfrll_queues() const { return _jfrll_queue_start != nullptr; }
+  bool has_jfrll_entries() const { return _jfrll_queue_start != nullptr && _jfrll_queue_size.load() > 0; }
 
 private:
-  void process_asgst_queue(frame top_frame, CompiledMethod* cm = nullptr);
+  void process_jfrll_queue(frame top_frame, CompiledMethod* cm = nullptr);
 
   // Called from the suspend handshake.
   bool suspend_with_handshake();

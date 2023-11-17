@@ -1,10 +1,9 @@
 
 # Fork
 
-Fork of the JDK to experiment with a new version of the AsyncGetCallTrace call (and code reuse regarding stack walking).
+Fork of the JDK to experiment with a new profiling API.
 
 It should work with JMC and related tools.
-For using the AsyncGetStackTrace, we recommend using a modified [async-profiler](https://github.com/SAP/async-profiler/tree/parttimenerd_asgst).
 
 For more information and a demo, please refer to [asgct2-demo](https://github.com/parttimenerd/asgct2-demo).
 

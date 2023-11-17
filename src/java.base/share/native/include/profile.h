@@ -34,29 +34,29 @@
 
 
 // error codes, equivalent to the forte error codes for AsyncGetCallTrace
-enum ASGST_Error {
-  ASGST_NO_JAVA_FRAME         =   0,
-  ASGST_NO_CLASS_LOAD         =  -1,
-  ASGST_GC_ACTIVE             =  -2,
-  ASGST_UNKNOWN_NOT_JAVA      =  -3,
-  ASGST_NOT_WALKABLE_NOT_JAVA =  -4,
-  ASGST_UNKNOWN_JAVA          =  -5,
-  ASGST_NOT_WALKABLE_JAVA     =  -6,
-  ASGST_UNKNOWN_STATE         =  -7,
-  ASGST_THREAD_EXIT           =  -8,
-  ASGST_DEOPT                 =  -9,
-  ASGST_THREAD_NOT_JAVA       = -10,
-  ASGST_NO_THREAD             = -11,
-  ASGST_UNSAFE_STATE          = -12,
-  ASGST_WRONG_STATE           = -13,
-  ASGST_WRONG_KIND            = -14,
+enum JFRLL_Error {
+  JFRLL_NO_JAVA_FRAME         =   0,
+  JFRLL_NO_CLASS_LOAD         =  -1,
+  JFRLL_GC_ACTIVE             =  -2,
+  JFRLL_UNKNOWN_NOT_JAVA      =  -3,
+  JFRLL_NOT_WALKABLE_NOT_JAVA =  -4,
+  JFRLL_UNKNOWN_JAVA          =  -5,
+  JFRLL_NOT_WALKABLE_JAVA     =  -6,
+  JFRLL_UNKNOWN_STATE         =  -7,
+  JFRLL_THREAD_EXIT           =  -8,
+  JFRLL_DEOPT                 =  -9,
+  JFRLL_THREAD_NOT_JAVA       = -10,
+  JFRLL_NO_THREAD             = -11,
+  JFRLL_UNSAFE_STATE          = -12,
+  JFRLL_WRONG_STATE           = -13,
+  JFRLL_WRONG_KIND            = -14,
 };
 
-enum ASGST_FrameTypeId {
-  ASGST_FRAME_JAVA         = 1, // JIT compiled and interpreted
-  ASGST_FRAME_JAVA_INLINED = 2, // inlined JIT compiled
-  ASGST_FRAME_NATIVE       = 3, // native wrapper to call C methods from Java
-  ASGST_FRAME_CPP          = 4  // C/C++/... frames
+enum JFRLL_FrameTypeId {
+  JFRLL_FRAME_JAVA         = 1, // JIT compiled and interpreted
+  JFRLL_FRAME_JAVA_INLINED = 2, // inlined JIT compiled
+  JFRLL_FRAME_NATIVE       = 3, // native wrapper to call C methods from Java
+  JFRLL_FRAME_CPP          = 4  // C/C++/... frames
 };
 
 typedef struct {
@@ -64,18 +64,18 @@ typedef struct {
   int8_t comp_level;      // compilation level, 0 is interpreted, -1 is undefined, > 1 is JIT compiled
   uint16_t bci;            // 0 <= bci < 65536, 65535 (= -1) if the bci is >= 65535 or not available (like in native frames)
   jmethodID method_id;
-} ASGST_JavaFrame;         // used for FRAME_JAVA, FRAME_JAVA_INLINED and FRAME_NATIVE
+} JFRLL_JavaFrame;         // used for FRAME_JAVA, FRAME_JAVA_INLINED and FRAME_NATIVE
 
 typedef struct {
   uint8_t type;      // frame type
   void *pc;          // current program counter inside this frame
-} ASGST_NonJavaFrame; // used for FRAME_CPP
+} JFRLL_NonJavaFrame; // used for FRAME_CPP
 
 typedef union {
   uint8_t type;     // to distinguish between JavaFrame and NonJavaFrame
-  ASGST_JavaFrame java_frame;
-  ASGST_NonJavaFrame non_java_frame;
-} ASGST_CallFrame;
+  JFRLL_JavaFrame java_frame;
+  JFRLL_NonJavaFrame non_java_frame;
+} JFRLL_CallFrame;
 
 // Enumeration to distinguish tiers of compilation, only >= 0 are used
 /*enum CompLevel {
@@ -88,13 +88,13 @@ typedef union {
   CompLevel_full_optimization = 4          // C2 or JVMCI
 };*/
 
-enum ASGST_TRACE_KIND {
-  ASGST_JAVA_TRACE       =  1,
-  ASGST_CPP_TRACE        =  2,
-  ASGST_GC_TRACE         =  4,
-  ASGST_DEOPT_TRACE      =  8,
-  ASGST_NEW_THREAD_TRACE = 16,
-  ASGST_UNKNOWN_TRACE    = 32,
+enum JFRLL_TRACE_KIND {
+  JFRLL_JAVA_TRACE       =  1,
+  JFRLL_CPP_TRACE        =  2,
+  JFRLL_GC_TRACE         =  4,
+  JFRLL_DEOPT_TRACE      =  8,
+  JFRLL_NEW_THREAD_TRACE = 16,
+  JFRLL_UNKNOWN_TRACE    = 32,
 };
 
 typedef struct {
@@ -104,18 +104,18 @@ typedef struct {
   jint state;                     // thread state (jvmti->GetThreadState), if non zero initialized,
                                   // it is a bit mask for accepted states, non Java kind traces are always accepted
                                   // and get state -1
-  ASGST_CallFrame *frames;        // frames that make up this trace. Callee followed by callers.
+  JFRLL_CallFrame *frames;        // frames that make up this trace. Callee followed by callers.
   void* frame_info;               // more information on frames
-} ASGST_CallTrace;
+} JFRLL_CallTrace;
 
 
-enum ASGST_Options {
-  ASGST_INCLUDE_C_FRAMES         = 1, // include C/C++ (this includes Stub frames)
-  ASGST_INCLUDE_NON_JAVA_THREADS = 2, // walk the stacks of C/C++, GC and deopt threads too
-  ASGST_WALK_DURING_UNSAFE_STATES = 4, // walk the stack during potentially unsafe thread states (like safepoints)
+enum JFRLL_Options {
+  JFRLL_INCLUDE_C_FRAMES         = 1, // include C/C++ (this includes Stub frames)
+  JFRLL_INCLUDE_NON_JAVA_THREADS = 2, // walk the stacks of C/C++, GC and deopt threads too
+  JFRLL_WALK_DURING_UNSAFE_STATES = 4, // walk the stack during potentially unsafe thread states (like safepoints)
   // walk the stack for the same thread (e.g. in a signal handler),
   // disables protections that are only enabled in separate thread mode
-  ASGST_WALK_SAME_THREAD = 8
+  JFRLL_WALK_SAME_THREAD = 8
 };
 
 
@@ -125,10 +125,10 @@ enum ASGST_Options {
 // CLASS_LOAD events have been enabled since agent startup. The enabled
 // event will cause the jmethodIDs to be allocated at class load time.
 //
-// void AsyncGetStackTrace(ASGST_CallTrace *trace, jint depth, void* ucontext, int32_t options)
+// void AsyncGetStackTrace(JFRLL_CallTrace *trace, jint depth, void* ucontext, int32_t options)
 //
 // Called by the profiler to obtain the current method call stack trace for
-// a given thread. The profiler agent should allocate a ASGST_CallTrace
+// a given thread. The profiler agent should allocate a JFRLL_CallTrace
 // structure with enough memory for the requested stack depth. The VM fills in
 // the frames buffer, the num_frames and the kind field.
 //
@@ -139,6 +139,6 @@ enum ASGST_Options {
 //   ucontext - ucontext_t of the LWP
 //   options  - bit flags for additional configuration
 extern "C" JNIEXPORT
-void AsyncGetStackTrace(ASGST_CallTrace *trace, jint depth, void* ucontext, int32_t options);
+void AsyncGetStackTrace(JFRLL_CallTrace *trace, jint depth, void* ucontext, int32_t options);
 
 #endif // JVM_PROFILE_H

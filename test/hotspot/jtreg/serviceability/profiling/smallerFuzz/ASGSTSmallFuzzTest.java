@@ -27,14 +27,14 @@ package profiling.sanity;
 /**
  * @test
  * @summary Verifies that AsyncGetStackTrace is call-able with slightly randomized sp and fp
- * @compile ASGSTSmallFuzzTest.java
+ * @compile JFRLLSmallFuzzTest.java
  * @requires os.family == "linux"
  * @requires os.arch=="amd64" | os.arch=="x86_64"
  * @requires vm.jvmti
- * @run main/othervm/native -agentlib:AsyncGetStackTraceSmallFuzzTest profiling.sanity.ASGSTSmallFuzzTest
+ * @run main/othervm/native -agentlib:AsyncGetStackTraceSmallFuzzTest profiling.sanity.JFRLLSmallFuzzTest
  */
 
-public class ASGSTSmallFuzzTest {
+public class JFRLLSmallFuzzTest {
   static {
     try {
       System.loadLibrary("AsyncGetStackTraceSmallFuzzTest");

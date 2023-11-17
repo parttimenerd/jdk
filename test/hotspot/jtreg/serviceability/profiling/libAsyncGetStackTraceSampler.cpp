@@ -73,13 +73,13 @@ static SigAction installSignalHandler(int signo, SigAction action, SigHandler ha
 
 static void signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
   const int MAX_DEPTH = 512;
-  static ASGST_CallFrame frames[MAX_DEPTH];
-  ASGST_CallTrace trace;
+  static JFRLL_CallFrame frames[MAX_DEPTH];
+  JFRLL_CallTrace trace;
   trace.frames = frames;
   trace.frame_info = NULL;
   trace.num_frames = 0;
 
-  AsyncGetStackTrace(&trace, MAX_DEPTH, NULL, ASGST_INCLUDE_C_FRAMES);
+  AsyncGetStackTrace(&trace, MAX_DEPTH, NULL, JFRLL_INCLUDE_C_FRAMES);
 }
 
 static bool startITimerSampler(long interval_ns) {
@@ -92,7 +92,7 @@ static bool startITimerSampler(long interval_ns) {
   if (setitimer(ITIMER_PROF, &tv, NULL) != 0) {
     return false;
   }
-  fprintf(stderr, "=== asgst sampler initialized ===\n");
+  fprintf(stderr, "=== jfrll sampler initialized ===\n");
   return true;
 }
 

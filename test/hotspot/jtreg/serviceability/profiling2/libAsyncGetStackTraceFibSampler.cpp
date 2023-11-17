@@ -59,20 +59,20 @@ static void JNICALL OnClassPrepare(jvmtiEnv *jvmti, JNIEnv *jni_env,
   GetJMethodIDs(klass);
 }
 
-thread_local ASGST_Queue *queue;
+thread_local JFRLL_Queue *queue;
 thread_local JNIEnv* _jni_env;
-thread_local ASGST_FrameMark* frameMark = nullptr;
+thread_local JFRLL_FrameMark* frameMark = nullptr;
 
-static void asgstHandler(ASGST_Iterator* iterator, void* queueArg, void* arg) {
-  if (ASGST_State(iterator) != 1) {
+static void jfrllHandler(JFRLL_Iterator* iterator, void* queueArg, void* arg) {
+  if (JFRLL_State(iterator) != 1) {
     return;
   }
-  printf("framemark sp %p\n", ASGST_GetFrameMarkStackPointer(frameMark));
+  printf("framemark sp %p\n", JFRLL_GetFrameMarkStackPointer(frameMark));
   printf("sample ");
-  ASGST_Frame frame;
+  JFRLL_Frame frame;
   int count = 0;
   void* not_top = nullptr;
-  while (ASGST_NextFrame(iterator, &frame) == 1) {
+  while (JFRLL_NextFrame(iterator, &frame) == 1) {
     /*printf("frame %d ", count);
     printMethod(stdout, frame.method);
     printf("\n");*/
@@ -82,20 +82,20 @@ static void asgstHandler(ASGST_Iterator* iterator, void* queueArg, void* arg) {
     }
   }
   printf(" %d ", count);
-  void* wm = ASGST_GetFrameMarkStackPointer(frameMark);
+  void* wm = JFRLL_GetFrameMarkStackPointer(frameMark);
   if (not_top != nullptr && (wm == nullptr || wm > not_top)) {
     printf("mark %d %p", count, not_top);
-    ASGST_MoveFrameMark(frameMark, not_top);
+    JFRLL_MoveFrameMark(frameMark, not_top);
   }
   printf("\n");
 }
 
-void frameMarkHandler(ASGST_FrameMark* frameMark, ASGST_Iterator* iter, void* arg) {
+void frameMarkHandler(JFRLL_FrameMark* frameMark, JFRLL_Iterator* iter, void* arg) {
   std::cout << "Hit frame mark for thread " << std::this_thread::get_id() << std::endl;
-  ASGST_Frame frame;
+  JFRLL_Frame frame;
   void* first = nullptr;
   void* second = nullptr;
-  while (ASGST_NextFrame(iter, &frame) == 1) {
+  while (JFRLL_NextFrame(iter, &frame) == 1) {
     printf("frame %p ", frame.sp);
     if (first != nullptr && second == nullptr && frame.sp != nullptr) {
       second = frame.sp;
@@ -105,20 +105,20 @@ void frameMarkHandler(ASGST_FrameMark* frameMark, ASGST_Iterator* iter, void* ar
     }
     printf("   ");
     printMethod(stdout, frame.method);
-    if (frame.type == ASGST_FRAME_JAVA_INLINED) {
+    if (frame.type == JFRLL_FRAME_JAVA_INLINED) {
       printf(" (inline)");
     }
     printf("\n");
   }
   printf("Move %p\n", second);
   printf("set to %p\n", second == nullptr ? first : second);
-  ASGST_MoveFrameMark(frameMark, second == nullptr ? first : second);
+  JFRLL_MoveFrameMark(frameMark, second == nullptr ? first : second);
 }
 
 static void JNICALL OnThreadStart(jvmtiEnv *jvmti, JNIEnv *jni_env, jthread thread) {
-  queue = ASGST_RegisterQueue(jni_env, 100, 0, &asgstHandler, nullptr);
+  queue = JFRLL_RegisterQueue(jni_env, 100, 0, &jfrllHandler, nullptr);
   _jni_env = jni_env;
-  frameMark = ASGST_RegisterFrameMark(env, &frameMarkHandler, 0, (void*)nullptr);
+  frameMark = JFRLL_RegisterFrameMark(env, &frameMarkHandler, 0, (void*)nullptr);
 }
 
 static SigAction installSignalHandler(int signo, SigAction action, SigHandler handler = NULL) {
@@ -152,7 +152,7 @@ static void signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
   if (trace.num_frames <= 0) {
     return;
   }
-  ASGST_Enqueue(queue, ucontext, (void*)trace.env_id);
+  JFRLL_Enqueue(queue, ucontext, (void*)trace.env_id);
 }
 
 static bool startITimerSampler(long interval_ns) {
@@ -165,12 +165,12 @@ static bool startITimerSampler(long interval_ns) {
   if (setitimer(ITIMER_PROF, &tv, NULL) != 0) {
     return false;
   }
-  fprintf(stderr, "=== asgst sampler initialized ===\n");
+  fprintf(stderr, "=== jfrll sampler initialized ===\n");
   return true;
 }
 
 static void JNICALL OnVMInit(jvmtiEnv *jvmti, JNIEnv *jni_env, jthread thread) {
-  fprintf(stderr, "=== asgst OnVMInit ===\n");
+  fprintf(stderr, "=== jfrll OnVMInit ===\n");
   jint class_count = 0;
 
   // Get any previously loaded classes that won't have gone through the

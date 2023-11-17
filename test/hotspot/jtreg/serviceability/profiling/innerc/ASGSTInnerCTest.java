@@ -27,14 +27,14 @@ package profiling.innerc;
 /**
  * @test
  * @summary Verifies that AsyncGetStackTrace works correctly with Java and native frames intermingled.
- * @compile ASGSTInnerCTest.java
+ * @compile JFRLLInnerCTest.java
  * @requires os.family == "linux" | os.family == "mac"
  * @requires os.arch=="x86" | os.arch=="i386" | os.arch=="amd64" | os.arch=="x86_64" | os.arch=="arm" | os.arch=="aarch64" | os.arch=="ppc64" | os.arch=="s390" | os.arch=="riscv64"
  * @requires vm.jvmti
- * @run main/othervm/native -agentlib:AsyncGetStackTraceInnerCTest profiling.innerc.ASGSTInnerCTest
+ * @run main/othervm/native -agentlib:AsyncGetStackTraceInnerCTest profiling.innerc.JFRLLInnerCTest
  */
 
-public class ASGSTInnerCTest {
+public class JFRLLInnerCTest {
   static {
     try {
       System.loadLibrary("AsyncGetStackTraceInnerCTest");
@@ -45,7 +45,7 @@ public class ASGSTInnerCTest {
     }
   }
 
-  /** more complex test: checkNativeChain() -> checkCMethod() -> checkJavaInner() -> checkNativeLeaf() -> ASGST() */
+  /** more complex test: checkNativeChain() -> checkCMethod() -> checkJavaInner() -> checkNativeLeaf() -> JFRLL() */
   private static native boolean checkNativeChain();
   private static boolean checkJavaInner() { return checkNativeLeaf(); }
   private static native boolean checkNativeLeaf();

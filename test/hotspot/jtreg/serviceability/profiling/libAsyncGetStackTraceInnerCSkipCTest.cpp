@@ -142,7 +142,7 @@ jint JNICALL JNI_OnLoad(JavaVM *jvm, void *reserved) {
 }
 
 
-// checkNativeChain() -> checkCMethod() -> checkJavaInner() -> checkNativeLeaf() -> ASGST() chain
+// checkNativeChain() -> checkCMethod() -> checkJavaInner() -> checkNativeLeaf() -> JFRLL() chain
 
 // a non JNI method, so we see a C frame
 [[gnu::noinline]] __attribute__((noinline)) static bool checkCMethod(JNIEnv* env, jclass cls) {
@@ -155,20 +155,20 @@ jint JNICALL JNI_OnLoad(JavaVM *jvm, void *reserved) {
 }
 
 [[gnu::noinline]] __attribute__((noinline)) JNIEXPORT jboolean JNICALL
-Java_profiling_innerc_ASGSTInnerCSkipCTest_checkNativeChain(JNIEnv* env, jclass cls) {
+Java_profiling_innerc_JFRLLInnerCSkipCTest_checkNativeChain(JNIEnv* env, jclass cls) {
   return checkCMethod(env, cls);
 }
 
 JNIEXPORT jboolean JNICALL
-Java_profiling_innerc_ASGSTInnerCSkipCTest_checkNativeLeaf(JNIEnv* env, jclass cls) {
+Java_profiling_innerc_JFRLLInnerCSkipCTest_checkNativeLeaf(JNIEnv* env, jclass cls) {
   const int MAX_DEPTH = 16;
-  ASGST_CallTrace trace;
-  ASGST_CallFrame frames[MAX_DEPTH];
+  JFRLL_CallTrace trace;
+  JFRLL_CallFrame frames[MAX_DEPTH];
   trace.frames = frames;
   trace.frame_info = NULL;
   trace.num_frames = 0;
 
-  // with ASGST_INCLUDE_C_FRAMES
+  // with JFRLL_INCLUDE_C_FRAMES
 
   AsyncGetStackTrace(&trace, MAX_DEPTH, NULL, 0);
 
@@ -177,14 +177,14 @@ Java_profiling_innerc_ASGSTInnerCSkipCTest_checkNativeLeaf(JNIEnv* env, jclass c
     return false;
   }
 
-  if (trace.frames[0].type != ASGST_FRAME_NATIVE) {
+  if (trace.frames[0].type != JFRLL_FRAME_NATIVE) {
     fprintf(stderr, "skip chain: The first frame must be a Java frame: %d\n", trace.frames[0].type);
     return false;
   }
 
   printTrace<1>(stdout, trace);
 
-  ASGST_JavaFrame first_frame = trace.frames[0].java_frame;
+  JFRLL_JavaFrame first_frame = trace.frames[0].java_frame;
   if (first_frame.bci != 0) {
     fprintf(stderr, "skip chain: The first frame must have a bci of 0 as it is a native frame: %d\n", first_frame.bci);
     return false;
@@ -199,15 +199,15 @@ Java_profiling_innerc_ASGSTInnerCSkipCTest_checkNativeLeaf(JNIEnv* env, jclass c
     return false;
   }
 
-  if (!doesFrameBelongToJavaMethod(trace.frames[0], ASGST_FRAME_NATIVE,
+  if (!doesFrameBelongToJavaMethod(trace.frames[0], JFRLL_FRAME_NATIVE,
         "checkNativeLeaf", "skip chain frame 0") ||
-      !doesFrameBelongToJavaMethod(trace.frames[1], ASGST_FRAME_JAVA,
+      !doesFrameBelongToJavaMethod(trace.frames[1], JFRLL_FRAME_JAVA,
         "checkJavaInner", "skip chain frame 1") ||
-      !doesFrameBelongToJavaMethod(trace.frames[2], ASGST_FRAME_NATIVE,
+      !doesFrameBelongToJavaMethod(trace.frames[2], JFRLL_FRAME_NATIVE,
         "checkNativeChain", "skip chain frame 2"),
-      !doesFrameBelongToJavaMethod(trace.frames[3], ASGST_FRAME_JAVA,
+      !doesFrameBelongToJavaMethod(trace.frames[3], JFRLL_FRAME_JAVA,
         "main", "skip chain frame 3") ||
-      !doesFrameBelongToJavaMethod(trace.frames[4], ASGST_FRAME_JAVA,
+      !doesFrameBelongToJavaMethod(trace.frames[4], JFRLL_FRAME_JAVA,
         "invokeStatic", "skip chain frame 4")) {
     return false;
   }

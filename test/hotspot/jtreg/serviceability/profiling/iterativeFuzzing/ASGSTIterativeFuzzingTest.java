@@ -47,26 +47,26 @@ import jdk.test.whitebox.WhiteBox;
 /**
  * @test
  * @summary Verifies that the stack walking of AsyncGetStackTrace is save in a high-frequency signal sampler with randomly modifed stack and frame pointers
- * It is an adaptation of ASGSTStabilityTest.java to additionally fuzz the stack and frame pointers.
+ * It is an adaptation of JFRLLStabilityTest.java to additionally fuzz the stack and frame pointers.
  *
  * This tests simulates a tool like async-profiler which uses AsyncGetStackTrace to walk the stack and
  * moves the stack and frame pointers around a bit to get better results.
  *
  * The default length of this test is 300 seconds, but you can increase it by passing a new duration
- * using the ASGST_FUZZING_TEST_DURATION environment variable (in seconds).
+ * using the JFRLL_FUZZING_TEST_DURATION environment variable (in seconds).
  * Keep in mind that it cannot fuzz longer than the benchmark itself runs.
  *
  * @library /test/jdk/lib/testlibrary /test/lib
- * @compile ASGSTIterativeFuzzingTest.java
+ * @compile JFRLLIterativeFuzzingTest.java
  * @key stress
  * @requires os.family == "linux"
  * @requires os.arch=="amd64" | os.arch=="x86_64"
  * @build jdk.test.whitebox.WhiteBox
  * @run driver jdk.test.lib.helpers.ClassFileInstaller -jar WhiteBox.jar jdk.test.whitebox.WhiteBox
- * @run main/othervm/native/timeout=216000 profiling.fuzzing.ASGSTIterativeFuzzingTest akka-uct 1
+ * @run main/othervm/native/timeout=216000 profiling.fuzzing.JFRLLIterativeFuzzingTest akka-uct 1
  */
 
-public class ASGSTIterativeFuzzingTest {
+public class JFRLLIterativeFuzzingTest {
   private static final String RENAISSANCE_URL = "https://github.com/renaissance-benchmarks/renaissance/releases/download/v0.14.1/renaissance-gpl-0.14.1.jar";
 
   public static final class Runner {
@@ -141,12 +141,12 @@ public class ASGSTIterativeFuzzingTest {
         "-agentlib:AsyncGetStackTraceFuzzingSampler=iterative",
         "-Djava.library.path=" + System.getProperty("test.nativepath"),
         "-cp", testCp,
-        ASGSTIterativeFuzzingTest.Runner.class.getName(),
+        JFRLLIterativeFuzzingTest.Runner.class.getName(),
         benchmark, "-t", Integer.toString(duration)))
         .redirectErrorStream(true);
     ProcessTools.executeProcess(pb)
       .shouldHaveExitValue(0)
-      .shouldContain("=== asgst sampler initialized ===");
+      .shouldContain("=== jfrll sampler initialized ===");
 
     System.out.println("=== ... done");
   }

@@ -47,28 +47,28 @@ import jdk.test.whitebox.WhiteBox;
 /**
  * @test
  * @summary Verifies that the stack walking of AsyncGetStackTrace is save in a high-frequency signal sampler with randomly modifed stack and frame pointers
- * It is an adaptation of ASGSTStabilityTest.java to additionally fuzz the stack and frame pointers.
+ * It is an adaptation of JFRLLStabilityTest.java to additionally fuzz the stack and frame pointers.
  *
  * This tests simulates a tool like async-profiler which uses AsyncGetStackTrace to walk the stack and
  * moves the stack and frame pointers around a bit to get better results.
  *
  * The default length of this test is 300 seconds, but you can increase it by passing a new duration
- * using the ASGST_FUZZING_TEST_DURATION environment variable (in seconds).
+ * using the JFRLL_FUZZING_TEST_DURATION environment variable (in seconds).
  * Keep in mind that it cannot fuzz longer than the benchmark itself runs.
  *
  * @library /test/jdk/lib/testlibrary /test/lib
- * @compile ASGSTFuzzingTest.java
+ * @compile JFRLLFuzzingTest.java
  * @key stress
  * @requires os.family == "linux"
  * @requires os.arch=="amd64" | os.arch=="x86_64"
  * @build jdk.test.whitebox.WhiteBox
  * @run driver jdk.test.lib.helpers.ClassFileInstaller -jar WhiteBox.jar jdk.test.whitebox.WhiteBox
- * @run main/othervm/native/timeout=216000 profiling.fuzzing.ASGSTFuzzingTest akka-uct 10
- * @run main/othervm/native/timeout=216000 profiling.fuzzing.ASGSTFuzzingTest finagle-chirper 120
- * @run main/othervm/native/timeout=216000 profiling.fuzzing.ASGSTFuzzingTest finagle-http 120
+ * @run main/othervm/native/timeout=216000 profiling.fuzzing.JFRLLFuzzingTest akka-uct 10
+ * @run main/othervm/native/timeout=216000 profiling.fuzzing.JFRLLFuzzingTest finagle-chirper 120
+ * @run main/othervm/native/timeout=216000 profiling.fuzzing.JFRLLFuzzingTest finagle-http 120
  */
 
-public class ASGSTFuzzingTest {
+public class JFRLLFuzzingTest {
   private static final String RENAISSANCE_URL = "https://github.com/renaissance-benchmarks/renaissance/releases/download/v0.14.1/renaissance-gpl-0.14.1.jar";
 
   public static final class Runner {
@@ -143,12 +143,12 @@ public class ASGSTFuzzingTest {
         "-agentlib:AsyncGetStackTraceFuzzingSampler=random",
         "-Djava.library.path=" + System.getProperty("test.nativepath"),
         "-cp", testCp,
-        ASGSTFuzzingTest.Runner.class.getName(),
+        JFRLLFuzzingTest.Runner.class.getName(),
         benchmark, "-t", Integer.toString(duration)))
         .redirectErrorStream(true);
     ProcessTools.executeProcess(pb)
       .shouldHaveExitValue(0)
-      .shouldContain("=== asgst sampler initialized ===");
+      .shouldContain("=== jfrll sampler initialized ===");
 
     System.out.println("=== ... done");
   }

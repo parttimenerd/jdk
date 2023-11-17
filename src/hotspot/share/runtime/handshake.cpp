@@ -478,8 +478,8 @@ HandshakeState::~HandshakeState() {
     guarantee(op->is_async(), "Only async operations may still be present on queue");
     delete op;
   }
-  if (_asgst_queue_start != nullptr) {
-    auto next = _asgst_queue_start;
+  if (_jfrll_queue_start != nullptr) {
+    auto next = _jfrll_queue_start;
     while (next != nullptr) {
       auto tmp = next->next();
       delete next;
@@ -566,8 +566,8 @@ bool HandshakeState::process_by_self(bool allow_suspend, bool check_async_except
   assert(Thread::current() == _handshakee, "should call from _handshakee");
   assert(!_handshakee->is_terminated(), "should not be a terminated thread");
   _handshakee->frame_anchor()->make_walkable();
-  if (has_asgst_queues()) {
-    process_asgst_queue(caller_frame == nullptr ? _handshakee->last_frame() : *caller_frame, cm);
+  if (has_jfrll_queues()) {
+    process_jfrll_queue(caller_frame == nullptr ? _handshakee->last_frame() : *caller_frame, cm);
   }
   // Threads shouldn't block if they are in the middle of printing, but...
   ttyLocker::break_tty_lock_for_safepoint(os::current_thread_id());
@@ -774,41 +774,41 @@ public:
   bool did_suspend() { return _did_suspend; }
 };
 
-void ASGSTQueue::resize_if_needed() {
+void JFRLLQueue::resize_if_needed() {
   // we know that this method is only called during safepoints
   // where no new elements are added
   if (_new_size != -1 && _new_size != _capacity) {
     // we might loose some elements here, as they might be added
     // between the pop loop and the resize here
-    transition_to_close_asgst_queue();
-    ASGSTQueueElement* new_elements =
-      (ASGSTQueueElement*)os::malloc(sizeof(ASGSTQueueElement) * _new_size, mtServiceability);
+    transition_to_close_jfrll_queue();
+    JFRLLQueueElement* new_elements =
+      (JFRLLQueueElement*)os::malloc(sizeof(JFRLLQueueElement) * _new_size, mtServiceability);
     _head = 0;
     _tail = 0;
     _capacity = _new_size;
     os::free(_elements);
     _elements = new_elements;
-    open_asgst_queue();
+    open_jfrll_queue();
   }
-  _new_size == -1;
+  _new_size = -1;
 }
 
-ASGSTQueue::ASGSTQueue(int id, JavaThread *thread, size_t size,
-                       ASGSTQueueElementHandler *handler)
+JFRLLQueue::JFRLLQueue(int id, JavaThread *thread, size_t size,
+                       JFRLLQueueElementHandler *handler)
     : _id(id), _thread(thread),
-      _elements((ASGSTQueueElement *)os::malloc(sizeof(ASGSTQueueElement) * size,
+      _elements((JFRLLQueueElement *)os::malloc(sizeof(JFRLLQueueElement) * size,
                                                mtServiceability)),
       _capacity(size), _head(0), _tail(0), _attempts(0), _handler(handler),
       _new_size(-1) {}
 
-void ASGSTQueue::before(frame top_frame, CompiledMethod* cm) {
+void JFRLLQueue::before(frame top_frame, CompiledMethod* cm) {
   std::lock_guard<std::mutex> lock(_handler_lock);
   if (_before_handler != nullptr) {
     (*_before_handler)(this, top_frame, cm);
   }
 }
 
-void ASGSTQueue::after(frame top_frame, CompiledMethod* cm) {
+void JFRLLQueue::after(frame top_frame, CompiledMethod* cm) {
   {
     std::lock_guard<std::mutex> lock(_handler_lock);
     if (_after_handler != nullptr) {
@@ -819,7 +819,7 @@ void ASGSTQueue::after(frame top_frame, CompiledMethod* cm) {
   _attempts = 0;
 }
 
-void ASGSTQueue::set_before(ASGSTQueueOnSafepointHandler *handler) {
+void JFRLLQueue::set_before(JFRLLQueueOnSafepointHandler *handler) {
   std::lock_guard<std::mutex> lock(_handler_lock);
   if (_before_handler != nullptr) {
     delete _before_handler;
@@ -827,7 +827,7 @@ void ASGSTQueue::set_before(ASGSTQueueOnSafepointHandler *handler) {
   _before_handler = handler;
 }
 
-void ASGSTQueue::set_after(ASGSTQueueOnSafepointHandler *handler) {
+void JFRLLQueue::set_after(JFRLLQueueOnSafepointHandler *handler) {
   std::lock_guard<std::mutex> lock(_handler_lock);
   if (_after_handler != nullptr) {
     delete _after_handler;
@@ -835,47 +835,47 @@ void ASGSTQueue::set_after(ASGSTQueueOnSafepointHandler *handler) {
   _after_handler = handler;
 }
 
-bool ASGSTQueue::in_current_thread() {
+bool JFRLLQueue::in_current_thread() {
   return JavaThread::current_or_null_safe() == _thread;
 }
 
-ASGSTQueueElement* ASGSTQueue::get(int n) {
+JFRLLQueueElement* JFRLLQueue::get(int n) {
   return n < length() && n >= 0 ?
     &_elements[(_head + n) % _capacity] :
     nullptr;
 }
 
-ASGSTQueuePushResult ASGSTQueue::push(ASGSTQueueElement element) {
-  if (!transition_to_push_to_asgst_queue()) {
-    printf("safepoint transition_to_push_to_asgst_queue failed\n");
-    return ASGST_QUEUE_PUSH_CLOSED;
+JFRLLQueuePushResult JFRLLQueue::push(JFRLLQueueElement element) {
+  if (!transition_to_push_to_jfrll_queue()) {
+    printf("safepoint transition_to_push_to_jfrll_queue failed\n");
+    return JFRLL_QUEUE_PUSH_CLOSED;
   }
   _attempts++;
   if ((_tail + 1) % _capacity == _head) {
-    finished_push_to_asgst_queue();
-    return ASGST_QUEUE_PUSH_FULL;
+    finished_push_to_jfrll_queue();
+    return JFRLL_QUEUE_PUSH_FULL;
   }
   _elements[_tail] = element;
   _tail = (_tail + 1) % _capacity;
-  finished_push_to_asgst_queue();
-  return ASGST_QUEUE_PUSH_SUCCESS;
+  finished_push_to_jfrll_queue();
+  return JFRLL_QUEUE_PUSH_SUCCESS;
 }
 
-ASGSTQueueElement *ASGSTQueue::pop() {
+JFRLLQueueElement *JFRLLQueue::pop() {
   if (_head == _tail) {
     return nullptr;
   }
-  ASGSTQueueElement *element = &_elements[_head];
+  JFRLLQueueElement *element = &_elements[_head];
   _head = (_head + 1) % _capacity;
   return element;
 }
 
-ASGSTQueue* HandshakeState::register_asgst_queue(JavaThread *thread, size_t size, ASGSTQueueElementHandler* handler) {
-  std::lock_guard<std::mutex> lock(_asgst_queue_mutex);
-  auto q = new ASGSTQueue(_current_asgst_queue_id, thread, size, handler);
-  q->set_next(_asgst_queue_start);
-  _asgst_queue_start = q;
-  _current_asgst_queue_id++;
+JFRLLQueue* HandshakeState::register_jfrll_queue(JavaThread *thread, size_t size, JFRLLQueueElementHandler* handler) {
+  std::lock_guard<std::mutex> lock(_jfrll_queue_mutex);
+  auto q = new JFRLLQueue(_current_jfrll_queue_id, thread, size, handler);
+  q->set_next(_jfrll_queue_start);
+  _jfrll_queue_start = q;
+  _current_jfrll_queue_id++;
   return q;
 }
 
@@ -938,18 +938,18 @@ void HandshakeState::handle_unsafe_access_error() {
   _handshakee->handle_async_exception(h_exception());
 }
 
-bool HandshakeState::remove_asgst_queue(ASGSTQueue* queue) {
-  std::lock_guard<std::mutex> lock(_asgst_queue_mutex);
-  if (queue->equals(_asgst_queue_start)) {
-    _asgst_queue_start = queue->next();
+bool HandshakeState::remove_jfrll_queue(JFRLLQueue* queue) {
+  std::lock_guard<std::mutex> lock(_jfrll_queue_mutex);
+  if (queue->equals(_jfrll_queue_start)) {
+    _jfrll_queue_start = queue->next();
     return true;
   } else {
-    ASGSTQueue* prev = nullptr;
-    ASGSTQueue* curr = _asgst_queue_start;
+    JFRLLQueue* prev = nullptr;
+    JFRLLQueue* curr = _jfrll_queue_start;
     while (curr != nullptr) {
       if (curr == queue) {
         prev->set_next(curr->next());
-        _asgst_queue_size -= curr->length();
+        _jfrll_queue_size -= curr->length();
         delete curr;
         return true;
       }
@@ -960,32 +960,32 @@ bool HandshakeState::remove_asgst_queue(ASGSTQueue* queue) {
   }
 }
 
-ASGSTQueuePushResult HandshakeState::asgst_enqueue(ASGSTQueue* queue, ASGSTQueueElement element) {
+JFRLLQueuePushResult HandshakeState::jfrll_enqueue(JFRLLQueue* queue, JFRLLQueueElement element) {
   auto result = queue->push(element);
-  if (result != ASGST_QUEUE_PUSH_SUCCESS) {
+  if (result != JFRLL_QUEUE_PUSH_SUCCESS) {
     return result;
   }
-  _asgst_queue_size++;
+  _jfrll_queue_size++;
   assert(_handshakee == JavaThread::current(), "");
   SafepointMechanism::arm_local_poll_release(JavaThread::current());
-  //printf("enqueue asgst_queue poll_data %p is armed %d\n", JavaThread::current()->poll_data(), SafepointMechanism::local_poll_armed(JavaThread::current()));
+  //printf("enqueue jfrll_queue poll_data %p is armed %d\n", JavaThread::current()->poll_data(), SafepointMechanism::local_poll_armed(JavaThread::current()));
   return result;
 }
 
-void HandshakeState::process_asgst_queue(frame top_frame, CompiledMethod* cm) {
-  if (_asgst_queue_size == 0) {
+void HandshakeState::process_jfrll_queue(frame top_frame, CompiledMethod* cm) {
+  if (_jfrll_queue_size == 0) {
     return; // nothing to do
   }
-  std::lock_guard<std::mutex> lock(_asgst_queue_mutex);
-  for (auto q = _asgst_queue_start; q; q = q->next()) {
+  std::lock_guard<std::mutex> lock(_jfrll_queue_mutex);
+  for (auto q = _jfrll_queue_start; q; q = q->next()) {
     if (q->length() == 0) {
       continue;
     }
     q->before(top_frame, cm);
     while (q->length() > 0) {
-      ASGSTQueueElement* element = q->pop();
+      JFRLLQueueElement* element = q->pop();
       q->handle(element, top_frame, cm);
-      _asgst_queue_size--;
+      _jfrll_queue_size--;
     }
     q->after(top_frame, cm);
   }

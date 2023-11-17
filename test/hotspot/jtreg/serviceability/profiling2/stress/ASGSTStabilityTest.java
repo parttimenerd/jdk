@@ -47,22 +47,22 @@ import jdk.test.whitebox.WhiteBox;
  * @test
  * @summary Verifies that AsyncGetStackTrace usage is stable in a high-frequency signal sampler
  * @library /test/jdk/lib/testlibrary /test/lib
- * @compile ASGSTStabilityTest.java
+ * @compile JFRLLStabilityTest.java
  * @key stress
  * @requires os.family == "linux" | os.family == "mac"
  * @requires os.arch=="x86" | os.arch=="i386" | os.arch=="amd64" | os.arch=="x86_64" | os.arch=="arm" | os.arch=="aarch64" | os.arch=="ppc64" | os.arch=="s390" | os.arch=="riscv64"
  * @build jdk.test.whitebox.WhiteBox
  * @run driver jdk.test.lib.helpers.ClassFileInstaller -jar WhiteBox.jar jdk.test.whitebox.WhiteBox
- * @run main/othervm/native/timeout=216000 profiling.stress.ASGSTStabilityTest dotty 5
+ * @run main/othervm/native/timeout=216000 profiling.stress.JFRLLStabilityTest dotty 5
  */
 
-public class ASGSTStabilityTest {
+public class JFRLLStabilityTest {
   private static final String RENAISSANCE_URL = "https://github.com/renaissance-benchmarks/renaissance/releases/download/v0.14.1/renaissance-gpl-0.14.1.jar";
 
   public static final class Runner {
     private static final String MAIN_CLASS = "org.renaissance.core.Launcher";
     public static void main(String[] args) throws Exception {
-      System.out.println("=== asgst sampler initialized ===");
+      System.out.println("=== jfrll sampler initialized ===");
       WhiteBox wb = WhiteBox.getWhiteBox();
 
       // start a thread which will randomly deoptimize frames in order
@@ -103,7 +103,7 @@ public class ASGSTStabilityTest {
   }
 
   public static void main(String[] args) throws Exception {
-    String tmp = System.getenv("JTREG_ASGST_STABILITY_TEST_TMP");
+    String tmp = System.getenv("JTREG_JFRLL_STABILITY_TEST_TMP");
     String tmpPath = tmp == null ? System.getProperty("java.io.tmpdir") : tmp;
     Path jarPath = Paths.get(tmpPath, "renaissance.jar");
     System.out.println("Downloading renaissance.jar to " + jarPath);
@@ -133,13 +133,13 @@ public class ASGSTStabilityTest {
         "-agentlib:AsyncGetStackTraceSampler2",
         "-Djava.library.path=" + System.getProperty("test.nativepath"),
         "-cp", testCp,
-        ASGSTStabilityTest.Runner.class.getName(),
+        JFRLLStabilityTest.Runner.class.getName(),
         benchmark, "-t", Integer.toString(duration)))
       .redirectErrorStream(true);
     System.out.println("===> Command: " + String.join(" ", pb.command()));
     ProcessTools.executeProcess(pb)
       .shouldHaveExitValue(0)
-      .shouldContain("=== asgst sampler initialized ===");
+      .shouldContain("=== jfrll sampler initialized ===");
 
     System.out.println("=== ... done");
   }

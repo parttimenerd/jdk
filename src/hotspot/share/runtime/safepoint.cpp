@@ -913,7 +913,7 @@ void ThreadSafepointState::handle_polling_page_exception() {
   set_at_safepoint(true);
   JavaThread* self = thread();
   assert(self == JavaThread::current(), "must be self");
-  self->handshake_state()->transition_to_close_asgst_queues();
+  self->handshake_state()->transition_to_close_jfrll_queues();
 
   // Step 1: Find the nmethod from the return address
   address real_return_addr = self->saved_exception_pc();
@@ -1015,7 +1015,7 @@ void ThreadSafepointState::handle_polling_page_exception() {
       }
     }
   }
-  self->handshake_state()->open_asgst_queues();
+  self->handshake_state()->open_jfrll_queues();
   set_at_safepoint(false);
 }
 

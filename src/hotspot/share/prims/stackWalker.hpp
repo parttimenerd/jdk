@@ -107,7 +107,7 @@ class  StackWalker {
   StackWalkerMiscArguments _misc;
 
   // maximum number of C frames to skip, use this if there a problems with too large C stacks
-  // in JNI libraries. ASGST limits it too.
+  // in JNI libraries. JFRLL limits it too.
   int _max_c_frames_skip;
 
   // allow to use _thread->last_java_frame()

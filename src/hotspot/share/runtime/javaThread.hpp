@@ -1197,19 +1197,19 @@ public:
   }
 
 public:
-  // ASGST frame mark support
+  // JFRLL frame mark support
 
-  StackWatermark* asgst_watermark() { return Atomic::load(&_asgst_watermark); }
+  StackWatermark* jfrll_watermark() { return Atomic::load(&_jfrll_watermark); }
 
   // this class handles the deletion of the last assigned mark
   // returns true if the passed mark is used, or false if one already is present
-  bool set_asgst_watermark(StackWatermark* watermark) {
-    assert(_asgst_watermark == nullptr, "set_asgst_watermark called twice");
-    return Atomic::cmpxchg(&_asgst_watermark, (StackWatermark*)nullptr, watermark) == nullptr;
+  bool set_jfrll_watermark(StackWatermark* watermark) {
+    assert(_jfrll_watermark == nullptr, "set_jfrll_watermark called twice");
+    return Atomic::cmpxchg(&_jfrll_watermark, (StackWatermark*)nullptr, watermark) == nullptr;
   }
 private:
 
-  StackWatermark* volatile _asgst_watermark = nullptr;
+  StackWatermark* volatile _jfrll_watermark = nullptr;
 };
 
 inline JavaThread* JavaThread::current_or_null() {

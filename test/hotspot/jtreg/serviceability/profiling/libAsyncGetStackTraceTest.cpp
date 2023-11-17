@@ -161,17 +161,17 @@ static bool checkForNonJava2() {
   getcontext(&context);
 
   const int MAX_DEPTH = 16;
-  ASGST_CallTrace trace;
-  ASGST_CallFrame frames[MAX_DEPTH];
+  JFRLL_CallTrace trace;
+  JFRLL_CallFrame frames[MAX_DEPTH];
   trace.frames = frames;
 
   AsyncGetStackTrace(&trace, MAX_DEPTH, &context,
-    ASGST_INCLUDE_C_FRAMES | ASGST_INCLUDE_NON_JAVA_THREADS | ASGST_WALK_SAME_THREAD);
+    JFRLL_INCLUDE_C_FRAMES | JFRLL_INCLUDE_NON_JAVA_THREADS | JFRLL_WALK_SAME_THREAD);
   if (trace.num_frames < 0) {
     fprintf(stderr, "checkForNonJava2: No frames found for non-java thread\n");
     return false;
   }
-  if (trace.kind != ASGST_CPP_TRACE) {
+  if (trace.kind != JFRLL_CPP_TRACE) {
     fprintf(stderr, "checkForNonJava2: Expected C kind for non-java thread\n");
     return false;
   }
@@ -196,16 +196,16 @@ static bool checkForNonJavaNoCFrames() {
   getcontext(&context);
 
   const int MAX_DEPTH = 16;
-  ASGST_CallTrace trace;
-  ASGST_CallFrame frames[MAX_DEPTH];
+  JFRLL_CallTrace trace;
+  JFRLL_CallFrame frames[MAX_DEPTH];
   trace.frames = frames;
 
-  AsyncGetStackTrace(&trace, MAX_DEPTH, &context, ASGST_INCLUDE_NON_JAVA_THREADS | ASGST_WALK_SAME_THREAD);
+  AsyncGetStackTrace(&trace, MAX_DEPTH, &context, JFRLL_INCLUDE_NON_JAVA_THREADS | JFRLL_WALK_SAME_THREAD);
   if (trace.num_frames != 0) {
     fprintf(stderr, "checkForNonJavaNoCFrames: Frames found for non-java thread\n");
     return false;
   }
-  if (trace.kind != ASGST_CPP_TRACE) {
+  if (trace.kind != JFRLL_CPP_TRACE) {
     fprintf(stderr, "checkForNonJavaNoCFrames: Expected C kind for non-java thread\n");
     return false;
   }
@@ -213,23 +213,23 @@ static bool checkForNonJavaNoCFrames() {
 }
 
 // Check that we can get the right error code if we try to walk a non-java thread without
-// ASGST_INCLUDE_NON_JAVA_THREADS enabled
+// JFRLL_INCLUDE_NON_JAVA_THREADS enabled
 // ucontext in the same method
 static bool checkForNonJavaNoJavaFramesIncluded() {
   ucontext_t context;
   getcontext(&context);
 
   const int MAX_DEPTH = 16;
-  ASGST_CallTrace trace;
-  ASGST_CallFrame frames[MAX_DEPTH];
+  JFRLL_CallTrace trace;
+  JFRLL_CallFrame frames[MAX_DEPTH];
   trace.frames = frames;
 
-  AsyncGetStackTrace(&trace, MAX_DEPTH, &context, ASGST_WALK_SAME_THREAD);
-  if (trace.num_frames != ASGST_THREAD_NOT_JAVA) {
+  AsyncGetStackTrace(&trace, MAX_DEPTH, &context, JFRLL_WALK_SAME_THREAD);
+  if (trace.num_frames != JFRLL_THREAD_NOT_JAVA) {
     fprintf(stderr, "NoJavaFramesIncluded: Found incorrect error code %d\n", trace.num_frames);
     return false;
   }
-  if (trace.kind != ASGST_CPP_TRACE) {
+  if (trace.kind != JFRLL_CPP_TRACE) {
     fprintf(stderr, "NoJavaFramesIncluded: Expected C kind for non-java thread\n");
     return false;
   }
@@ -245,19 +245,19 @@ static void* checkForNonJava(void *arg) {
   getcontext(&context);
 
   const int MAX_DEPTH = 16;
-  ASGST_CallTrace trace;
-  ASGST_CallFrame frames[MAX_DEPTH];
+  JFRLL_CallTrace trace;
+  JFRLL_CallFrame frames[MAX_DEPTH];
   trace.frames = frames;
 
 
 
   AsyncGetStackTrace(&trace, MAX_DEPTH, &context,
-    ASGST_INCLUDE_C_FRAMES | ASGST_INCLUDE_NON_JAVA_THREADS | ASGST_WALK_SAME_THREAD);
+    JFRLL_INCLUDE_C_FRAMES | JFRLL_INCLUDE_NON_JAVA_THREADS | JFRLL_WALK_SAME_THREAD);
   if (trace.num_frames < 0) {
     fprintf(stderr, "checkForNonJava: No frames found for non-java thread, error code %d\n", trace.num_frames);
     return NULL;
   }
-  if (trace.kind != ASGST_CPP_TRACE) {
+  if (trace.kind != JFRLL_CPP_TRACE) {
     fprintf(stderr, "checkForNonJava: Expected C kind for non-java thread\n");
     return NULL;
   }
@@ -286,19 +286,19 @@ static bool checkForNonJavaFromThread() {
   return result == &success;
 }
 
-// this also checks that ASGST and ASGCT behave the same
+// this also checks that JFRLL and ASGCT behave the same
 JNIEXPORT jboolean JNICALL
-Java_profiling_sanity_ASGSTBaseTest_checkAsyncGetStackTraceCall(JNIEnv* env, jclass cls) {
+Java_profiling_sanity_JFRLLBaseTest_checkAsyncGetStackTraceCall(JNIEnv* env, jclass cls) {
   const int MAX_DEPTH = 20;
-  ASGST_CallTrace trace;
-  ASGST_CallFrame frames[MAX_DEPTH];
+  JFRLL_CallTrace trace;
+  JFRLL_CallFrame frames[MAX_DEPTH];
   trace.frames = frames;
   trace.frame_info = NULL;
   trace.num_frames = 0;
 
   ucontext_t context;
   getcontext(&context);
-  AsyncGetStackTrace(&trace, MAX_DEPTH, &context, ASGST_WALK_SAME_THREAD);
+  AsyncGetStackTrace(&trace, MAX_DEPTH, &context, JFRLL_WALK_SAME_THREAD);
 
   if (trace.num_frames <= 0) {
     fprintf(stderr, "basic: The num_frames must be positive: %d\n", trace.num_frames);
@@ -313,11 +313,11 @@ Java_profiling_sanity_ASGSTBaseTest_checkAsyncGetStackTraceCall(JNIEnv* env, jcl
     return false;
   }
 
-  if (!doesFrameBelongToJavaMethod(trace.frames[0], ASGST_FRAME_NATIVE,
+  if (!doesFrameBelongToJavaMethod(trace.frames[0], JFRLL_FRAME_NATIVE,
         "checkAsyncGetStackTraceCall", "JNICALL frame 0") ||
-      !doesFrameBelongToJavaMethod(trace.frames[1], ASGST_FRAME_JAVA,
+      !doesFrameBelongToJavaMethod(trace.frames[1], JFRLL_FRAME_JAVA,
         "main", "JNICALL frame 1") ||
-      !doesFrameBelongToJavaMethod(trace.frames[2], ASGST_FRAME_JAVA,
+      !doesFrameBelongToJavaMethod(trace.frames[2], JFRLL_FRAME_JAVA,
         "invokeStatic", "JNICALL frame 2")) {
     return false;
   }

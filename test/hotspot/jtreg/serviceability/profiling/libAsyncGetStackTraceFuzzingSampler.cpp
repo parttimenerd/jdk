@@ -95,7 +95,7 @@ long startTime = 0;
 bool ended = false;
 
 
-void iterativeFuzzingAsyncGetStackTraceLike(ASGST_CallTrace *trace, int max_depth, int options, void* ucontext) {
+void iterativeFuzzingAsyncGetStackTraceLike(JFRLL_CallTrace *trace, int max_depth, int options, void* ucontext) {
   if (ended) {
     return;
   }
@@ -117,7 +117,7 @@ void iterativeFuzzingAsyncGetStackTraceLike(ASGST_CallTrace *trace, int max_dept
   }
 }
 
-void fuzzingAsyncGetStackTraceLike(ASGST_CallTrace *trace, int max_depth, int options, int sp_add, int fp_add, void* ucontext) {
+void fuzzingAsyncGetStackTraceLike(JFRLL_CallTrace *trace, int max_depth, int options, int sp_add, int fp_add, void* ucontext) {
   if (getSecondsSinceEpoch() - startTime > duration_s) {
     return;
   }
@@ -130,15 +130,15 @@ void fuzzingAsyncGetStackTraceLike(ASGST_CallTrace *trace, int max_depth, int op
 
 static void signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
   const int MAX_DEPTH = 512;
-  static ASGST_CallFrame frames[MAX_DEPTH];
-  ASGST_CallTrace trace;
+  static JFRLL_CallFrame frames[MAX_DEPTH];
+  JFRLL_CallTrace trace;
   trace.frames = frames;
   trace.frame_info = NULL;
   trace.num_frames = 0;
   if (iterative) {
-    iterativeFuzzingAsyncGetStackTraceLike(&trace, MAX_DEPTH, ASGST_INCLUDE_C_FRAMES, ucontext);
+    iterativeFuzzingAsyncGetStackTraceLike(&trace, MAX_DEPTH, JFRLL_INCLUDE_C_FRAMES, ucontext);
   } else {
-    fuzzingAsyncGetStackTraceLike(&trace, MAX_DEPTH, ASGST_INCLUDE_C_FRAMES, rand() % sp_max_random_fuzz, rand() % fp_max_random_fuzz, ucontext);
+    fuzzingAsyncGetStackTraceLike(&trace, MAX_DEPTH, JFRLL_INCLUDE_C_FRAMES, rand() % sp_max_random_fuzz, rand() % fp_max_random_fuzz, ucontext);
   }
 }
 
@@ -153,7 +153,7 @@ static bool startITimerSampler(long interval_ns) {
   if (setitimer(ITIMER_PROF, &tv, NULL) != 0) {
     return false;
   }
-  fprintf(stderr, "=== asgst sampler initialized ===\n");
+  fprintf(stderr, "=== jfrll sampler initialized ===\n");
   return true;
 }
 
@@ -191,7 +191,7 @@ jint Agent_Initialize(JavaVM *jvm, char *options, void *reserved) {
     return JNI_ERR;
   }
 
-  char* dur_env = getenv("ASGST_FUZZING_TEST_DURATION");
+  char* dur_env = getenv("JFRLL_FUZZING_TEST_DURATION");
   if (dur_env != NULL) {
     duration_s = atoi(dur_env);
   }

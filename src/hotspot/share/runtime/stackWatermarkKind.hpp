@@ -27,7 +27,7 @@
 
 enum class StackWatermarkKind {
   gc,
-  asgst
+  jfrll
 };
 
 #endif // SHARE_RUNTIME_STACKWATERMARKKIND_HPP

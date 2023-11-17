@@ -47,18 +47,18 @@ import jdk.test.whitebox.WhiteBox;
  * @test
  * @summary Verifies that AsyncGetStackTrace usage is stable in a high-frequency signal sampler
  * @library /test/jdk/lib/testlibrary /test/lib
- * @compile ASGSTStabilityTest.java
+ * @compile JFRLLStabilityTest.java
  * @key stress
  * @requires os.family == "linux" | os.family == "mac"
  * @requires os.arch=="x86" | os.arch=="i386" | os.arch=="amd64" | os.arch=="x86_64" | os.arch=="arm" | os.arch=="aarch64" | os.arch=="ppc64" | os.arch=="s390" | os.arch=="riscv64"
  * @build jdk.test.whitebox.WhiteBox
  * @run driver jdk.test.lib.helpers.ClassFileInstaller -jar WhiteBox.jar jdk.test.whitebox.WhiteBox
- * @run main/othervm/native/timeout=216000 profiling.stress.ASGSTStabilityTest akka-uct 10
- * @run main/othervm/native/timeout=216000 profiling.stress.ASGSTStabilityTest finagle-chirper 120
- * @run main/othervm/native/timeout=216000 profiling.stress.ASGSTStabilityTest finagle-http 120
+ * @run main/othervm/native/timeout=216000 profiling.stress.JFRLLStabilityTest akka-uct 10
+ * @run main/othervm/native/timeout=216000 profiling.stress.JFRLLStabilityTest finagle-chirper 120
+ * @run main/othervm/native/timeout=216000 profiling.stress.JFRLLStabilityTest finagle-http 120
  */
 
-public class ASGSTStabilityTest {
+public class JFRLLStabilityTest {
   private static final String RENAISSANCE_URL = "https://github.com/renaissance-benchmarks/renaissance/releases/download/v0.14.1/renaissance-gpl-0.14.1.jar";
 
   public static final class Runner {
@@ -133,13 +133,13 @@ public class ASGSTStabilityTest {
         "-Djava.library.path=" + System.getProperty("test.nativepath"),
         "-Djavatest.maxOutputSize=10485760",
         "-cp", testCp,
-        ASGSTStabilityTest.Runner.class.getName(),
+        JFRLLStabilityTest.Runner.class.getName(),
         benchmark, "-t", Integer.toString(duration)))
       .redirectErrorStream(true);
     System.out.println("===> Command: " + String.join(" ", pb.command()));
     ProcessTools.executeProcess(pb)
       .shouldHaveExitValue(0)
-      .shouldContain("=== asgst sampler initialized ===");
+      .shouldContain("=== jfrll sampler initialized ===");
 
     System.out.println("=== ... done");
   }

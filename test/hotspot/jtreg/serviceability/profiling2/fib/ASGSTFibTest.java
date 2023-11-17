@@ -47,16 +47,16 @@ import jdk.test.whitebox.WhiteBox;
  * @test
  * @summary Verifies that AsyncGetStackTrace usage is stable in a high-frequency signal sampler
  * @library /test/jdk/lib/testlibrary /test/lib
- * @compile ASGSTFibTest.java MathParser.java
+ * @compile JFRLLFibTest.java MathParser.java
  * @key stress
  * @requires os.family == "linux" | os.family == "mac"
  * @requires os.arch=="x86" | os.arch=="i386" | os.arch=="amd64" | os.arch=="x86_64" | os.arch=="arm" | os.arch=="aarch64" | os.arch=="ppc64" | os.arch=="s390" | os.arch=="riscv64"
  * @build jdk.test.whitebox.WhiteBox
  * @run driver jdk.test.lib.helpers.ClassFileInstaller -jar WhiteBox.jar jdk.test.whitebox.WhiteBox
- * @run main/othervm/native/timeout=216000 -XX:LoopStripMiningIter=400000000 -XX:-UseCountedLoopSafepoints -agentlib:AsyncGetStackTraceFibSampler -XX:+UnlockDiagnosticVMOptions -XX:+DebugNonSafepoints -Xbootclasspath/a:/home/i560383/code/asgct2/jdk/build/linux-x86_64-server-fastdebug/support/test/lib/wb.jar -XX:+UnlockDiagnosticVMOptions -XX:+WhiteBoxAPI profiling.fib.ASGSTFibTest
+ * @run main/othervm/native/timeout=216000 -XX:LoopStripMiningIter=400000000 -XX:-UseCountedLoopSafepoints -agentlib:AsyncGetStackTraceFibSampler -XX:+UnlockDiagnosticVMOptions -XX:+DebugNonSafepoints -Xbootclasspath/a:/home/i560383/code/asgct2/jdk/build/linux-x86_64-server-fastdebug/support/test/lib/wb.jar -XX:+UnlockDiagnosticVMOptions -XX:+WhiteBoxAPI profiling.fib.JFRLLFibTest
  */
 
-public class ASGSTFibTest {
+public class JFRLLFibTest {
 
   static int recursiveFib(int n) {
     if (n <= 1) {

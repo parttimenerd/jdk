@@ -113,26 +113,26 @@ void printMethod(FILE* stream, jmethodID method) {
   fprintf(stream, "%s.%s%s", className.get(), name.get(), signature.get());
 }
 
-void printMethod(FILE *stream, ASGST_Method method) {
+void printMethod(FILE *stream, JFRLL_Method method) {
   if (method == NULL) {
     fprintf(stream, "NULL");
     return;
   }
   char method_name[100];
   char signature[100];
-  ASGST_MethodInfo info;
+  JFRLL_MethodInfo info;
   info.method_name = (char*)method_name;
   info.method_name_length = 100;
   info.signature = (char*)signature;
   info.signature_length = 100;
   info.generic_signature = nullptr;
-  ASGST_GetMethodInfo(method, &info);
-  ASGST_ClassInfo class_info;
+  JFRLL_GetMethodInfo(method, &info);
+  JFRLL_ClassInfo class_info;
   char class_name[100];
   class_info.class_name = (char*)class_name;
   class_info.class_name_length = 100;
   class_info.generic_class_name = nullptr;
-  ASGST_GetClassInfo(info.klass, &class_info);
+  JFRLL_GetClassInfo(info.klass, &class_info);
   fprintf(stream, "%s.%s%s", class_name, method_name, signature);
 }
 
@@ -164,7 +164,7 @@ void printASGCTFrame(FILE* stream, ASGCT_CallFrame frame) {
   JvmtiDeallocator<char*> name;
   jvmtiError err = jvmti->GetMethodName(frame.method_id, name.get_addr(), NULL, NULL);
   if (err != JVMTI_ERROR_NONE) {
-    fprintf(stream, "=== asgst sampler failed: Error in GetMethodName: %d", err);
+    fprintf(stream, "=== jfrll sampler failed: Error in GetMethodName: %d", err);
     return;
   }
   if (isASGCTNativeFrame(frame)) {

@@ -99,12 +99,12 @@ static void GetJMethodIDs(jclass klass) {
 }
 
 // assumes that getcontext is called in the beginning of the function
-template <typename T> bool doesFrameBelongToMethod(ASGST_CallFrame frame, T* method, const char* msg_prefix) {
-  if (frame.type != ASGST_FRAME_CPP) {
+template <typename T> bool doesFrameBelongToMethod(JFRLL_CallFrame frame, T* method, const char* msg_prefix) {
+  if (frame.type != JFRLL_FRAME_CPP) {
     fprintf(stderr, "%s: Expected CPP frame, got %d\n", msg_prefix, frame.type);
     return false;
   }
-  ASGST_NonJavaFrame non_java_frame = frame.non_java_frame;
+  JFRLL_NonJavaFrame non_java_frame = frame.non_java_frame;
   size_t pc = (size_t)non_java_frame.pc;
   size_t expected_pc_start = (size_t)method - METHOD_PRE_HEADER_SIZE;
   size_t expected_pc_end = (size_t)method + METHOD_HEADER_SIZE;
@@ -116,12 +116,12 @@ template <typename T> bool doesFrameBelongToMethod(ASGST_CallFrame frame, T* met
   return true;
 }
 
-bool doesFrameBelongToJavaMethod(ASGST_CallFrame frame, uint8_t type, const char* expected_name, const char* msg_prefix) {
+bool doesFrameBelongToJavaMethod(JFRLL_CallFrame frame, uint8_t type, const char* expected_name, const char* msg_prefix) {
   if (frame.type != type) {
     fprintf(stderr, "%s: Expected type %d but got %d\n", msg_prefix, type, frame.type);
     return false;
   }
-  ASGST_JavaFrame java_frame = frame.java_frame;
+  JFRLL_JavaFrame java_frame = frame.java_frame;
   JvmtiDeallocator<char*> name;
   jvmtiError err = jvmti->GetMethodName(java_frame.method_id, name.get_addr(), NULL, NULL);
   if (err != JVMTI_ERROR_NONE) {
@@ -135,8 +135,8 @@ bool doesFrameBelongToJavaMethod(ASGST_CallFrame frame, uint8_t type, const char
   return true;
 }
 
-bool isCppFrame(ASGST_CallFrame frame, const char* msg_prefix) {
-  if (frame.type != ASGST_FRAME_CPP) {
+bool isCppFrame(JFRLL_CallFrame frame, const char* msg_prefix) {
+  if (frame.type != JFRLL_FRAME_CPP) {
     fprintf(stderr, "%s: Expected CPP frame, got %d", msg_prefix, frame.type);
     return false;
   }
@@ -158,19 +158,19 @@ void printMethod(FILE* stream, jmethodID method) {
   fprintf(stream, "%s.%s%s", className.get(), name.get(), signature.get());
 }
 
-void printJavaFrame(FILE *stream, ASGST_JavaFrame frame) {
+void printJavaFrame(FILE *stream, JFRLL_JavaFrame frame) {
   switch (frame.type) {
-    case ASGST_FRAME_JAVA:
+    case JFRLL_FRAME_JAVA:
     fprintf(stream, "Java");
     break;
-    case ASGST_FRAME_JAVA_INLINED:
+    case JFRLL_FRAME_JAVA_INLINED:
     fprintf(stream, "Java inlined");
     break;
-    case ASGST_FRAME_NATIVE:
+    case JFRLL_FRAME_NATIVE:
     fprintf(stream, "Native");
     break;
   }
-  if (frame.type != ASGST_FRAME_NATIVE) {
+  if (frame.type != JFRLL_FRAME_NATIVE) {
     if (frame.comp_level == 0) {
       fprintf(stderr, " interpreted");
     } else {
@@ -203,8 +203,8 @@ template <size_t N = 0> const char* lookForMethod(void* pc, std::array<std::pair
   return min_pair.first;
 }
 
-template <size_t N = 0> void printNonJavaFrame(FILE* stream, ASGST_NonJavaFrame frame, std::array<std::pair<const char*, void*>, N> methods = {}) {
-  if (frame.type == ASGST_FRAME_CPP) {
+template <size_t N = 0> void printNonJavaFrame(FILE* stream, JFRLL_NonJavaFrame frame, std::array<std::pair<const char*, void*>, N> methods = {}) {
+  if (frame.type == JFRLL_FRAME_CPP) {
     fprintf(stream, "CPP frame, pc = %p", frame.pc);
   } else {
     fprintf(stream, "Unknown frame type: %d", frame.type);
@@ -224,14 +224,14 @@ template <size_t N = 0> void printNonJavaFrame(FILE* stream, ASGST_NonJavaFrame 
   }
 }
 
-template <size_t N = 0> void printFrame(FILE* stream, ASGST_CallFrame frame, std::array<std::pair<const char*, void*>, N> methods = {}) {
+template <size_t N = 0> void printFrame(FILE* stream, JFRLL_CallFrame frame, std::array<std::pair<const char*, void*>, N> methods = {}) {
   switch (frame.type) {
-    case ASGST_FRAME_JAVA:
-    case ASGST_FRAME_JAVA_INLINED:
-    case ASGST_FRAME_NATIVE:
+    case JFRLL_FRAME_JAVA:
+    case JFRLL_FRAME_JAVA_INLINED:
+    case JFRLL_FRAME_NATIVE:
       printJavaFrame(stream, frame.java_frame);
       break;
-    case ASGST_FRAME_CPP:
+    case JFRLL_FRAME_CPP:
       printNonJavaFrame(stream, frame.non_java_frame, methods);
       break;
     default:
@@ -239,7 +239,7 @@ template <size_t N = 0> void printFrame(FILE* stream, ASGST_CallFrame frame, std
   }
 }
 
-template <size_t N = 0> void printFrames(FILE* stream, ASGST_CallFrame *frames, int length, std::array<std::pair<const char*, void*>, N> methods = {}) {
+template <size_t N = 0> void printFrames(FILE* stream, JFRLL_CallFrame *frames, int length, std::array<std::pair<const char*, void*>, N> methods = {}) {
   for (int i = 0; i < length; i++) {
     fprintf(stream, "Frame %d: ", i);
     printFrame(stream, frames[i], methods);
@@ -247,7 +247,7 @@ template <size_t N = 0> void printFrames(FILE* stream, ASGST_CallFrame *frames, 
   }
 }
 
-template <size_t N = 0> void printTrace(FILE* stream, ASGST_CallTrace trace, std::array<std::pair<const char*, void*>, N> methods = {}) {
+template <size_t N = 0> void printTrace(FILE* stream, JFRLL_CallTrace trace, std::array<std::pair<const char*, void*>, N> methods = {}) {
   fprintf(stream, "Trace length: %d\n", trace.num_frames);
   fprintf(stream, "Kind: %d\n", trace.kind);
   if (trace.num_frames > 0) {
@@ -255,9 +255,9 @@ template <size_t N = 0> void printTrace(FILE* stream, ASGST_CallTrace trace, std
   }
 }
 
-bool areFramesCPPFrames(ASGST_CallFrame *frames, int start, int inclEnd, const char* msg_prefix) {
+bool areFramesCPPFrames(JFRLL_CallFrame *frames, int start, int inclEnd, const char* msg_prefix) {
   for (int i = start; i <= inclEnd; i++) {
-    if (frames[i].type != ASGST_FRAME_CPP) {
+    if (frames[i].type != JFRLL_FRAME_CPP) {
       fprintf(stderr, "%s: Expected CPP frame at index %d, got %d", msg_prefix, i, frames[i].type);
       return false;
     }
@@ -293,7 +293,7 @@ void printASGCTFrame(FILE* stream, ASGCT_CallFrame frame) {
   JvmtiDeallocator<char*> name;
   jvmtiError err = jvmti->GetMethodName(frame.method_id, name.get_addr(), NULL, NULL);
   if (err != JVMTI_ERROR_NONE) {
-    fprintf(stream, "=== asgst sampler failed: Error in GetMethodName: %d", err);
+    fprintf(stream, "=== jfrll sampler failed: Error in GetMethodName: %d", err);
     return;
   }
   if (isASGCTNativeFrame(frame)) {
@@ -344,8 +344,8 @@ void printGSTTrace(FILE* stream, jvmtiFrameInfo* frames, int length) {
   fprintf(stream, "GST Trace end\n");
 }
 
-void printTraces(ASGST_CallTrace* trace, ASGCT_CallTrace* asgct_trace) {
-  fprintf(stderr, "=== asgst trace ===\n");
+void printTraces(JFRLL_CallTrace* trace, ASGCT_CallTrace* asgct_trace) {
+  fprintf(stderr, "=== jfrll trace ===\n");
   printTrace(stderr, *trace);
   fprintf(stderr, "=== asgct trace ===\n");
   printASGCTTrace(stderr, *asgct_trace);
@@ -387,22 +387,22 @@ template<int max_depth> void printGST() {
   printGSTTrace(stderr, gstFrames, gstCount);
 }
 
-/** asgst, asgct, gst */
+/** jfrll, asgct, gst */
 template <int max_depth = 100> void printSyncTraces(JNIEnv* oenv = nullptr) {
   assert(env != nullptr || oenv != nullptr);
   ucontext_t context;
   getcontext(&context);
-  ASGST_CallTrace trace;
-  ASGST_CallFrame frames[max_depth];
+  JFRLL_CallTrace trace;
+  JFRLL_CallFrame frames[max_depth];
   trace.frames = frames;
-  AsyncGetStackTrace(&trace, max_depth, &context, ASGST_WALK_SAME_THREAD);
+  AsyncGetStackTrace(&trace, max_depth, &context, JFRLL_WALK_SAME_THREAD);
   printTrace(stderr, trace);
   printASGCT<max_depth>(&context, oenv);
   printGST<max_depth>();
 }
 
 /**
- * Test that the ASGST trace conforms to the oracles
+ * Test that the JFRLL trace conforms to the oracles
  *
  * prints the traces on stderr on error and returns false
  *
@@ -422,12 +422,12 @@ template<int max_depth = 100> bool check(const char* prefix, JNIEnv* oenv = null
 
 
 
-  // obtain the ASGST trace
-  ASGST_CallTrace trace;
-  ASGST_CallFrame frames[max_depth];
+  // obtain the JFRLL trace
+  JFRLL_CallTrace trace;
+  JFRLL_CallFrame frames[max_depth];
   trace.frames = frames;
-  AsyncGetStackTrace(&trace, max_depth, &ucontext, ASGST_WALK_SAME_THREAD);
-  int asgst_count = std::max(0, trace.num_frames);
+  AsyncGetStackTrace(&trace, max_depth, &ucontext, JFRLL_WALK_SAME_THREAD);
+  int jfrll_count = std::max(0, trace.num_frames);
 
   auto printAll = [&](){
     printTrace(stderr, trace);
@@ -458,41 +458,41 @@ template<int max_depth = 100> bool check(const char* prefix, JNIEnv* oenv = null
   }
   int asgct_count = std::max(0, asgct_trace.num_frames);
 
-  // check that the ASGST trace conforms to the oracles
+  // check that the JFRLL trace conforms to the oracles
 
   // check first that the lengths are the same
   // we don't care about the error codes
 
   if (use_gct && asgct_count != gst_count) {
-    fprintf(stderr, "Error in %s: ASGST trace length %d does not match GST trace length %d\n", prefix, asgst_count, gst_count);
+    fprintf(stderr, "Error in %s: JFRLL trace length %d does not match GST trace length %d\n", prefix, jfrll_count, gst_count);
     printAll();
     return false;
   }
 
-  if (use_asgct && asgst_count != asgct_count) {
-    fprintf(stderr, "Error in %s: ASGST trace length %d does not match ASGCT trace length %d\n", prefix, asgst_count, asgct_count);
+  if (use_asgct && jfrll_count != asgct_count) {
+    fprintf(stderr, "Error in %s: JFRLL trace length %d does not match ASGCT trace length %d\n", prefix, jfrll_count, asgct_count);
     printAll();
     return false;
   }
 
   // now check that the frames have the same method ids
-  for (int i = 0; i < asgst_count; i++) {
-    ASGST_CallFrame asgst_frame = trace.frames[i];
+  for (int i = 0; i < jfrll_count; i++) {
+    JFRLL_CallFrame jfrll_frame = trace.frames[i];
 
-    ASGST_JavaFrame asgst_java_frame = asgst_frame.java_frame;
+    JFRLL_JavaFrame jfrll_java_frame = jfrll_frame.java_frame;
 
     if (use_gct) {
       jvmtiFrameInfo gst_frame = gst_frames[i];
-      if (gst_frame.method != asgst_java_frame.method_id) {
-        fprintf(stderr, "Error in %s: ASGST frame %d method %p does not match GST frame %d method %p\n", prefix, i, asgst_java_frame.method_id, i, gst_frame.method);
+      if (gst_frame.method != jfrll_java_frame.method_id) {
+        fprintf(stderr, "Error in %s: JFRLL frame %d method %p does not match GST frame %d method %p\n", prefix, i, jfrll_java_frame.method_id, i, gst_frame.method);
         printAll();
         return false;
       }
     }
     if (use_asgct) {
       ASGCT_CallFrame asgct_frame = asgct_trace.frames[i];
-      if (asgct_frame.method_id != asgst_java_frame.method_id) {
-        fprintf(stderr, "Error in %s: ASGST frame %d method %p does not match ASGCT frame %d method %p\n", prefix, i, asgst_java_frame.method_id, i, asgct_frame.method_id);
+      if (asgct_frame.method_id != jfrll_java_frame.method_id) {
+        fprintf(stderr, "Error in %s: JFRLL frame %d method %p does not match ASGCT frame %d method %p\n", prefix, i, jfrll_java_frame.method_id, i, asgct_frame.method_id);
         printAll();
         return false;
       }
@@ -501,22 +501,22 @@ template<int max_depth = 100> bool check(const char* prefix, JNIEnv* oenv = null
 
   // now check that the frames have the same locations
 
-  for (int i = 0; i < asgst_count; i++) {
-    ASGST_CallFrame asgst_frame = trace.frames[i];
+  for (int i = 0; i < jfrll_count; i++) {
+    JFRLL_CallFrame jfrll_frame = trace.frames[i];
 
-    ASGST_JavaFrame asgst_java_frame = asgst_frame.java_frame;
+    JFRLL_JavaFrame jfrll_java_frame = jfrll_frame.java_frame;
 
     if (use_gct) {
       jvmtiFrameInfo gst_frame = gst_frames[i];
       if (gst_frame.location < 0) {
-        if (asgst_java_frame.type != ASGST_FRAME_NATIVE) {
-          fprintf(stderr, "Error in %s: ASGST frame %d is not native but GST frame %d is", prefix, i, i);
+        if (jfrll_java_frame.type != JFRLL_FRAME_NATIVE) {
+          fprintf(stderr, "Error in %s: JFRLL frame %d is not native but GST frame %d is", prefix, i, i);
           printAll();
           return false;
         }
       } else {
-        if (gst_frame.location != asgst_java_frame.bci) {
-          fprintf(stderr, "Error in %s: ASGST frame %d location %p does not match GST frame %d location %p\n", prefix, i, asgst_java_frame.bci, i, gst_frame.location);
+        if (gst_frame.location != jfrll_java_frame.bci) {
+          fprintf(stderr, "Error in %s: JFRLL frame %d location %p does not match GST frame %d location %p\n", prefix, i, jfrll_java_frame.bci, i, gst_frame.location);
           printAll();
           return false;
         }
@@ -525,14 +525,14 @@ template<int max_depth = 100> bool check(const char* prefix, JNIEnv* oenv = null
     if (use_asgct) {
       ASGCT_CallFrame asgct_frame = asgct_trace.frames[i];
       if (asgct_frame.lineno < 0) {
-        if (asgst_java_frame.type != ASGST_FRAME_NATIVE) {
-          fprintf(stderr, "Error in %s: ASGST frame %d is not native but ASGCT frame %d is", prefix, i, i);
+        if (jfrll_java_frame.type != JFRLL_FRAME_NATIVE) {
+          fprintf(stderr, "Error in %s: JFRLL frame %d is not native but ASGCT frame %d is", prefix, i, i);
           printAll();
           return false;
         }
       } else {
-        if (asgct_frame.lineno != asgst_java_frame.bci) {
-          fprintf(stderr, "Error in %s: ASGST frame %d location %p does not match ASGCT frame %d location %p\n", prefix, i, asgst_java_frame.bci, i, asgct_frame.lineno);
+        if (asgct_frame.lineno != jfrll_java_frame.bci) {
+          fprintf(stderr, "Error in %s: JFRLL frame %d location %p does not match ASGCT frame %d location %p\n", prefix, i, jfrll_java_frame.bci, i, asgct_frame.lineno);
           printAll();
           return false;
         }
@@ -543,7 +543,7 @@ template<int max_depth = 100> bool check(const char* prefix, JNIEnv* oenv = null
 }
 
 /**
- * Checks that all frames that appear in the ASGST trace without C frames also appear in the ASGST trace with C frames.
+ * Checks that all frames that appear in the JFRLL trace without C frames also appear in the JFRLL trace with C frames.
  */
 template <int max_depth = 100> bool checkThatWithCAndWithoutAreSimilar(const char* prefix) {
   ucontext_t ucontext;
@@ -554,53 +554,53 @@ template <int max_depth = 100> bool checkThatWithCAndWithoutAreSimilar(const cha
 
 
 
-  // obtain the ASGST trace
-  ASGST_CallTrace trace;
-  ASGST_CallFrame frames[max_depth];
+  // obtain the JFRLL trace
+  JFRLL_CallTrace trace;
+  JFRLL_CallFrame frames[max_depth];
   trace.frames = frames;
-  AsyncGetStackTrace(&trace, max_depth, &ucontext, ASGST_WALK_SAME_THREAD);
-  int asgst_count = std::max(0, trace.num_frames);
+  AsyncGetStackTrace(&trace, max_depth, &ucontext, JFRLL_WALK_SAME_THREAD);
+  int jfrll_count = std::max(0, trace.num_frames);
 
-  ASGST_CallTrace traceWithC;
-  ASGST_CallFrame framesWithC[max_depth * 10];
+  JFRLL_CallTrace traceWithC;
+  JFRLL_CallFrame framesWithC[max_depth * 10];
   traceWithC.frames = framesWithC;
-  AsyncGetStackTrace(&traceWithC, max_depth, &ucontext, ASGST_INCLUDE_C_FRAMES | ASGST_WALK_SAME_THREAD);
-  int asgstWithC_count = std::max(0, traceWithC.num_frames);
+  AsyncGetStackTrace(&traceWithC, max_depth, &ucontext, JFRLL_INCLUDE_C_FRAMES | JFRLL_WALK_SAME_THREAD);
+  int jfrllWithC_count = std::max(0, traceWithC.num_frames);
 
   auto printAll = [&]() {
     printTrace(stderr, trace);
     printTrace(stderr, traceWithC);
   };
 
-  if ((asgst_count == 0) != (asgstWithC_count == 0)) {
-    fprintf(stderr, "Error in %s: ASGST trace length %d does not match ASGST with C %d in non-null lengthness\n", prefix, asgst_count, asgstWithC_count);
+  if ((jfrll_count == 0) != (jfrllWithC_count == 0)) {
+    fprintf(stderr, "Error in %s: JFRLL trace length %d does not match JFRLL with C %d in non-null lengthness\n", prefix, jfrll_count, jfrllWithC_count);
     printAll();
     return false;
   }
 
-  if (asgst_count == 0) {
+  if (jfrll_count == 0) {
     return true;
   }
 
   int c_frame_count = 0;
 
-  for (int i = 0; i < asgst_count; i++) {
-    ASGST_CallFrame asgst_frame = trace.frames[i];
-    while (traceWithC.frames[c_frame_count].type == ASGST_FRAME_CPP) {
+  for (int i = 0; i < jfrll_count; i++) {
+    JFRLL_CallFrame jfrll_frame = trace.frames[i];
+    while (traceWithC.frames[c_frame_count].type == JFRLL_FRAME_CPP) {
       c_frame_count++;
     }
-    ASGST_CallFrame asgstWithC_frame = traceWithC.frames[c_frame_count];
-    ASGST_JavaFrame asgst_java_frame = asgst_frame.java_frame;
-    ASGST_JavaFrame asgstWithC_java_frame = asgstWithC_frame.java_frame;
+    JFRLL_CallFrame jfrllWithC_frame = traceWithC.frames[c_frame_count];
+    JFRLL_JavaFrame jfrll_java_frame = jfrll_frame.java_frame;
+    JFRLL_JavaFrame jfrllWithC_java_frame = jfrllWithC_frame.java_frame;
 
-    if (asgst_java_frame.method_id != asgstWithC_java_frame.method_id) {
-      fprintf(stderr, "Error in %s: ASGST frame %d method %p does not match ASGST with C frame %d method %p\n", prefix, i, asgst_java_frame.method_id, c_frame_count, asgstWithC_java_frame.method_id);
+    if (jfrll_java_frame.method_id != jfrllWithC_java_frame.method_id) {
+      fprintf(stderr, "Error in %s: JFRLL frame %d method %p does not match JFRLL with C frame %d method %p\n", prefix, i, jfrll_java_frame.method_id, c_frame_count, jfrllWithC_java_frame.method_id);
       printAll();
       return false;
     }
 
-    if (asgst_java_frame.bci != asgstWithC_java_frame.bci) {
-      fprintf(stderr, "Error in %s: ASGST frame %d location %p does not match ASGST with C frame %d location %p\n", prefix, i, asgst_java_frame.bci, c_frame_count, asgstWithC_java_frame.bci);
+    if (jfrll_java_frame.bci != jfrllWithC_java_frame.bci) {
+      fprintf(stderr, "Error in %s: JFRLL frame %d location %p does not match JFRLL with C frame %d location %p\n", prefix, i, jfrll_java_frame.bci, c_frame_count, jfrllWithC_java_frame.bci);
       printAll();
       return false;
     }

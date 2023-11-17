@@ -57,16 +57,16 @@ static void JNICALL OnClassPrepare(jvmtiEnv *jvmti, JNIEnv *jni_env,
   GetJMethodIDs(klass);
 }
 
-thread_local ASGST_Queue *queue;
+thread_local JFRLL_Queue *queue;
 
-static void asgstHandler(ASGST_Iterator* iterator, void* queueArg, void* arg) {
-  if (ASGST_State(iterator) != 1) {
+static void jfrllHandler(JFRLL_Iterator* iterator, void* queueArg, void* arg) {
+  if (JFRLL_State(iterator) != 1) {
     return;
   }
   printf("sample\n");
-  ASGST_Frame frame;
+  JFRLL_Frame frame;
   int count = 0;
-  while (ASGST_NextFrame(iterator, &frame) == 1) {
+  while (JFRLL_NextFrame(iterator, &frame) == 1) {
     printf("frame %d ", count);
     printMethod(stdout, frame.method);
     printf("\n");
@@ -75,16 +75,16 @@ static void asgstHandler(ASGST_Iterator* iterator, void* queueArg, void* arg) {
 }
 
 thread_local JNIEnv* _jni_env;
-thread_local ASGST_FrameMark* frameMark = nullptr;
+thread_local JFRLL_FrameMark* frameMark = nullptr;
 
-void frameMarkHandler(ASGST_FrameMark* frameMark, ASGST_Iterator* iter, void* arg) {
+void frameMarkHandler(JFRLL_FrameMark* frameMark, JFRLL_Iterator* iter, void* arg) {
 
 }
 
 static void JNICALL OnThreadStart(jvmtiEnv *jvmti, JNIEnv *jni_env, jthread thread) {
-  queue = ASGST_RegisterQueue(jni_env, 100, 0, &asgstHandler, nullptr);
+  queue = JFRLL_RegisterQueue(jni_env, 100, 0, &jfrllHandler, nullptr);
   _jni_env = jni_env;
-  frameMark = ASGST_RegisterFrameMark(env, &frameMarkHandler, 0, (void*)nullptr);
+  frameMark = JFRLL_RegisterFrameMark(env, &frameMarkHandler, 0, (void*)nullptr);
 }
 
 static SigAction installSignalHandler(int signo, SigAction action, SigHandler handler = NULL) {
@@ -118,7 +118,7 @@ static void signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
   if (trace.num_frames <= 0) {
     return;
   }
-  ASGST_Enqueue(queue, ucontext, (void*)trace.env_id);
+  JFRLL_Enqueue(queue, ucontext, (void*)trace.env_id);
 }
 
 static bool startITimerSampler(long interval_ns) {
@@ -131,12 +131,12 @@ static bool startITimerSampler(long interval_ns) {
   if (setitimer(ITIMER_PROF, &tv, NULL) != 0) {
     return false;
   }
-  fprintf(stderr, "=== asgst sampler initialized ===\n");
+  fprintf(stderr, "=== jfrll sampler initialized ===\n");
   return true;
 }
 
 static void JNICALL OnVMInit(jvmtiEnv *jvmti, JNIEnv *jni_env, jthread thread) {
-  fprintf(stderr, "=== asgst OnVMInit ===\n");
+  fprintf(stderr, "=== jfrll OnVMInit ===\n");
   jint class_count = 0;
 
   // Get any previously loaded classes that won't have gone through the

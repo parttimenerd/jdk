@@ -151,23 +151,23 @@ jint JNICALL JNI_OnLoad(JavaVM *jvm, void *reserved) {
   return JNI_VERSION_1_8;
 }
 
-void handleASGST_Iterator(ASGST_Iterator* iter, void* argument) {
+void handleJFRLL_Iterator(JFRLL_Iterator* iter, void* argument) {
   (void*)argument;
-  ASGST_Frame frame;
-  while (ASGST_NextFrame(iter, &frame)) {
-    printf("state %d ", ASGST_State(iter));
+  JFRLL_Frame frame;
+  while (JFRLL_NextFrame(iter, &frame)) {
+    printf("state %d ", JFRLL_State(iter));
     printMethod(stdout, frame.method);
     printf("\n");
   }
 }
 
-// this also checks that ASGST and ASGCT behave the same
+// this also checks that JFRLL and ASGCT behave the same
 JNIEXPORT jboolean JNICALL
-Java_profiling_sanity_ASGSTBaseTest_checkAsyncGetStackTraceCall(JNIEnv* env, jclass cls) {
+Java_profiling_sanity_JFRLLBaseTest_checkAsyncGetStackTraceCall(JNIEnv* env, jclass cls) {
 
   ucontext_t context;
   getcontext(&context);
-  int kind = ASGST_RunWithIterator(&context, 0, &handleASGST_Iterator, nullptr);
+  int kind = JFRLL_RunWithIterator(&context, 0, &handleJFRLL_Iterator, nullptr);
   return true;
 }
 }

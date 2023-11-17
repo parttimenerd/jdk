@@ -52,11 +52,11 @@
 #include "code/compiledMethod.hpp"
 
 
-int ASGST_Capabilities() {
-  return ASGST_REGISTER_QUEUE | ASGST_MARK_FRAME;
+int JFRLL_Capabilities() {
+  return JFRLL_REGISTER_QUEUE | JFRLL_MARK_FRAME;
 }
 
-struct _ASGST_InitialIteratorArgs {
+struct _JFRLL_InitialIteratorArgs {
   frame _frame;
   bool _allowThreadLastFrameUse;
   bool _invalidSpAndFp;
@@ -72,14 +72,14 @@ struct _ASGST_InitialIteratorArgs {
   }
 };
 
-struct _ASGST_Iterator {
+struct _JFRLL_Iterator {
   StackWalker walker;
   JavaThread *thread;
   frame top_frame;
   int options = options;
   bool invalidSpAndFp = false;
   bool switchToThreadBased = false;
-  _ASGST_InitialIteratorArgs initialArgs;
+  _JFRLL_InitialIteratorArgs initialArgs;
 
   void reset() {
     thread = nullptr;
@@ -91,13 +91,13 @@ struct _ASGST_Iterator {
   }
 };
 
-static int initStackWalker(_ASGST_Iterator *iterator, int options, frame frame, bool allow_thread_last_frame_use = true, StackWalkerMiscArguments misc = {}) {
+static int initStackWalker(_JFRLL_Iterator *iterator, int options, frame frame, bool allow_thread_last_frame_use = true, StackWalkerMiscArguments misc = {}) {
   iterator->walker = StackWalker(iterator->thread, frame,
-    (options & ASGST_INCLUDE_NON_JAVA_FRAMES) == 0,
-    (options & ASGST_END_ON_FIRST_JAVA_FRAME) != 0,
+    (options & JFRLL_INCLUDE_NON_JAVA_FRAMES) == 0,
+    (options & JFRLL_END_ON_FIRST_JAVA_FRAME) != 0,
     allow_thread_last_frame_use, misc);
   iterator->options = options;
-  return ASGST_JAVA_TRACE;
+  return JFRLL_JAVA_TRACE;
 }
 
 // check if the frame has at least valid pointers
@@ -127,50 +127,50 @@ static bool frame_from_context(frame* fr, void* ucontext) {
   return true;
 }
 
-static int initNonJavaStackWalker(_ASGST_Iterator* iter, void* ucontext, int32_t options) {
-  bool include_non_java_frames = (options & ASGST_INCLUDE_NON_JAVA_FRAMES) != 0;
+static int initNonJavaStackWalker(_JFRLL_Iterator* iter, void* ucontext, int32_t options) {
+  bool include_non_java_frames = (options & JFRLL_INCLUDE_NON_JAVA_FRAMES) != 0;
 
   frame ret_frame;
   if (!include_non_java_frames || !frame_from_context(&ret_frame, ucontext)) {
-    return ASGST_NO_FRAME;
+    return JFRLL_NO_FRAME;
   }
   iter->thread = nullptr;
   iter->initialArgs._frame = ret_frame;
   int ret = initStackWalker(iter, options, ret_frame);
-  return ret > 0 ? ASGST_NON_JAVA_TRACE : ret;
+  return ret > 0 ? JFRLL_NON_JAVA_TRACE : ret;
 }
 
 // check current thread, return error or kind, set thread if available
-static int ASGST_Check(JavaThread** thread, bool allow_safepoints) {
+static int JFRLL_Check(JavaThread** thread, bool allow_safepoints) {
   Thread* raw_thread = Thread::current_or_null_safe();
   if (raw_thread == nullptr || !raw_thread->is_Java_thread()) {
-    return ASGST_NON_JAVA_TRACE;
+    return JFRLL_NON_JAVA_TRACE;
   }
   if ((*thread = JavaThread::cast(raw_thread))->is_exiting()) {
-    return ASGST_THREAD_EXIT;
+    return JFRLL_THREAD_EXIT;
   }
   if (!allow_safepoints && (*thread)->is_at_safepoint()) {
-    return ASGST_UNSAFE_STATE;
+    return JFRLL_UNSAFE_STATE;
   }
   if ((*thread)->in_deopt_handler() || Universe::heap()->is_gc_active()) {
-    return ASGST_NON_JAVA_TRACE;
+    return JFRLL_NON_JAVA_TRACE;
   }
-  return ASGST_JAVA_TRACE;
+  return JFRLL_JAVA_TRACE;
 }
 
 // @return error or kind
-int ASGST_CreateIter(_ASGST_Iterator* iterator, void* ucontext, int32_t options, bool allow_safepoints) {
-  bool include_non_java_frames = (options & ASGST_INCLUDE_NON_JAVA_FRAMES) != 0;
+int JFRLL_CreateIter(_JFRLL_Iterator* iterator, void* ucontext, int32_t options, bool allow_safepoints) {
+  bool include_non_java_frames = (options & JFRLL_INCLUDE_NON_JAVA_FRAMES) != 0;
 
 
-  int kindOrError = ASGST_Check(&iterator->thread, allow_safepoints);
+  int kindOrError = JFRLL_Check(&iterator->thread, allow_safepoints);
   // handle error case
   if (kindOrError <= 0) {
     return kindOrError;
   }
 
   // handle non-java case
-  if (kindOrError > ASGST_JAVA_TRACE) {
+  if (kindOrError > JFRLL_JAVA_TRACE) {
     return initNonJavaStackWalker(iterator, ucontext, options);
   }
 
@@ -198,10 +198,10 @@ int ASGST_CreateIter(_ASGST_Iterator* iterator, void* ucontext, int32_t options,
         if (!include_non_java_frames || !thread->pd_get_top_frame_for_profiling(&ret_frame, ucontext, true, true)) {
           if (!thread->has_last_Java_frame()) {
             if (!include_non_java_frames) {
-              return ASGST_NO_TOP_JAVA_FRAME;
+              return JFRLL_NO_TOP_JAVA_FRAME;
             }
           }
-          return ASGST_NO_FRAME;
+          return JFRLL_NO_FRAME;
         }
       }
       iterator->initialArgs._frame = ret_frame;
@@ -215,7 +215,7 @@ int ASGST_CreateIter(_ASGST_Iterator* iterator, void* ucontext, int32_t options,
       if (!thread->pd_get_top_frame_for_profiling(&ret_frame, ucontext, true, include_non_java_frames)) {
         // check without forced ucontext again
         if (!include_non_java_frames || !thread->pd_get_top_frame_for_profiling(&ret_frame, ucontext, true, false)) {
-          return ASGST_NO_TOP_JAVA_FRAME;
+          return JFRLL_NO_TOP_JAVA_FRAME;
         }
       }
       iterator->initialArgs._frame = ret_frame;
@@ -224,17 +224,17 @@ int ASGST_CreateIter(_ASGST_Iterator* iterator, void* ucontext, int32_t options,
     break;
   default:
     // Unknown thread state
-    return ASGST_NO_FRAME;
+    return JFRLL_NO_FRAME;
   }
   return 0;
 }
 
-int ASGST_CreateIterFromFrame(_ASGST_Iterator* iterator, void* sp, void* fp, void* pc, int32_t options, bool allow_safepoints) {
+int JFRLL_CreateIterFromFrame(_JFRLL_Iterator* iterator, void* sp, void* fp, void* pc, int32_t options, bool allow_safepoints) {
 
-  bool include_non_java_frames = (options & ASGST_INCLUDE_NON_JAVA_FRAMES) != 0;
+  bool include_non_java_frames = (options & JFRLL_INCLUDE_NON_JAVA_FRAMES) != 0;
 
 
-  int kindOrError = ASGST_Check(&iterator->thread, allow_safepoints);
+  int kindOrError = JFRLL_Check(&iterator->thread, allow_safepoints);
   // handle error case
   if (kindOrError <= 0) {
     return kindOrError;
@@ -244,16 +244,16 @@ int ASGST_CreateIterFromFrame(_ASGST_Iterator* iterator, void* sp, void* fp, voi
   iterator->initialArgs._frame = f;
   iterator->thread = JavaThread::current_or_null();
   // handle non-java case
-  if (kindOrError > ASGST_JAVA_TRACE) {
+  if (kindOrError > JFRLL_JAVA_TRACE) {
     int ret = initStackWalker(iterator, options, f);
-    return ret < 1 ? ret : ASGST_NON_JAVA_TRACE;
+    return ret < 1 ? ret : JFRLL_NON_JAVA_TRACE;
   }
   int ret = initStackWalker(iterator, options, f);
-  return ret < 1 ? ret : ASGST_JAVA_TRACE;
+  return ret < 1 ? ret : JFRLL_JAVA_TRACE;
 }
 
 
-void resetFrame(ASGST_Frame* frame) {
+void resetFrame(JFRLL_Frame* frame) {
   frame->pc = nullptr;
   frame->sp = nullptr;
   frame->fp = nullptr;
@@ -263,42 +263,42 @@ void resetFrame(ASGST_Frame* frame) {
   frame->type = 0;
 }
 
-void setFrame(ASGST_Iterator *iter, ASGST_Frame *frame, bool invalidSpAndFp = false) {
+void setFrame(JFRLL_Iterator *iter, JFRLL_Frame *frame, bool invalidSpAndFp = false) {
   auto* f = iter->walker.base_frame();
   frame->pc = f->pc();
   frame->sp = invalidSpAndFp ? nullptr : f->sp();
   frame->fp = invalidSpAndFp ? nullptr : f->fp();
 }
 
-int ASGST_NextFrame(ASGST_Iterator *iter, ASGST_Frame *frame) {
+int JFRLL_NextFrame(JFRLL_Iterator *iter, JFRLL_Frame *frame) {
   resetFrame(frame); // just to be on the safe side
-  int state = ASGST_State(iter);
+  int state = JFRLL_State(iter);
   if (state <= 0) {
     return state;
   }
   if (iter->walker.is_at_first_bc_java_frame()) {
-    // handle ASGST_END_ON_FIRST_JAVA_FRAME
+    // handle JFRLL_END_ON_FIRST_JAVA_FRAME
     if (state < 0) {
       return state;
     }
-    frame->type = ASGST_FRAME_JAVA;
+    frame->type = JFRLL_FRAME_JAVA;
     setFrame(iter, frame);
     iter->walker.next();
     return 0;
   }
   auto m = iter->walker.method();
-  frame->method = (ASGST_Method)m;
+  frame->method = (JFRLL_Method)m;
   setFrame(iter, frame);
   if (iter->walker.is_bytecode_based_frame()) {
     frame->comp_level = iter->walker.compilation_level(),
     frame->bci = iter->walker.bci();
   }
   if (iter->walker.is_bytecode_based_frame()) {
-    frame->type = iter->walker.is_inlined() ? ASGST_FRAME_JAVA_INLINED : ASGST_FRAME_JAVA;
+    frame->type = iter->walker.is_inlined() ? JFRLL_FRAME_JAVA_INLINED : JFRLL_FRAME_JAVA;
   } else if (iter->walker.is_native_frame()) {
-    frame->type = ASGST_FRAME_JAVA_NATIVE;
+    frame->type = JFRLL_FRAME_JAVA_NATIVE;
   } else {
-    frame->type = ASGST_FRAME_NON_JAVA;
+    frame->type = JFRLL_FRAME_NON_JAVA;
   }
   if (iter->switchToThreadBased && !iter->walker.is_inlined() && iter->top_frame.pc() != nullptr && !iter->walker.at_first_java_frame() && (iter->top_frame.sp() >= frame->sp || iter->top_frame.fp() >= frame->fp)) {
     // we take switching to the iterator at safepoint frame into account,
@@ -316,7 +316,7 @@ int ASGST_NextFrame(ASGST_Iterator *iter, ASGST_Frame *frame) {
       // last frame from old walker is similar to current frame from new walker
       // therefor skip the old walker frame (contains less information)
       // typical for poll-at-return handshakes
-      return ASGST_NextFrame(iter, frame);
+      return JFRLL_NextFrame(iter, frame);
     }
     if (iter->walker.at_end_or_error() && !walker->at_end_or_error()) {
       // use the old walker
@@ -325,7 +325,7 @@ int ASGST_NextFrame(ASGST_Iterator *iter, ASGST_Frame *frame) {
         // last frame from old walker is similar to current frame from new walker
         // therefor skip the old walker frame (contains less information)
         // typical for poll-at-return handshakes
-        return ASGST_NextFrame(iter, frame);
+        return JFRLL_NextFrame(iter, frame);
       }
       return 1;
     }
@@ -335,12 +335,12 @@ int ASGST_NextFrame(ASGST_Iterator *iter, ASGST_Frame *frame) {
   return 1;
 }
 
-int ASGST_State(ASGST_Iterator *iter) {
+int JFRLL_State(JFRLL_Iterator *iter) {
   if (iter == nullptr) {
-    return ASGST_NO_FRAME;
+    return JFRLL_NO_FRAME;
   }
   if (iter->walker.at_end()) {
-    return ASGST_NO_FRAME;
+    return JFRLL_NO_FRAME;
   }
   if (iter->walker.at_error()) {
     // the error code start at -1
@@ -369,12 +369,12 @@ public:
   }
 };
 
-int ASGST_RunWithIterator(void* ucontext, int options, ASGST_IteratorHandler fun, void* argument) {
-  int8_t iter[sizeof(ASGST_Iterator)]; // no need for default constructor
-  ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
+int JFRLL_RunWithIterator(void* ucontext, int options, JFRLL_IteratorHandler fun, void* argument) {
+  int8_t iter[sizeof(JFRLL_Iterator)]; // no need for default constructor
+  JFRLL_Iterator* iterator = (JFRLL_Iterator*) iter;
   iterator->reset();
   IterRAII raii; // destroy iterator on exit
-  int ret = ASGST_CreateIter(iterator, ucontext, options, false);
+  int ret = JFRLL_CreateIter(iterator, ucontext, options, false);
   if (ret <= 0) {
     return ret;
   }
@@ -382,12 +382,12 @@ int ASGST_RunWithIterator(void* ucontext, int options, ASGST_IteratorHandler fun
   return ret;
 }
 
-int ASGST_RunWithIteratorFromFrame(void* sp, void* fp, void* pc, int options, ASGST_IteratorHandler fun, void* argument) {
-  int8_t iter[sizeof(ASGST_Iterator)]; // no need for default constructor
-  ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
+int JFRLL_RunWithIteratorFromFrame(void* sp, void* fp, void* pc, int options, JFRLL_IteratorHandler fun, void* argument) {
+  int8_t iter[sizeof(JFRLL_Iterator)]; // no need for default constructor
+  JFRLL_Iterator* iterator = (JFRLL_Iterator*) iter;
   iterator->reset();
   IterRAII raii; // destroy iterator on exit
-  int ret = ASGST_CreateIterFromFrame(iterator, sp, fp, pc, options, false);
+  int ret = JFRLL_CreateIterFromFrame(iterator, sp, fp, pc, options, false);
   if (ret <= 0) {
     return ret;
   }
@@ -395,7 +395,7 @@ int ASGST_RunWithIteratorFromFrame(void* sp, void* fp, void* pc, int options, AS
   return ret;
 }
 
-void ASGST_RewindIterator(ASGST_Iterator* iterator) {
+void JFRLL_RewindIterator(JFRLL_Iterator* iterator) {
   iterator->switchToThreadBased = iterator->initialArgs._switchToThreadBased;
   iterator->invalidSpAndFp = iterator->initialArgs._invalidSpAndFp;
   initStackWalker(iterator, iterator->options, iterator->initialArgs._frame,
@@ -404,9 +404,9 @@ void ASGST_RewindIterator(ASGST_Iterator* iterator) {
 
 // state or -1
 // no JVMTI_THREAD_STATE_INTERRUPTED, limited JVMTI_THREAD_STATE_SUSPENDED
-int ASGST_ThreadState() {
+int JFRLL_ThreadState() {
   JavaThread* thread;
-  if (ASGST_Check(&thread, true) <= 0) {
+  if (JFRLL_Check(&thread, true) <= 0) {
     return -1;
   }
   int state = JVMTI_THREAD_STATE_ALIVE;
@@ -442,13 +442,13 @@ int ASGST_ThreadState() {
 
 const char* typeToStr(int type) {
   switch (type) {
-    case ASGST_FRAME_JAVA:
+    case JFRLL_FRAME_JAVA:
       return "java";
-    case ASGST_FRAME_JAVA_INLINED:
+    case JFRLL_FRAME_JAVA_INLINED:
       return "java_inlined";
-    case ASGST_FRAME_JAVA_NATIVE:
+    case JFRLL_FRAME_JAVA_NATIVE:
       return "java_native";
-    case ASGST_FRAME_NON_JAVA:
+    case JFRLL_FRAME_NON_JAVA:
       return "non_java";
     case 0:
       return "error";
@@ -457,16 +457,16 @@ const char* typeToStr(int type) {
   }
 }
 
-class ASGSTQueueElementHandlerImpl : public ASGSTQueueElementHandler {
+class JFRLLQueueElementHandlerImpl : public JFRLLQueueElementHandler {
   int options;
-  ASGST_Handler fun;
+  JFRLL_Handler fun;
   void* queue_arg;
 public:
-  ASGSTQueueElementHandlerImpl(int options, ASGST_Handler fun, void* queue_arg) : options(options), fun(fun), queue_arg(queue_arg) {}
-  void operator()(ASGSTQueueElement* element, frame top_frame, CompiledMethod* cm) override {
+  JFRLLQueueElementHandlerImpl(int options, JFRLL_Handler fun, void* queue_arg) : options(options), fun(fun), queue_arg(queue_arg) {}
+  void operator()(JFRLLQueueElement* element, frame top_frame, CompiledMethod* cm) override {
 
-    int8_t iter[sizeof(ASGST_Iterator)]; // no need for default constructor
-    ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
+    int8_t iter[sizeof(JFRLL_Iterator)]; // no need for default constructor
+    JFRLL_Iterator* iterator = (JFRLL_Iterator*) iter;
     iterator->reset();
     iterator->thread = JavaThread::current();
     IterRAII raii; // destroy iterator on exit
@@ -501,36 +501,36 @@ public:
   }
 };
 
-ASGST_Queue* ASGST_RegisterQueue(JNIEnv* env, int size, int options, ASGST_Handler fun, void* argument) {
+JFRLL_Queue* JFRLL_RegisterQueue(JNIEnv* env, int size, int options, JFRLL_Handler fun, void* argument) {
   JavaThread* thread = env == nullptr ? JavaThread::current_or_null() : JavaThread::thread_from_jni_environment(env);
   if (!os::is_readable_pointer2(thread->handshake_state()) || thread->is_terminated()) {
     return nullptr;
   }
-  return (ASGST_Queue*)thread->handshake_state()->register_asgst_queue(thread, size, new ASGSTQueueElementHandlerImpl(options, fun, argument));
+  return (JFRLL_Queue*)thread->handshake_state()->register_jfrll_queue(thread, size, new JFRLLQueueElementHandlerImpl(options, fun, argument));
 }
 
-bool ASGST_DeregisterQueue(JNIEnv* env, ASGST_Queue* queue) {
+bool JFRLL_DeregisterQueue(JNIEnv* env, JFRLL_Queue* queue) {
   JavaThread* thread = env == nullptr ? JavaThread::current_or_null() : JavaThread::thread_from_jni_environment(env);
   if (thread == nullptr || !os::is_readable_pointer2(thread->handshake_state()) || thread->is_terminated()) {
     return false;
   }
-  return (ASGST_Queue*)thread->handshake_state()->remove_asgst_queue((ASGSTQueue*)queue);
+  return (JFRLL_Queue*)thread->handshake_state()->remove_jfrll_queue((JFRLLQueue*)queue);
 }
 
 
-class ASGSTQueueOnSafepointHandlerImpl : public ASGSTQueueOnSafepointHandler {
+class JFRLLQueueOnSafepointHandlerImpl : public JFRLLQueueOnSafepointHandler {
   int options;
   bool offer_iterator;
-  ASGST_OnQueueSafepointHandler fun;
+  JFRLL_OnQueueSafepointHandler fun;
   void* on_queue_arg;
 public:
-  ASGSTQueueOnSafepointHandlerImpl(int options, bool offer_iterator,
-    ASGST_OnQueueSafepointHandler fun, void* on_queue_arg) :
+  JFRLLQueueOnSafepointHandlerImpl(int options, bool offer_iterator,
+    JFRLL_OnQueueSafepointHandler fun, void* on_queue_arg) :
     options(options), offer_iterator(offer_iterator), fun(fun), on_queue_arg(on_queue_arg) {}
-  void operator()(ASGSTQueue* queue, frame top_frame, CompiledMethod* cm) override {
+  void operator()(JFRLLQueue* queue, frame top_frame, CompiledMethod* cm) override {
     if (offer_iterator) {
-      int8_t iter[sizeof(ASGST_Iterator)]; // no need for default constructor
-      ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
+      int8_t iter[sizeof(JFRLL_Iterator)]; // no need for default constructor
+      JFRLL_Iterator* iterator = (JFRLL_Iterator*) iter;
       iterator->reset();
       iterator->thread = JavaThread::current();
       IterRAII raii; // destroy iterator on exit
@@ -544,41 +544,41 @@ public:
       iterator->initialArgs._frame = f;
       iterator->initialArgs._allowThreadLastFrameUse = false;
       iterator->initialArgs._misc = misc;
-      fun((ASGST_Queue*)queue, iterator, on_queue_arg);
+      fun((JFRLL_Queue*)queue, iterator, on_queue_arg);
     } else {
-      fun((ASGST_Queue*)queue, nullptr, on_queue_arg);
+      fun((JFRLL_Queue*)queue, nullptr, on_queue_arg);
     }
   }
 };
 
-void ASGST_SetOnQueueProcessingStart(ASGST_Queue* queue, int options, bool offerIterator, ASGST_OnQueueSafepointHandler before, void* arg) {
-  ASGSTQueue* q = (ASGSTQueue*)queue;
+void JFRLL_SetOnQueueProcessingStart(JFRLL_Queue* queue, int options, bool offerIterator, JFRLL_OnQueueSafepointHandler before, void* arg) {
+  JFRLLQueue* q = (JFRLLQueue*)queue;
   if (before == nullptr) {
     q->set_before(nullptr);
   } else {
-    q->set_before(new ASGSTQueueOnSafepointHandlerImpl(options, offerIterator, before, arg));
+    q->set_before(new JFRLLQueueOnSafepointHandlerImpl(options, offerIterator, before, arg));
   }
 }
 
-void ASGST_SetOnQueueProcessingEnd(ASGST_Queue* queue, int options, bool offerIterator, ASGST_OnQueueSafepointHandler after, void* arg) {
-  ASGSTQueue* q = (ASGSTQueue*)queue;
+void JFRLL_SetOnQueueProcessingEnd(JFRLL_Queue* queue, int options, bool offerIterator, JFRLL_OnQueueSafepointHandler after, void* arg) {
+  JFRLLQueue* q = (JFRLLQueue*)queue;
   if (after == nullptr) {
     q->set_after(nullptr);
   } else {
-    q->set_after(new ASGSTQueueOnSafepointHandlerImpl(options, offerIterator, after, arg));
+    q->set_after(new JFRLLQueueOnSafepointHandlerImpl(options, offerIterator, after, arg));
   }
 }
 
 struct EnqueueFindFirstJavaFrameStruct {
   int kindOrError; // 1, no error, 2 no Java frame, < 0 error
-  ASGSTQueueElement elem;
+  JFRLLQueueElement elem;
   JavaThread* thread;
 };
 
-void enqueueFindFirstJavaFrame(ASGST_Iterator* iterator, void* arg) {
+void enqueueFindFirstJavaFrame(JFRLL_Iterator* iterator, void* arg) {
   auto argument = (EnqueueFindFirstJavaFrameStruct*)arg;
   if (!iterator->walker.walk_till_first_java_frame()) {
-    argument->kindOrError = iterator->walker.at_error() ? iterator->walker.error() : ASGST_NON_JAVA_TRACE;
+    argument->kindOrError = iterator->walker.at_error() ? iterator->walker.error() : JFRLL_NON_JAVA_TRACE;
     return;
   }
   argument->kindOrError = 1;
@@ -587,97 +587,97 @@ void enqueueFindFirstJavaFrame(ASGST_Iterator* iterator, void* arg) {
   argument->thread = iterator->thread;
 }
 
-int ASGST_Enqueue(ASGST_Queue* queue, void* ucontext, void* argument) {
+int JFRLL_Enqueue(JFRLL_Queue* queue, void* ucontext, void* argument) {
   if (queue == nullptr) {
-    return ASGST_ENQUEUE_NO_QUEUE;
+    return JFRLL_ENQUEUE_NO_QUEUE;
   }
-  ASGSTQueue *q = (ASGSTQueue*)queue;
+  JFRLLQueue *q = (JFRLLQueue*)queue;
   if (q->is_full()) {
-    return ASGST_ENQUEUE_FULL_QUEUE;
+    return JFRLL_ENQUEUE_FULL_QUEUE;
   }
   EnqueueFindFirstJavaFrameStruct runArgument;
-  int kind = ASGST_RunWithIterator(ucontext, ASGST_END_ON_FIRST_JAVA_FRAME, &enqueueFindFirstJavaFrame, &runArgument);
-  if (kind != ASGST_JAVA_TRACE) {
+  int kind = JFRLL_RunWithIterator(ucontext, JFRLL_END_ON_FIRST_JAVA_FRAME, &enqueueFindFirstJavaFrame, &runArgument);
+  if (kind != JFRLL_JAVA_TRACE) {
     return kind;
   }
-  if (runArgument.kindOrError != ASGST_JAVA_TRACE) {
+  if (runArgument.kindOrError != JFRLL_JAVA_TRACE) {
     return 0;
   }
   assert(q->in_current_thread(), "must be called from the same thread");
   if (q->is_full()) {
-    return ASGST_ENQUEUE_FULL_QUEUE;
+    return JFRLL_ENQUEUE_FULL_QUEUE;
   }
-  ASGSTQueueElement elem = runArgument.elem.set_argument(argument);
-  ASGSTQueuePushResult worked = JavaThread::current()->handshake_state()->asgst_enqueue(q, elem);
+  JFRLLQueueElement elem = runArgument.elem.set_argument(argument);
+  JFRLLQueuePushResult worked = JavaThread::current()->handshake_state()->jfrll_enqueue(q, elem);
   switch (worked) {
-    case ASGST_QUEUE_PUSH_SUCCESS:
-      return ASGST_JAVA_TRACE;
-    case ASGST_QUEUE_PUSH_CLOSED:
-      return ASGST_ENQUEUE_OTHER_ERROR;
-    case ASGST_QUEUE_PUSH_FULL:
-      return ASGST_ENQUEUE_FULL_QUEUE;
+    case JFRLL_QUEUE_PUSH_SUCCESS:
+      return JFRLL_JAVA_TRACE;
+    case JFRLL_QUEUE_PUSH_CLOSED:
+      return JFRLL_ENQUEUE_OTHER_ERROR;
+    case JFRLL_QUEUE_PUSH_FULL:
+      return JFRLL_ENQUEUE_FULL_QUEUE;
     default:
       assert(false, "unknown result");
       return -1;
   }
 }
 
-int ASGST_GetEnqueuableElement(void* ucontext, ASGST_QueueElement* element) {
+int JFRLL_GetEnqueuableElement(void* ucontext, JFRLL_QueueElement* element) {
   EnqueueFindFirstJavaFrameStruct runArgument;
-  int kind = ASGST_RunWithIterator(ucontext, ASGST_END_ON_FIRST_JAVA_FRAME, &enqueueFindFirstJavaFrame, &runArgument);
-  if (kind != ASGST_JAVA_TRACE) {
+  int kind = JFRLL_RunWithIterator(ucontext, JFRLL_END_ON_FIRST_JAVA_FRAME, &enqueueFindFirstJavaFrame, &runArgument);
+  if (kind != JFRLL_JAVA_TRACE) {
     return kind;
   }
-  if (runArgument.kindOrError != ASGST_JAVA_TRACE) {
+  if (runArgument.kindOrError != JFRLL_JAVA_TRACE) {
     return runArgument.kindOrError;
   }
   *element = {runArgument.elem.pc(), runArgument.elem.fp(), runArgument.elem.sp(), nullptr};
   return 1;
 }
 
-ASGST_QueueElement* ASGST_GetQueueElement(ASGST_Queue* queue, int n) {
-  ASGSTQueue* q = (ASGSTQueue*)queue;
+JFRLL_QueueElement* JFRLL_GetQueueElement(JFRLL_Queue* queue, int n) {
+  JFRLLQueue* q = (JFRLLQueue*)queue;
   auto elem = q->get(n < 0 ? (q->length() + n) : n);
-  return (ASGST_QueueElement*)elem;
+  return (JFRLL_QueueElement*)elem;
 }
 
-ASGST_QueueSizeInfo ASGST_GetQueueSizeInfo(ASGST_Queue* queue) {
-  ASGSTQueue* q = (ASGSTQueue*)queue;
+JFRLL_QueueSizeInfo JFRLL_GetQueueSizeInfo(JFRLL_Queue* queue) {
+  JFRLLQueue* q = (JFRLLQueue*)queue;
   return {q->length(), q->capacity(), q->attempts()};
 }
 
-void ASGST_ResizeQueue(ASGST_Queue* queue, int size) {
-  ASGSTQueue* q = (ASGSTQueue*)queue;
+void JFRLL_ResizeQueue(JFRLL_Queue* queue, int size) {
+  JFRLLQueue* q = (JFRLLQueue*)queue;
   q->trigger_resize(size);
 }
 
-static bool isClassValid(ASGST_Class klass) {
+static bool isClassValid(JFRLL_Class klass) {
   Klass* k = (Klass*)klass;
   return os::is_readable_pointer2(k);
 }
 
 // checks that a method and it's constant pool are readable
-static bool isMethodValid(ASGST_Method method) {
+static bool isMethodValid(JFRLL_Method method) {
   Method* m = (Method*)method;
   return os::is_readable_pointer2(m) && Method::is_valid_method(m) &&
       os::is_readable_pointer2(m->constMethod()) &&
       os::is_readable_pointer2(m->constMethod()->constants()) &&
-      isClassValid((ASGST_Class) m->method_holder());
+      isClassValid((JFRLL_Class) m->method_holder());
 }
 
-jmethodID ASGST_MethodToJMethodID(ASGST_Method method) {
+jmethodID JFRLL_MethodToJMethodID(JFRLL_Method method) {
   if (!isMethodValid(method)) {
     return nullptr;
   }
   return (jmethodID)((Method*)method)->find_jmethod_id_or_null();
 }
 
-ASGST_Method ASGST_JMethodIDToMethod(jmethodID methodID) {
+JFRLL_Method JFRLL_JMethodIDToMethod(jmethodID methodID) {
   Method** m = (Method**)methodID;
   if (methodID == nullptr || *m == nullptr) {
     return nullptr;
   }
-  return (ASGST_Method)*m;
+  return (JFRLL_Method)*m;
 }
 
 void writeField(Symbol* symbol, char* char_field, jint* length_field) {
@@ -706,7 +706,7 @@ void nullField(char* char_field, jint* length_field) {
   }
 }
 
-void ASGST_GetMethodInfo(ASGST_Method method, ASGST_MethodInfo* info) {
+void JFRLL_GetMethodInfo(JFRLL_Method method, JFRLL_MethodInfo* info) {
   if (!isMethodValid(method)) {
     nullField(info->method_name, &info->method_name_length);
     nullField(info->signature, &info->signature_length);
@@ -723,7 +723,7 @@ void ASGST_GetMethodInfo(ASGST_Method method, ASGST_MethodInfo* info) {
   auto constants = cm->constants();
 
   InstanceKlass *klass = constants->pool_holder();
-  info->klass = (ASGST_Class)klass;
+  info->klass = (JFRLL_Class)klass;
   info->idnum = cm->orig_method_idnum();
   info->class_idnum = klass->orig_idnum();
   writeField(m->name(), info->method_name, &info->method_name_length);
@@ -732,14 +732,14 @@ void ASGST_GetMethodInfo(ASGST_Method method, ASGST_MethodInfo* info) {
   info->modifiers = m->access_flags().get_flags();
 }
 
-jint ASGST_GetMethodIdNum(ASGST_Method method) {
+jint JFRLL_GetMethodIdNum(JFRLL_Method method) {
   if (!isMethodValid(method)) {
     return 0;
   }
   return ((Method*)method)->orig_method_idnum();
 }
 
-int ASGST_GetMethodLineNumberTable(ASGST_Method method, ASGST_MethodLineNumberEntry* entries, int length) {
+int JFRLL_GetMethodLineNumberTable(JFRLL_Method method, JFRLL_MethodLineNumberEntry* entries, int length) {
   int num_entries = 0;
   Method* m = (Method*)method;
   CompressedLineNumberReadStream stream(m->compressed_linenumber_table());
@@ -753,7 +753,7 @@ int ASGST_GetMethodLineNumberTable(ASGST_Method method, ASGST_MethodLineNumberEn
   return num_entries;
 }
 
-jint ASGST_GetMethodLineNumber(ASGST_Method method, jint bci) {
+jint JFRLL_GetMethodLineNumber(JFRLL_Method method, jint bci) {
   if (!isMethodValid(method) || bci == -1) {
     return -1;
   }
@@ -771,7 +771,7 @@ jint ASGST_GetMethodLineNumber(ASGST_Method method, jint bci) {
   return last_line;
 }
 
-void ASGST_GetClassInfo(ASGST_Class klass, ASGST_ClassInfo *info) {
+void JFRLL_GetClassInfo(JFRLL_Class klass, JFRLL_ClassInfo *info) {
   if (!isClassValid(klass)) {
     nullField(info->class_name, &info->class_name_length);
     nullField(info->generic_class_name, &info->generic_class_name_length);
@@ -792,43 +792,43 @@ void ASGST_GetClassInfo(ASGST_Class klass, ASGST_ClassInfo *info) {
   info->modifiers = k->access_flags().get_flags();
 }
 
-jlong ASGST_GetClassIdNum(ASGST_Class klass) {
+jlong JFRLL_GetClassIdNum(JFRLL_Class klass) {
   return !isClassValid(klass) || !((Klass*)klass)->is_instance_klass() ? 0 : ((InstanceKlass*)klass)->orig_idnum();
 }
 
-ASGST_Class ASGST_GetClass(ASGST_Method method) {
+JFRLL_Class JFRLL_GetClass(JFRLL_Method method) {
   if (!isMethodValid(method)) {
     return nullptr;
   }
   Method *m = (Method*)method;
   InstanceKlass *klass = m->method_holder();
-  return (ASGST_Class)klass;
+  return (JFRLL_Class)klass;
 }
 
-ASGST_Class ASGST_JClassToClass(jclass klass) {
-  return (ASGST_Class)klass;
+JFRLL_Class JFRLL_JClassToClass(jclass klass) {
+  return (JFRLL_Class)klass;
 }
 
-jclass ASGST_ClassToJClass(ASGST_Class klass) {
+jclass JFRLL_ClassToJClass(JFRLL_Class klass) {
   JavaThread* thread = JavaThread::current_or_null();
   return isClassValid(klass) && thread != nullptr ?
     (jclass)JNIHandles::make_local(thread, ((Klass*)klass)->java_mirror()) : nullptr;
 }
 
 class SmallKlassDeallocationHandler : public CHeapObj<mtServiceability> {
-  ASGST_ClassUnloadHandler _handler;
+  JFRLL_ClassUnloadHandler _handler;
   void* _arg;
   SmallKlassDeallocationHandler* _next;
 public:
-  SmallKlassDeallocationHandler(ASGST_ClassUnloadHandler handler, void* arg):
+  SmallKlassDeallocationHandler(JFRLL_ClassUnloadHandler handler, void* arg):
     _handler(handler), _arg(arg) {}
   SmallKlassDeallocationHandler(): _handler(nullptr), _arg(nullptr) {}
 
   void call(InstanceKlass* klass, bool redefined) {
-    _handler((ASGST_Class)klass, (ASGST_Method*)klass->methods()->data(), klass->methods()->size(), redefined, _arg);
+    _handler((JFRLL_Class)klass, (JFRLL_Method*)klass->methods()->data(), klass->methods()->size(), redefined, _arg);
   }
 
-  bool has_handler(ASGST_ClassUnloadHandler handler) const {
+  bool has_handler(JFRLL_ClassUnloadHandler handler) const {
     return _handler == handler;
   }
 
@@ -854,7 +854,7 @@ class KlassDeallocationHandlerImpl : public KlassDeallocationHandler {
 public:
   KlassDeallocationHandlerImpl() {}
 
-  void add(ASGST_ClassUnloadHandler handler, void* arg) {
+  void add(JFRLL_ClassUnloadHandler handler, void* arg) {
     register_if_needed();
     auto* n = new SmallKlassDeallocationHandler(handler, arg);
     n->set_next(handlers);
@@ -869,7 +869,7 @@ public:
     }
   }
 
-  bool remove(ASGST_ClassUnloadHandler handler, void* arg) {
+  bool remove(JFRLL_ClassUnloadHandler handler, void* arg) {
     SmallKlassDeallocationHandler* prev = nullptr;
     auto* cur = handlers;
     bool found = false;
@@ -900,37 +900,37 @@ public:
 std::mutex klassDeallocationHandlersMutex;
 KlassDeallocationHandlerImpl klassDealloc;
 
-void ASGST_RegisterClassUnloadHandler(ASGST_ClassUnloadHandler handler, void* arg) {
+void JFRLL_RegisterClassUnloadHandler(JFRLL_ClassUnloadHandler handler, void* arg) {
   std::lock_guard<std::mutex> lock(klassDeallocationHandlersMutex);
   klassDealloc.add(handler, arg);
 }
 
-bool ASGST_DeregisterClassUnloadHandler(ASGST_ClassUnloadHandler handler, void* arg) {
+bool JFRLL_DeregisterClassUnloadHandler(JFRLL_ClassUnloadHandler handler, void* arg) {
   std::lock_guard<std::mutex> lock(klassDeallocationHandlersMutex);
   return klassDealloc.remove(handler, arg);
 }
 
-class ASGSTFrameMark : public CHeapObj<mtServiceability> {
+class JFRLLFrameMark : public CHeapObj<mtServiceability> {
   JavaThread* _thread = nullptr;
-  ASGST_FrameMarkHandler _handler;
+  JFRLL_FrameMarkHandler _handler;
   int _options;
   void* _argument;
   std::atomic<void*> _sp;
-  ASGSTFrameMark* _next = nullptr;
+  JFRLLFrameMark* _next = nullptr;
 public:
-  ASGSTFrameMark(JavaThread* thread, ASGST_FrameMarkHandler handler, int options, void* argument, void* sp):
+  JFRLLFrameMark(JavaThread* thread, JFRLL_FrameMarkHandler handler, int options, void* argument, void* sp):
     _thread(thread),_handler(handler), _options(options), _argument(argument), _sp(sp) {}
 
-  void call(ASGST_Iterator* iterator) {
-    _handler((ASGST_FrameMark*)this, iterator, _argument);
+  void call(JFRLL_Iterator* iterator) {
+    _handler((JFRLL_FrameMark*)this, iterator, _argument);
   }
 
   void call(frame fr) {
-    int8_t iter[sizeof(ASGST_Iterator)]; // no need for default constructor
-    ASGST_Iterator* iterator = (ASGST_Iterator*) iter;
+    int8_t iter[sizeof(JFRLL_Iterator)]; // no need for default constructor
+    JFRLL_Iterator* iterator = (JFRLL_Iterator*) iter;
     iterator->reset();
     IterRAII raii; // destroy iterator on exit
-    int ret = ASGST_CreateIterFromFrame(iterator, fr.sp(), fr.fp(), fr.pc(), _options, true);
+    int ret = JFRLL_CreateIterFromFrame(iterator, fr.sp(), fr.fp(), fr.pc(), _options, true);
     if (ret == 0) {
       return;
     }
@@ -938,9 +938,9 @@ public:
     call(iterator);
   }
 
-  ASGSTFrameMark* next() const { return _next; }
+  JFRLLFrameMark* next() const { return _next; }
 
-  void set_next(ASGSTFrameMark* next) { _next = next; }
+  void set_next(JFRLLFrameMark* next) { _next = next; }
 
   bool applicable(void* sp) const { return this->_sp != nullptr && this->_sp <= sp; }
 
@@ -952,17 +952,17 @@ public:
   JavaThread* thread() const { return _thread; }
 };
 
-// Watermark for ASGST, handling multiple ASGST frame marks
-class ASGSTStackWatermark : public StackWatermark {
+// Watermark for JFRLL, handling multiple JFRLL frame marks
+class JFRLLStackWatermark : public StackWatermark {
 
   std::recursive_mutex _mutex;
-  ASGSTFrameMark* _mark_list = nullptr;
+  JFRLLFrameMark* _mark_list = nullptr;
 
   // helper methods
 
   // find smallest sp and set it
   void recompute_and_set_watermark() {
-    ASGSTFrameMark *current = _mark_list;
+    JFRLLFrameMark *current = _mark_list;
     void* smallest = nullptr;
     bool set = false;
     while (current != nullptr) {
@@ -979,8 +979,8 @@ class ASGSTStackWatermark : public StackWatermark {
     }
   }
 
-  bool contains(ASGSTFrameMark* mark) {
-    ASGSTFrameMark* current = _mark_list;
+  bool contains(JFRLLFrameMark* mark) {
+    JFRLLFrameMark* current = _mark_list;
     while (current != nullptr) {
       if (current == mark) {
         return true;
@@ -991,9 +991,9 @@ class ASGSTStackWatermark : public StackWatermark {
   }
 
   // deletes frame mark and update watermark if necessary
-  void remove_directly(ASGSTFrameMark* mark) {
+  void remove_directly(JFRLLFrameMark* mark) {
     // remove mark from list
-    ASGSTFrameMark* current = _mark_list;
+    JFRLLFrameMark* current = _mark_list;
     while (current != nullptr) {
       if (current == mark) {
         current->set_next(mark->next());
@@ -1017,7 +1017,7 @@ class ASGSTStackWatermark : public StackWatermark {
 
   virtual void trigger_before_unwind(const frame& fr) {
     std::lock_guard<std::recursive_mutex> lock(_mutex);
-    ASGSTFrameMark* current = _mark_list;
+    JFRLLFrameMark* current = _mark_list;
     while (current != nullptr) {
       if (current->applicable(fr.sp())) {
         current->call(fr);
@@ -1028,10 +1028,10 @@ class ASGSTStackWatermark : public StackWatermark {
 
 public:
 
-  ASGSTStackWatermark(JavaThread* jt): StackWatermark(jt, StackWatermarkKind::asgst, 0, false) {
+  JFRLLStackWatermark(JavaThread* jt): StackWatermark(jt, StackWatermarkKind::jfrll, 0, false) {
   }
 
-  void add(ASGSTFrameMark* mark) {
+  void add(JFRLLFrameMark* mark) {
     std::lock_guard<std::recursive_mutex> lock(_mutex);
     mark->set_next(_mark_list);
     _mark_list = mark;
@@ -1039,14 +1039,14 @@ public:
   }
 
   // update of frame mark and update watermark if necessary
-  void update(ASGSTFrameMark *mark, void* sp) {
+  void update(JFRLLFrameMark *mark, void* sp) {
     std::lock_guard<std::recursive_mutex> lock(_mutex);
     assert(contains(mark), "mark does not exist");
     mark->update(sp);
     recompute_and_set_watermark();
   }
 
-  void remove(ASGSTFrameMark* mark) {
+  void remove(JFRLLFrameMark* mark) {
     std::lock_guard<std::recursive_mutex> lock(_mutex);
     assert(contains(mark), "mark does not exist");
     remove_directly(mark);
@@ -1054,38 +1054,38 @@ public:
 };
 
 // init if needed, signal safe
-ASGSTStackWatermark* initWatermark(JavaThread* current = nullptr) {
+JFRLLStackWatermark* initWatermark(JavaThread* current = nullptr) {
   JavaThread* const jt = current == nullptr ? JavaThread::current_or_null() : current;
   assert(jt != nullptr, "Thread is null");
-  if (jt->asgst_watermark() == nullptr) {
-    ASGSTStackWatermark* watermark = new ASGSTStackWatermark(jt);
-    if (!jt->set_asgst_watermark(watermark)) {
+  if (jt->jfrll_watermark() == nullptr) {
+    JFRLLStackWatermark* watermark = new JFRLLStackWatermark(jt);
+    if (!jt->set_jfrll_watermark(watermark)) {
       // a watermark has been added between
-      // the call to asgst_watermark and the call to set_asgst_watermark
+      // the call to jfrll_watermark and the call to set_jfrll_watermark
       delete watermark;
     }
-    StackWatermarkSet::add_watermark(jt, jt->asgst_watermark());
+    StackWatermarkSet::add_watermark(jt, jt->jfrll_watermark());
   }
-  return (ASGSTStackWatermark*)jt->asgst_watermark();
+  return (JFRLLStackWatermark*)jt->jfrll_watermark();
 }
 
-ASGST_FrameMark* ASGST_RegisterFrameMark(JNIEnv* env, ASGST_FrameMarkHandler handler, int options, void* arg) {
+JFRLL_FrameMark* JFRLL_RegisterFrameMark(JNIEnv* env, JFRLL_FrameMarkHandler handler, int options, void* arg) {
   JavaThread* thread = env == nullptr ? JavaThread::current_or_null() : JavaThread::thread_from_jni_environment(env);
   assert(thread != nullptr, "Thread is null");
-  ASGSTFrameMark* mark = new ASGSTFrameMark(thread, handler, options, arg, nullptr);
+  JFRLLFrameMark* mark = new JFRLLFrameMark(thread, handler, options, arg, nullptr);
   auto wm = initWatermark(thread);
   wm->add(mark);
-  return (ASGST_FrameMark*)mark;
+  return (JFRLL_FrameMark*)mark;
 }
 
-void ASGST_MoveFrameMark(ASGST_FrameMark* mark, void* sp) {
-  initWatermark()->update((ASGSTFrameMark*)mark, sp);
+void JFRLL_MoveFrameMark(JFRLL_FrameMark* mark, void* sp) {
+  initWatermark()->update((JFRLLFrameMark*)mark, sp);
 }
 
-void* ASGST_GetFrameMarkStackPointer(ASGST_FrameMark* mark) {
-  return ((ASGSTFrameMark*)mark)->sp();
+void* JFRLL_GetFrameMarkStackPointer(JFRLL_FrameMark* mark) {
+  return ((JFRLLFrameMark*)mark)->sp();
 }
 
-void ASGST_RemoveFrameMark(ASGST_FrameMark* mark) {
-  initWatermark(((ASGSTFrameMark*)mark)->thread())->remove((ASGSTFrameMark*)mark);
+void JFRLL_RemoveFrameMark(JFRLL_FrameMark* mark) {
+  initWatermark(((JFRLLFrameMark*)mark)->thread())->remove((JFRLLFrameMark*)mark);
 }

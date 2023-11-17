@@ -203,7 +203,7 @@ int granularity = 1;
 int random_fuzzes = 1000000;
 #endif
 
-void fuzzingAsyncGetStackTraceLike(ASGST_CallTrace *trace, int max_depth, int options, int sp_fuzz, int fp_fuzz) {
+void fuzzingAsyncGetStackTraceLike(JFRLL_CallTrace *trace, int max_depth, int options, int sp_fuzz, int fp_fuzz) {
   ucontext_t uc;
   getcontext(&uc);
   uc.uc_mcontext.gregs[REG_RSP] += sp_fuzz;
@@ -213,17 +213,17 @@ void fuzzingAsyncGetStackTraceLike(ASGST_CallTrace *trace, int max_depth, int op
 
 
 JNIEXPORT jboolean JNICALL
-Java_profiling_sanity_ASGSTSmallFuzzTest_checkAsyncGetStackTraceCall(JNIEnv* env, jclass cls) {
+Java_profiling_sanity_JFRLLSmallFuzzTest_checkAsyncGetStackTraceCall(JNIEnv* env, jclass cls) {
   const int MAX_DEPTH = 16;
-  ASGST_CallTrace trace;
-  ASGST_CallFrame frames[MAX_DEPTH];
+  JFRLL_CallTrace trace;
+  JFRLL_CallFrame frames[MAX_DEPTH];
   trace.frames = frames;
   trace.frame_info = NULL;
   trace.num_frames = 0;
 
   for (int i = 0; i < sp_max_fuzz; i += granularity) {
     for (int j = 0; j < fp_max_fuzz; j += granularity) {
-      fuzzingAsyncGetStackTraceLike(&trace, MAX_DEPTH, ASGST_INCLUDE_C_FRAMES, i, j);
+      fuzzingAsyncGetStackTraceLike(&trace, MAX_DEPTH, JFRLL_INCLUDE_C_FRAMES, i, j);
       if (trace.num_frames == 0) {
         return JNI_FALSE;
       }
@@ -232,7 +232,7 @@ Java_profiling_sanity_ASGSTSmallFuzzTest_checkAsyncGetStackTraceCall(JNIEnv* env
   for (int i = 0; i < random_fuzzes; i++) {
     int sp_fuzz = rand() % sp_max_random_fuzz;
     int fp_fuzz = rand() % fp_max_random_fuzz;
-    fuzzingAsyncGetStackTraceLike(&trace, MAX_DEPTH, ASGST_INCLUDE_C_FRAMES, sp_fuzz, fp_fuzz);
+    fuzzingAsyncGetStackTraceLike(&trace, MAX_DEPTH, JFRLL_INCLUDE_C_FRAMES, sp_fuzz, fp_fuzz);
   }
 
   return true;

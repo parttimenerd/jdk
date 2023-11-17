@@ -60,7 +60,7 @@ bool SafepointMechanism::global_poll() {
 }
 
 bool SafepointMechanism::should_process(JavaThread* thread, bool allow_suspend) {
-  if (thread->handshake_state() != nullptr && thread->handshake_state()->has_asgst_queues()) {
+  if (thread->handshake_state() != nullptr && thread->handshake_state()->has_jfrll_queues()) {
    // printf("should_process %d\n", __LINE__);
   }
   if (!local_poll_armed(thread)) {

@@ -174,8 +174,8 @@ JNIEXPORT jboolean JNICALL
 Java_MyPackage_ASGCTBaseTest_checkAsyncGetStackTraceCall(JNIEnv* env, jclass cls) {
 
   const int MAX_DEPTH = 16;
-  ASGST_CallTrace trace;
-  ASGST_CallFrame frames[MAX_DEPTH];
+  JFRLL_CallTrace trace;
+  JFRLL_CallFrame frames[MAX_DEPTH];
   trace.frames = frames;
   trace.num_frames = 0;
 
@@ -189,8 +189,8 @@ Java_MyPackage_ASGCTBaseTest_checkAsyncGetStackTraceCall(JNIEnv* env, jclass cls
 
   // AsyncGetStackTrace returns a native frame
   auto frame = trace.frames[0];
-  if (frame.type != ASGST_FRAME_NATIVE) {
-    fprintf(stderr, "type is not ASGST_FRAME_NATIVE as expected: %d\n", frame.type);
+  if (frame.type != JFRLL_FRAME_NATIVE) {
+    fprintf(stderr, "type is not JFRLL_FRAME_NATIVE as expected: %d\n", frame.type);
     return false;
   }
 
