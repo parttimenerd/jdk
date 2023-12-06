@@ -46,7 +46,6 @@ typedef struct _JFRLL_FrameMark JFRLL_FrameMark;
 // Implementations don't have to implement all methods,
 // only the iterator related and those that match their capabilities
 enum JFRLL_Capabilities {
-  JFRLL_REGISTER_QUEUE = 1, // everything safepoint queue related
   JFRLL_MARK_FRAME     = 2  // frame marking related
 };
 
@@ -282,8 +281,6 @@ void JFRLL_RegisterClassUnloadHandler(JFRLL_ClassUnloadHandler handler, void* ar
 JNIEXPORT
 bool JFRLL_DeregisterClassUnloadHandler(JFRLL_ClassUnloadHandler handler, void* arg);
 
-// The following functions are only callable if JFRLL_REGISTER_QUEUE is a capability
-
 struct _JFRLL_Queue;
 typedef struct _JFRLL_Queue JFRLL_Queue;
 // handler called at asafe point with iterator, queue argument, enqueue argument
@@ -296,14 +293,10 @@ typedef void (*JFRLL_Handler)(JFRLL_Iterator*, void*, void*);
 // The handler can only call safe point safe methods, which excludes all
 // JVMTI methods, but the handler is not called inside a signal handler,
 // so allocating or obtaining locks is possible
-//
-// Not signal safe, requires JFRLL_REGISTER_QUEUE capability
 JNIEXPORT
 JFRLL_Queue* JFRLL_RegisterQueue(JNIEnv* env, int size, int options, JFRLL_Handler fun, void* argument);
 
 // Remove queue, return true if successful
-//
-// Not signal safe, requires JFRLL_REGISTER_QUEUE capability
 JNIEXPORT
 bool JFRLL_DeregisterQueue(JNIEnv* env, JFRLL_Queue* queue);
 
@@ -316,8 +309,6 @@ typedef void (*JFRLL_OnQueueSafepointHandler)(JFRLL_Queue*, JFRLL_Iterator*, voi
 // are processed.
 //
 // @param before handler or null to remove the handler
-//
-// Not signal safe, requires JFRLL_REGISTER_QUEUE capability
 JNIEXPORT
 void JFRLL_SetOnQueueProcessingStart(JFRLL_Queue* queue, int options, bool offerIterator, JFRLL_OnQueueSafepointHandler before, void* arg);
 
@@ -325,8 +316,6 @@ void JFRLL_SetOnQueueProcessingStart(JFRLL_Queue* queue, int options, bool offer
 // are processed.
 //
 // @param after handler or null to remove the handler
-//
-// Not signal safe, requires JFRLL_REGISTER_QUEUE capability
 JNIEXPORT
 void JFRLL_SetOnQueueProcessingEnd(JFRLL_Queue* queue, int options, bool offerIterator, JFRLL_OnQueueSafepointHandler end, void* arg);
 
@@ -339,7 +328,6 @@ void JFRLL_SetOnQueueProcessingEnd(JFRLL_Queue* queue, int options, bool offerIt
 //
 // Signal safe, but has to be called with a queue that belongs to the current thread, or the thread
 // has to be stopped during the duration of this call
-// Requires JFRLL_REGISTER_QUEUE capability
 JNIEXPORT
 int JFRLL_Enqueue(JFRLL_Queue* queue, void* ucontext, void* argument);
 
@@ -356,7 +344,6 @@ typedef struct {
 // arg is set to null
 //
 // Signal safe
-// Requires JFRLL_REGISTER_QUEUE capability
 JNIEXPORT
 int JFRLL_GetEnqueuableElement(void* ucontext, JFRLL_QueueElement* element);
 
@@ -393,7 +380,6 @@ JFRLL_QueueSizeInfo JFRLL_GetQueueSizeInfo(JFRLL_Queue* queue);
 // (or the current if currently processing one)
 //
 // Signal safe, but has to be called with a queue that belongs to the current thread
-// Requires JFRLL_REGISTER_QUEUE capability
 JNIEXPORT
 void JFRLL_ResizeQueue(JFRLL_Queue* queue, int size);
 
@@ -439,5 +425,82 @@ void* JFRLL_GetFrameMarkStackPointer(JFRLL_FrameMark* mark);
 // Requires JFRLL_MARK_FRAME capability, not signal safe
 JNIEXPORT
 void JFRLL_RemoveFrameMark(JFRLL_FrameMark* mark);
-}
+
+
+// Sampling intervals and other configurations specified in JFR
+typedef struct {
+  int64_t java_millis;
+  int64_t native_millis;
+} JFRLL_JFRConfig;
+
+
+/* Abstraction of JFR */
+struct _JFRLL_JFR;
+typedef struct _JFRLL_JFR* JFRLL_JFR;
+
+// All the following handlers are called in a normal thread context
+
+/* Called to start the sampling. Called once for the whole process. */
+typedef bool (*JFRLL_StartSampler)(JFRLL_JFRConfig* config, uint32_t stack_depth);
+
+/* Called to stop the sampling, just before the JFR mirror is destroyed. Called once for the whole process */
+typedef void (*JFRLL_StopSampler)();
+
+/* Called when the JFR config changes. */
+typedef void (*JFRLL_OnConfigChange)(JFRLL_JFRConfig* config);
+
+/* Called when a JFR checkpoint is reached and the new chunk starts. Not called for the first chunk. */
+typedef void (*JFRLL_OnJFRCheckpoint)();
+
+
+// Overwrite the default JFR sampler with a custom one, started by JFRLL_StartSampler
+// and stopped by JFRLL_StopSampler
+//
+// This method cannot be used in a signal handler
+//
+// The passed config is passed down from the JFR user
+// @param name sampler name constant
+// @param start start the sampling with the passed intervals and JFR mirror
+// @param stop stop the sampling and finish writing back all events
+// @param config config change callback, called when the JFR config changes
+// @param checkpoint checkpoint callback, called when a checkpoint is reached
+// @return true on success, false on failure (e.g. a custom sampler is already set)
+bool JFRLL_SetSampler(char* name, JFRLL_StartSampler start, JFRLL_StopSampler stop,
+  JFRLL_OnConfigChange config, JFRLL_OnJFRCheckpoint checkpoint);
+
+// Returns the sampler name, or null if no sampler is set. "JFR" is the default JFR sampler
+char* JFRLL_GetSamplerName();
+
+// Stops the current sampler if any and unsets it
+void JFRLL_UnsetSampler();
+
+/* Abstraction of JfrStackTrace */
+struct _JFRLL_JFRStackTrace;
+typedef struct _JFRLL_JFRStackTrace* JFRLL_JFRStackTrace;
+
+
+enum JFRLL_JFRFrameType {
+  JFRLL_JFR_FRAME_INTERPRETER = 0,
+  JFRLL_JFR_FRAME_JIT = 1,
+  JFRLL_JFR_FRAME_INLINE = 2,
+  JFRLL_JFR_FRAME_NATIVE = 3
+};
+
+// invalidated by reaching a checkpoint, or nullptr if it didn't work, try a bit later
+uint64_t JFRLL_JFRStoreString(char* str);
+
+uint64_t JFRLL_GetCurrentJFRThreadId();
+
+// supports only adding config.stack_frame many frames
+// returns the id of the stack trace
+// not signal safe
+uint64_t JFRLL_InsertStackTrace(int64_t startTimeNanos, uint64_t jfrThreadId, uint64_t stateStringId, bool (*iterate)(JFRLL_JFRStackTrace stackTrace, void* arg), void* arg);
+
+void JFRLL_AddStackFrame(JFRLL_JFRStackTrace mirror, uint64_t methodId, jint bci, JFRLL_JFRFrameType type, uint64_t methodHolderId);
+
+uint64_t JFRLL_GetJFRMethodId(JFRLL_Method method);
+
+uint64_t JFRLL_GetJFRClassId(JFRLL_Class klass);
+
+int64_t JFRLL_GetJFRNanoTime();
 #endif // JVM_PROFILE2_H

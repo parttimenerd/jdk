@@ -689,7 +689,15 @@ void JfrThreadSampling::create_sampler(int64_t java_period_millis, int64_t nativ
 void JfrThreadSampling::update_run_state(int64_t java_period_millis, int64_t native_period_millis) {
   if (java_period_millis > 0 || native_period_millis > 0) {
     if (_sampler == nullptr) {
-      create_sampler(java_period_millis, native_period_millis);
+      if (_custom_sampler == nullptr) {
+        create_sampler(java_period_millis, native_period_millis);
+      } else {
+        if (_custom_sampler->is_started()) {
+          _custom_sampler->update();
+        } else {
+          _custom_sampler->start(native_period_millis, native_period_millis, JfrOptionSet::stackdepth());
+        }
+      }
     } else {
       _sampler->enroll();
     }
@@ -712,11 +720,19 @@ void JfrThreadSampling::set_sampling_period(bool is_java_period, int64_t period_
       _sampler->set_java_period(java_period_millis);
       native_period_millis = _sampler->get_native_period();
     }
+    if (_custom_sampler != nullptr) {
+      _custom_sampler->set_java_period(java_period_millis);
+      native_period_millis = _custom_sampler->_native_period_millis;
+    }
   } else {
     native_period_millis = period_millis;
     if (_sampler != nullptr) {
       _sampler->set_native_period(native_period_millis);
       java_period_millis = _sampler->get_java_period();
+    }
+    if (_custom_sampler != nullptr) {
+      _custom_sampler->set_native_period(native_period_millis);
+      java_period_millis = _custom_sampler->_java_period_millis;
     }
   }
   update_run_state(java_period_millis, native_period_millis);
@@ -740,4 +756,45 @@ void JfrThreadSampling::set_native_sample_period(int64_t period_millis) {
 
 void JfrThreadSampling::on_javathread_suspend(JavaThread* thread) {
   JfrThreadSampler::on_javathread_suspend(thread);
+}
+
+void JfrThreadSampling::_set_custom_sampler(JfrCustomSampler *custom_sampler) {
+  uint64_t java_period_millis = 0;
+  uint64_t native_period_millis = 0;
+  if (_sampler != nullptr) {
+    java_period_millis = _sampler->get_java_period();
+    native_period_millis = _sampler->get_native_period();
+    _sampler->disenroll();
+  }
+  if (_custom_sampler != nullptr) {
+    java_period_millis = _custom_sampler->_java_period_millis;
+    native_period_millis = _custom_sampler->_native_period_millis;
+    _custom_sampler->stop();
+  }
+  _sampler = nullptr;
+  _custom_sampler = custom_sampler;
+  if (_custom_sampler != nullptr && (java_period_millis > 0 || native_period_millis > 0)) {
+    _custom_sampler->start(java_period_millis, native_period_millis, JfrOptionSet::stackdepth());
+  }
+}
+
+JfrCustomSampler* JfrThreadSampling::custom_sampler() {
+  if (_instance == nullptr) {
+    return nullptr;
+  }
+  return _instance->_custom_sampler;
+}
+
+bool JfrThreadSampling::has_jfr_sampler() {
+  return _instance != nullptr && _instance->_sampler != nullptr;
+}
+
+void JfrCustomSampler::set_java_period(int64_t period_millis) {
+  assert(period_millis >= 0, "invariant");
+  Atomic::store(&_java_period_millis, period_millis);
+}
+
+void JfrCustomSampler::set_native_period(int64_t period_millis) {
+  assert(period_millis >= 0, "invariant");
+  Atomic::store(&_native_period_millis, period_millis);
 }

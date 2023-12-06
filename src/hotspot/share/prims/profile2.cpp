@@ -53,7 +53,7 @@
 
 
 int JFRLL_Capabilities() {
-  return JFRLL_REGISTER_QUEUE | JFRLL_MARK_FRAME;
+  return JFRLL_MARK_FRAME;
 }
 
 struct _JFRLL_InitialIteratorArgs {
@@ -1089,3 +1089,39 @@ void* JFRLL_GetFrameMarkStackPointer(JFRLL_FrameMark* mark) {
 void JFRLL_RemoveFrameMark(JFRLL_FrameMark* mark) {
   initWatermark(((JFRLLFrameMark*)mark)->thread())->remove((JFRLLFrameMark*)mark);
 }
+
+class JFRLLCustomSampler : public virtual JfrCustomSampler {
+  JFRLL_StartSampler _start;
+  JFRLL_StopSampler _stop;
+  JFRLL_OnConfigChange _on_config;
+  JFRLL_OnJFRCheckpoint _on_checkpoint;
+
+  JFRLLCustomSampler(char* name, JFRLL_StartSampler start, JFRLL_StopSampler stop, JFRLL_OnConfigChange on_config, JFRLL_OnJFRCheckpoint on_checkpoint) : JfrCustomSampler(name), _start(start), _stop(stop), _on_config(on_config), _on_checkpoint(on_checkpoint) {}
+
+  virtual void start(int64_t java_period_millis, int64_t native_period_millis, uint32_t stack_depth) {
+    assert(java_period_millis >= 0, "java_period_millis must be >= 0");
+    assert(native_period_millis >= 0, "native_period_millis must be >= 0");
+    _java_period_millis = java_period_millis;
+    _native_period_millis = native_period_millis;
+    JFRLL_JFRConfig config = {java_period_millis, native_period_millis};
+    _start(&config, stack_depth);
+    _is_started = true;
+  }
+
+  virtual void update() {
+    assert(is_started(), "JFRLLCustomSampler must be started");
+    JFRLL_JFRConfig config = { _java_period_millis, _native_period_millis };
+    _on_config(&config);
+  }
+
+  virtual void stop() {
+    assert(is_started(), "JFRLLCustomSampler must be started");
+    _stop();
+    _is_started = false;
+  }
+
+  // to do: implement
+  virtual void on_new_epoch() {
+    _on_checkpoint();
+  }
+};

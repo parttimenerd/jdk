@@ -30,13 +30,50 @@
 class JavaThread;
 class JfrThreadSampler;
 
+class JfrCustomSampler : public JfrCHeapObj {
+friend class JfrThreadSampling;
+protected:
+  char* _name;
+  bool _is_started = false;
+  int64_t _java_period_millis = 0;
+  int64_t _native_period_millis = 0;
+
+
+  void set_java_period(int64_t period_millis);
+  void set_native_period(int64_t period_millis);
+
+public:
+
+  JfrCustomSampler(char* name) : _name(name) {}
+
+  virtual void start(int64_t java_period_millis, int64_t native_period_millis, uint32_t stack_depth);
+
+  virtual void update();
+
+  virtual void stop();
+
+  // to do: implement
+  virtual void on_new_epoch();
+
+  char* name() { return _name; }
+
+  bool is_started() { return _is_started; }
+};
+
 class JfrThreadSampling : public JfrCHeapObj {
   friend class JfrRecorder;
  private:
+
   JfrThreadSampler* _sampler;
+  // use custom sampler if defined instead of _sampler
+  // invariant: at most one of both variables is not null
+  JfrCustomSampler* _custom_sampler;
+
   void create_sampler(int64_t java_period_millis, int64_t native_period_millis);
   void update_run_state(int64_t java_period_millis, int64_t native_period_millis);
   void set_sampling_period(bool is_java_period, int64_t period_millis);
+  // set the custom sampler and stop the current sampler
+  void _set_custom_sampler(JfrCustomSampler* custom_sampler);
 
   JfrThreadSampling();
   ~JfrThreadSampling();
@@ -49,6 +86,12 @@ class JfrThreadSampling : public JfrCHeapObj {
   static void set_java_sample_period(int64_t period_millis);
   static void set_native_sample_period(int64_t period_millis);
   static void on_javathread_suspend(JavaThread* thread);
+  // set the custom sampler and stop the current sampler
+  static void set_custom_sampler(JfrCustomSampler* custom_sampler);
+
+  // custom sampler or null if not set (uses JFR sampler potentially instead)
+  static JfrCustomSampler* custom_sampler();
+  static bool has_jfr_sampler();
 };
 
 #endif // SHARE_JFR_PERIODIC_SAMPLING_JFRTHREADSAMPLER_HPP
