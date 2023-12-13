@@ -2200,22 +2200,6 @@ void TemplateTable::_return(TosState state)
     __ bind(skip_register_finalizer);
   }
 
-  if (_desc->bytecode() != Bytecodes::_return_register_finalizer) {
-    Label slow_path;
-    Label fast_path;
-    __ safepoint_poll(slow_path, true /* at_return */, false /* acquire */, false /* in_nmethod */);
-    __ br(Assembler::AL, fast_path);
-    __ bind(slow_path);
-    address the_pc = __ pc();
-    __ push(state);
-
-    __ push_cont_fastpath(rthread);
-    __ call_VM(noreg, CAST_FROM_FN_PTR(address, InterpreterRuntime::at_safepoint), rthread);
-    __ pop_cont_fastpath(rthread);
-    __ pop(state);
-    __ bind(fast_path);
-  }
-
   // Issue a StoreStore barrier after all stores but before return
   // from any constructor for any class with a final field.  We don't
   // know if this is a finalizer, so we always do so.

@@ -1160,10 +1160,6 @@ bool os::is_readable_pointer(const void* p) {
   return (SafeFetch32(aligned, cafebabe) != cafebabe) || (SafeFetch32(aligned, deadbeef) != deadbeef);
 }
 
-bool os::is_readable_pointer2(const void *p) {
-  return (size_t)p != 0 && is_readable_pointer(p);
-}
-
 bool os::is_readable_range(const void* from, const void* to) {
   if ((uintptr_t)from >= (uintptr_t)to) return false;
   for (uintptr_t p = align_down((uintptr_t)from, min_page_size()); p < (uintptr_t)to; p += min_page_size()) {
@@ -1303,10 +1299,10 @@ bool os::is_first_C_frame(frame* fr) {
   // Check usp first, because if that's bad the other accessors may fault
   // on some architectures.  Ditto ufp second, etc.
 
-  if (fr->sp() == nullptr || is_pointer_bad(fr->sp())) return true;
+  if (is_pointer_bad(fr->sp())) return true;
 
   uintptr_t ufp    = (uintptr_t)fr->fp();
-  if (fr->fp() == nullptr || is_pointer_bad(fr->fp())) return true;
+  if (is_pointer_bad(fr->fp())) return true;
 
   uintptr_t old_sp = (uintptr_t)fr->sender_sp();
   if ((uintptr_t)fr->sender_sp() == (uintptr_t)-1 || is_pointer_bad(fr->sender_sp())) return true;
@@ -1321,8 +1317,6 @@ bool os::is_first_C_frame(frame* fr) {
   // is not walkable beyond current frame.
   if (old_fp < ufp) return true;
   if (old_fp - ufp > 64 * K) return true;
-
-  if (fr->sender_pc() == NULL) return true;
 
   return false;
 }

@@ -380,7 +380,7 @@ class ConstantPool : public Metadata {
 
   // Tag query
 
-  constantTag tag_at(int which) const { return (constantTag)tags()->at_acquire(which); }
+  constantTag tag_at(int cp_index) const { return (constantTag)tags()->at_acquire(cp_index); }
 
   // Fetching constants
 

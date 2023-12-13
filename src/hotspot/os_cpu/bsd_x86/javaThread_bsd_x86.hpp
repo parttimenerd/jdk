@@ -38,12 +38,12 @@
   }
 
   bool pd_get_top_frame_for_signal_handler(frame* fr_addr, void* ucontext,
-    bool isInJava, bool forceUContextUsage = false);
+    bool isInJava);
 
   bool pd_get_top_frame_for_profiling(frame* fr_addr, void* ucontext,
-    bool isInJava, bool forceUContextUsage = false);
+    bool isInJava);
 
 private:
-  bool pd_get_top_frame(frame* fr_addr, void* ucontext, bool isInJava, bool forceUContextUsage);
+  bool pd_get_top_frame(frame* fr_addr, void* ucontext, bool isInJava);
 
 #endif // OS_CPU_BSD_X86_JAVATHREAD_BSD_X86_HPP

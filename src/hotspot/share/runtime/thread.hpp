@@ -636,40 +636,31 @@ protected:
 #endif // __APPLE__ && AARCH64
 
  private:
-  volatile int _async_stack_walking_depth = 0;
+  bool _in_asgct = false;
  public:
-   // to adapt assertions during asynchronous stack walking
-  inline bool in_async_stack_walking() { return _async_stack_walking_depth > 0; }
-  inline void set_in_async_stack_walking(bool b) {
-    // using a volatile integer to count the number of nested calls
-    // which might be caused by signal handler
-    if (b) {
-      _async_stack_walking_depth++;
-    } else {
-      assert(_async_stack_walking_depth > 0, "invariant");
-      _async_stack_walking_depth--;
-    }
-  }
-
-  static bool currently_in_async_stack_walking() {
-    Thread* thread = Thread::current_or_null_safe();
-    return thread != NULL && thread->in_async_stack_walking();
+  bool in_asgct() const { return _in_asgct; }
+  void set_in_asgct(bool value) { _in_asgct = value; }
+  static bool current_in_asgct() {
+    Thread *cur = Thread::current_or_null_safe();
+    return cur != nullptr && cur->in_asgct();
   }
 
  private:
   VMErrorCallback* _vm_error_callbacks;
 };
 
-class ThreadInAsyncStackWalking {
+class ThreadInAsgct {
  private:
   Thread* _thread;
  public:
-  ThreadInAsyncStackWalking(Thread* thread) : _thread(thread) {
-    assert(_thread != nullptr, "invariant");
-    _thread->set_in_async_stack_walking(true);
+  ThreadInAsgct(Thread* thread) : _thread(thread) {
+    assert(thread != nullptr, "invariant");
+    assert(!thread->in_asgct(), "invariant");
+    thread->set_in_asgct(true);
   }
-  ~ThreadInAsyncStackWalking() {
-    _thread->set_in_async_stack_walking(false);
+  ~ThreadInAsgct() {
+    assert(_thread->in_asgct(), "invariant");
+    _thread->set_in_asgct(false);
   }
 };
 

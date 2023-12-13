@@ -31,8 +31,7 @@ ThreadCrashProtection* ThreadCrashProtection::_crash_protection = nullptr;
 
 ThreadCrashProtection::ThreadCrashProtection() {
   _protected_thread = Thread::current();
-  assert(_protected_thread->is_JfrSampler_thread() || _protected_thread->in_asgct(),
-    "should be JFRSampler or asgct");
+  assert(_protected_thread->is_JfrSampler_thread(), "should be JFRSampler");
 }
 
 // See the caveats for this class in os_windows.hpp

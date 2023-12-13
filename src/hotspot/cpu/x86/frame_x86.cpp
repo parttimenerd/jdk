@@ -36,12 +36,10 @@
 #include "runtime/handles.inline.hpp"
 #include "runtime/javaCalls.hpp"
 #include "runtime/monitorChunk.hpp"
-#include "runtime/safefetch.hpp"
 #include "runtime/signature.hpp"
 #include "runtime/stackWatermarkSet.hpp"
 #include "runtime/stubCodeGenerator.hpp"
 #include "runtime/stubRoutines.hpp"
-#include "utilities/globalDefinitions.hpp"
 #include "vmreg_x86.inline.hpp"
 #include "utilities/formatBuffer.hpp"
 #ifdef COMPILER1
@@ -125,11 +123,6 @@ bool frame::safe_for_sender(JavaThread *thread) {
       if (!fp_safe) {
         return false;
       }
-      // check that the accessed stack slots are safe too
-      if (SafeFetchN(this->fp() + return_addr_offset, 0) == 0 ||
-          SafeFetchN(this->fp() + interpreter_frame_sender_sp_offset, 0) == 0 ||
-          SafeFetchN(this->fp() + link_offset, 0) == 0
-         ) return false;
 
       sender_pc = (address) this->fp()[return_addr_offset];
       // for interpreted frames, the value below is the sender "raw" sp,
@@ -261,9 +254,10 @@ bool frame::safe_for_sender(JavaThread *thread) {
     return false;
   }
 
-  // Will the pc we fetch be non-zero (which we'll find at the oldest frame) and readable
+  // Will the pc we fetch be non-zero (which we'll find at the oldest frame)
 
   if ( (address) this->fp()[return_addr_offset] == nullptr) return false;
+
 
   // could try and do some more potential verification of native frame if we could think of some...
 
@@ -422,10 +416,6 @@ frame frame::sender_for_upcall_stub_frame(RegisterMap* map) const {
 // given unextended SP.
 #ifdef ASSERT
 void frame::verify_deopt_original_pc(CompiledMethod* nm, intptr_t* unextended_sp) {
-  if (JavaThread::currently_in_async_stack_walking()) {
-    return;
-  }
-
   frame fr;
 
   // This is ugly but it's better than to change {get,set}_original_pc
@@ -434,7 +424,6 @@ void frame::verify_deopt_original_pc(CompiledMethod* nm, intptr_t* unextended_sp
   fr._unextended_sp = unextended_sp;
 
   address original_pc = nm->get_original_pc(&fr);
-
   assert(nm->insts_contains_inclusive(original_pc),
          "original PC must be in the main code section of the compiled method (or must be immediately following it) original_pc: " INTPTR_FORMAT " unextended_sp: " INTPTR_FORMAT " name: %s", p2i(original_pc), p2i(unextended_sp), nm->name());
 }

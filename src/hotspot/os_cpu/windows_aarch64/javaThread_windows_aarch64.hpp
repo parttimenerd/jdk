@@ -39,12 +39,11 @@
   }
 
   bool pd_get_top_frame_for_signal_handler(frame* fr_addr, void* ucontext,
-    bool isInJava, bool forceUContextUsage = false);
+    bool isInJava);
 
-  bool pd_get_top_frame_for_profiling(frame* fr_addr, void* ucontext, bool isInJava,
-    bool forceUContextUsage = false);
+  bool pd_get_top_frame_for_profiling(frame* fr_addr, void* ucontext, bool isInJava);
 private:
-  bool pd_get_top_frame(frame* fr_addr, void* ucontext, bool isInJava, bool forceUContextUsage);
+  bool pd_get_top_frame(frame* fr_addr, void* ucontext, bool isInJava);
 public:
 
   static Thread *aarch64_get_thread_helper() {

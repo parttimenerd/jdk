@@ -51,7 +51,6 @@
 #include "runtime/javaThread.hpp"
 #include "runtime/monitorChunk.hpp"
 #include "runtime/os.hpp"
-#include "runtime/safefetch.hpp"
 #include "runtime/sharedRuntime.hpp"
 #include "runtime/safefetch.hpp"
 #include "runtime/signature.hpp"
@@ -429,10 +428,6 @@ address frame::interpreter_frame_bcp() const {
   assert(is_interpreted_frame(), "interpreted frame expected");
   address bcp = (address)*interpreter_frame_bcp_addr();
   return interpreter_frame_method()->bcp_from(bcp);
-}
-
-address frame::potential_interpreter_frame_bcp_safe() const {
-  return (address)SafeFetchN(interpreter_frame_bcp_addr(), (intptr_t)nullptr);
 }
 
 void frame::interpreter_frame_set_bcp(address bcp) {

@@ -48,7 +48,6 @@ class compiledVFrame: public javaVFrame {
   // Virtuals defined in vframe
   bool is_compiled_frame() const { return true; }
   vframe* sender() const;
-  bool sender(vframe *sender) const;
   bool is_top() const;
 
   // Casting

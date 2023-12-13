@@ -136,7 +136,7 @@ class Symbol : public MetaspaceObj {
   static int extract_refcount(uint32_t value) { return value & 0xffff; }
   static uint32_t pack_hash_and_refcount(short hash, int refcount);
 
-  int length() const      { return _length; }
+  int length() const   { return _length; }
 
  public:
   Symbol(const Symbol& s1);

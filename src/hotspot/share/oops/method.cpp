@@ -1243,6 +1243,7 @@ void Method::link_method(const methodHandle& h_method, TRAPS) {
   // call-site goes mega-morphic we need adapters in all methods which can be
   // called from the vtable.  We need adapters on such methods that get loaded
   // later.  Ditto for mega-morphic itable calls.  If this proves to be a
+  // problem we'll make these lazily later.
   (void) make_adapters(h_method, CHECK);
 
   // ONLY USE the h_method now as make_adapter may have blocked

@@ -40,24 +40,19 @@ frame JavaThread::pd_last_frame() {
 // For Forte Analyzer AsyncGetCallTrace profiling support - thread is
 // currently interrupted by SIGPROF
 bool JavaThread::pd_get_top_frame_for_signal_handler(frame* fr_addr,
-  void* ucontext, bool isInJava, bool forceUContextUsage) {
-  assert(Thread::current() == this || Thread::currently_in_async_stack_walking(),
-    "caller must be current thread or in async stack walking");
-  return pd_get_top_frame(fr_addr, ucontext, isInJava, forceUContextUsage);
+  void* ucontext, bool isInJava) {
+  assert(Thread::current() == this, "caller must be current thread");
+  return pd_get_top_frame(fr_addr, ucontext, isInJava);
 }
 
-bool JavaThread::pd_get_top_frame_for_profiling(frame* fr_addr, void* ucontext, bool isInJava,
-  bool forceUContextUsage) {
-  return pd_get_top_frame(fr_addr, ucontext, isInJava, forceUContextUsage);
+bool JavaThread::pd_get_top_frame_for_profiling(frame* fr_addr, void* ucontext, bool isInJava) {
+  return pd_get_top_frame(fr_addr, ucontext, isInJava);
 }
 
-bool JavaThread::pd_get_top_frame(frame* fr_addr, void* ucontext, bool isInJava,
-  bool forceUContextUsage) {
+bool JavaThread::pd_get_top_frame(frame* fr_addr, void* ucontext, bool isInJava) {
   // If we have a last_Java_frame, then we should use it even if
   // isInJava == true.  It should be more reliable than ucontext info.
-  // But forceUContextUsage == true overrides this.
-  if (ucontext == NULL ||
-      (!forceUContextUsage && has_last_Java_frame() && frame_anchor()->walkable())) {
+  if (has_last_Java_frame() && frame_anchor()->walkable()) {
     *fr_addr = pd_last_frame();
     return true;
   }

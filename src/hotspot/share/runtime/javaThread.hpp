@@ -30,7 +30,6 @@
 #include "memory/allocation.hpp"
 #include "oops/oop.hpp"
 #include "oops/oopHandle.hpp"
-#include "runtime/atomic.hpp"
 #include "runtime/frame.hpp"
 #include "runtime/globals.hpp"
 #include "runtime/handshake.hpp"
@@ -38,7 +37,6 @@
 #include "runtime/lockStack.hpp"
 #include "runtime/park.hpp"
 #include "runtime/safepointMechanism.hpp"
-#include "runtime/stackWatermark.hpp"
 #include "runtime/stackWatermarkSet.hpp"
 #include "runtime/stackOverflow.hpp"
 #include "runtime/thread.hpp"
@@ -556,8 +554,7 @@ private:
   inline void set_thread_state_fence(JavaThreadState s);  // fence after setting thread state
   inline ThreadSafepointState* safepoint_state() const;
   inline void set_safepoint_state(ThreadSafepointState* state);
-  inline bool is_at_poll_safepoint() const;
-  inline bool is_at_safepoint() const;
+  inline bool is_at_poll_safepoint();
 
   // JavaThread termination and lifecycle support:
   void smr_delete();
@@ -978,10 +975,6 @@ private:
   // Returns the current thread as a JavaThread, or nullptr if not attached
   static inline JavaThread* current_or_null();
 
-  // Returns the current thread as a JavaThread, or NULL if not attached,
-  // or if the current thread is not a JavaThread
-  static inline JavaThread* checked_current_or_null();
-
   // Casts
   static JavaThread* cast(Thread* t) {
     assert(t->is_Java_thread(), "incorrect cast to JavaThread");
@@ -1195,31 +1188,11 @@ public:
   static bool has_oop_handles_to_release() {
     return _oop_handle_list != nullptr;
   }
-
-public:
-  // ASGST frame mark support
-
-  StackWatermark* asgst_watermark() { return Atomic::load(&_asgst_watermark); }
-
-  // this class handles the deletion of the last assigned mark
-  // returns true if the passed mark is used, or false if one already is present
-  bool set_asgst_watermark(StackWatermark* watermark) {
-    assert(_asgst_watermark == nullptr, "set_asgst_watermark called twice");
-    return Atomic::cmpxchg(&_asgst_watermark, (StackWatermark*)nullptr, watermark) == nullptr;
-  }
-private:
-
-  StackWatermark* volatile _asgst_watermark = nullptr;
 };
 
 inline JavaThread* JavaThread::current_or_null() {
   Thread* current = Thread::current_or_null();
   return current != nullptr ? JavaThread::cast(current) : nullptr;
-}
-
-inline JavaThread* JavaThread::checked_current_or_null() {
-  Thread* current = Thread::current_or_null();
-  return current != nullptr && current->is_Java_thread() ? JavaThread::cast(current) : nullptr;
 }
 
 class UnlockFlagSaver {

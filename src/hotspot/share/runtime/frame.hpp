@@ -303,11 +303,10 @@ class frame {
 
  private:
   intptr_t* interpreter_frame_locals() const;
+  intptr_t* interpreter_frame_bcp_addr() const;
   intptr_t* interpreter_frame_mdp_addr() const;
 
  public:
-  intptr_t* interpreter_frame_bcp_addr() const;
-
   // Locals
 
   // The _at version returns a pointer because the address is used for GC.
@@ -321,10 +320,6 @@ class frame {
   // byte code pointer
   address interpreter_frame_bcp() const;
   void    interpreter_frame_set_bcp(address bcp);
-
-  // returns a bcp which is only valid if the frame is interpreted and not native
-  // otherwise undefined but safe
-  address potential_interpreter_frame_bcp_safe() const;
 
   // method data pointer
   address interpreter_frame_mdp() const;
