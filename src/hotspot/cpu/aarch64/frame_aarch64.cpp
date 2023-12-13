@@ -85,9 +85,9 @@ bool frame::safe_for_sender(JavaThread *thread) {
     return false;
   }
 
-  // an fp must be within the stack and above sp
+  // an fp must be within the stack and above (but not equal) sp
   // second evaluation on fp+ is added to handle situation where fp is -1
-  bool fp_safe = thread->is_in_stack_range_incl(fp, sp) &&
+  bool fp_safe = thread->is_in_stack_range_excl(fp, sp) &&
                  thread->is_in_full_stack_checked(fp + (return_addr_offset * sizeof(void*)));
 
   // We know sp/unextended_sp are safe only fp is questionable here
@@ -104,7 +104,7 @@ bool frame::safe_for_sender(JavaThread *thread) {
     // ok. adapter blobs never have a frame complete and are never ok.
 
     if (!_cb->is_frame_complete_at(_pc)) {
-      if (_cb->is_nmethod() || _cb->is_adapter_blob() /*|| _cb->is_runtime_stub() TODO: why? */) {
+      if (_cb->is_nmethod() || _cb->is_adapter_blob() || _cb->is_runtime_stub()) {
         return false;
       }
     }
@@ -427,10 +427,6 @@ frame frame::sender_for_upcall_stub_frame(RegisterMap* map) const {
 // given unextended SP.
 #ifdef ASSERT
 void frame::verify_deopt_original_pc(CompiledMethod* nm, intptr_t* unextended_sp) {
-  if (JavaThread::currently_in_async_stack_walking()) {
-    return;
-  }
-
   frame fr;
 
   // This is ugly but it's better than to change {get,set}_original_pc
