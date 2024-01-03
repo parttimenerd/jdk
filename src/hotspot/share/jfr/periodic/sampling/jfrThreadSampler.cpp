@@ -505,7 +505,7 @@ void JfrThreadSampler::disenroll() {
 }
 
 static int64_t get_monotonic_ms() {
-  return os::javaTimeNanos() / 1000000;
+  return os::javaTimeNanos();
 }
 
 void JfrThreadSampler::run() {
@@ -552,7 +552,7 @@ void JfrThreadSampler::run() {
     const int64_t sleep_to_next = MIN2<int64_t>(next_j, next_n);
 
     if (sleep_to_next > 0) {
-      os::naked_sleep(sleep_to_next);
+      os::naked_short_nanosleep(sleep_to_next);
     }
 
     // Note, this code used to check (next_j - sleep_to_next) <= 0,
