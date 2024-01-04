@@ -96,7 +96,7 @@ void SafepointMechanism::update_poll_values(JavaThread* thread) {
   assert(thread->thread_state() != _thread_in_native, "Must not be");
 
   for (;;) {
-    bool armed = global_poll() || thread->handshake_state()->has_operation();
+    bool armed = global_poll() || thread->handshake_state()->has_operation() || thread->has_requested_asgst_safepoint();
     uintptr_t stack_watermark = StackWatermarkSet::lowest_watermark(thread);
     uintptr_t poll_page = armed ? _poll_page_armed_value
                                 : _poll_page_disarmed_value;
@@ -122,7 +122,7 @@ void SafepointMechanism::update_poll_values(JavaThread* thread) {
     thread->poll_data()->set_polling_page(poll_page);
     thread->poll_data()->set_polling_word(poll_word);
     OrderAccess::fence();
-    if (!armed && (global_poll() || thread->handshake_state()->has_operation())) {
+    if (!armed && (global_poll() || thread->handshake_state()->has_operation() || thread->has_requested_asgst_safepoint())) {
       // We disarmed an old safepoint, but a new one is synchronizing.
       // We need to arm the poll for the subsequent safepoint poll.
       continue;
@@ -139,6 +139,10 @@ void SafepointMechanism::process(JavaThread *thread, bool allow_suspend, bool ch
   // local poll already checked, if used.
   bool need_rechecking;
   do {
+    if (thread->has_requested_asgst_safepoint()) {
+      thread->handle_asgst_requested_safepoint();
+    }
+
     JavaThreadState state = thread->thread_state();
     guarantee(state == _thread_in_vm, "Illegal threadstate encountered: %d", state);
     if (global_poll()) {

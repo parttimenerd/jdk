@@ -101,9 +101,40 @@ int ASGST_WalkStackFromFrame(ASGST_Frame frame,
 JNIEXPORT
 int ASGST_IsJavaFrame(ASGST_Frame pc);
 
-// Get the frame for the passed ucontext.
+// Get the frame for the passed ucontext, or pc=nullptr if not available.
+// use the focus on Java version for storing away at safepoints
 JNIEXPORT
 ASGST_Frame ASGST_GetFrame(void* ucontext, bool focusOnJava);
+
+// Callback called at thread-local safepoints, see ASGST_SetSafepointCallback.
+typedef void (*ASGST_SafepointCallback)(void *arg);
+
+// Sets the thread-local safepoint callback and argument.
+// Unset by passing nullptr for callback and/or arg.
+//
+// signal and safepoint safe
+JNIEXPORT
+void ASGST_SetSafepointCallback(ASGST_SafepointCallback callback, void *arg);
+
+// Obtains the thread-local safepoint callback and argument if set and
+// stores them in the provided pointers, otherwise sets them to nullptr.
+//
+// signal and safepoint safe
+JNIEXPORT
+void ASGST_GetSafepointCallback(ASGST_SafepointCallback *callback, void **arg);
+
+// Trigger a thread-local safepoint
+// that will call the callback set with ASGST_SetSafepointCallback.
+//
+// signal and safepoint safe
+JNIEXPORT
+void ASGST_TriggerSafePoint();
+
+// Compute the top frame at a safepoint for the passed captured frame.
+// This is useful for capturing the top Java frame in a signal handler
+// and then walking it at a safepoint.
+// Returns a frame with pc=nullptr on error
+ASGST_Frame ASGST_ComputeTopFrameAtSafepoint(ASGST_Frame captured);
 
 };
 

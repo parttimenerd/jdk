@@ -38,17 +38,19 @@
 #include "runtime/frame.inline.hpp"
 #include "runtime/javaCalls.hpp"
 #include "runtime/javaThread.inline.hpp"
-#include "runtime/stackWatermark.hpp"
+#include "runtime/stackFrameStream.inline.hpp"
 #include "runtime/vframe.inline.hpp"
 #include "runtime/vframeArray.hpp"
 #include "utilities/checkedCast.hpp"
+#include "utilities/globalDefinitions.hpp"
 #include <cstdint>
 
+// the following is copied from forte.cpp
 
-class vframeStreamForte : public vframeStreamCommon {
+class vframeStreamASGST : public vframeStreamCommon {
  public:
   // constructor that starts with sender of frame fr (top_frame)
-  vframeStreamForte(JavaThread *jt, frame fr, bool stop_at_java_call_stub, bool walk_loom);
+  vframeStreamASGST(JavaThread *jt, frame fr, bool stop_at_java_call_stub, bool walk_loom);
   void forte_next();
 
   frame current_frame() { return _frame; }
@@ -66,7 +68,7 @@ static bool is_decipherable_interpreted_frame(JavaThread* thread,
 
 
 
-vframeStreamForte::vframeStreamForte(JavaThread *jt,
+vframeStreamASGST::vframeStreamASGST(JavaThread *jt,
                                      frame fr,
                                      bool stop_at_java_call_stub,
                                      bool walk_loom)
@@ -95,7 +97,7 @@ vframeStreamForte::vframeStreamForte(JavaThread *jt,
 // interpreted and the current sender is compiled, we verify that the
 // current sender is also walkable. If it is not walkable, then we mark
 // the current vframeStream as at the end.
-void vframeStreamForte::forte_next() {
+void vframeStreamASGST::forte_next() {
   // handle frames with inlining
   if (_mode == compiled_mode &&
       vframeStreamCommon::fill_in_compiled_inlined_sender()) {
@@ -471,7 +473,7 @@ int walk_stack(JavaThread* thread, frame top_frame, ASGST_WalkStackCallback java
     return ASGST_GC_active; // -2
   }
 
-  vframeStreamForte st(thread, initial_Java_frame, false, walk_loom_threads);
+  vframeStreamASGST st(thread, initial_Java_frame, false, walk_loom_threads);
 
   for (; !st.at_end(); st.forte_next()) {
     method = st.method();
@@ -621,6 +623,12 @@ ASGST_Frame ASGST_GetFrame(void* ucontext, bool focusOnJava) {
     frame ret_frame;
     if (thread->pd_get_top_frame_for_profiling(&ret_frame, ucontext, true)) {
       return ASGST_Frame{ret_frame.pc(), ret_frame.sp(), ret_frame.fp()};
+    } else if (thread->last_Java_sp() != nullptr) {
+      address last_Java_pc = thread->last_Java_pc();
+      if (last_Java_pc == nullptr) {
+        last_Java_pc = (address)thread->last_Java_sp()[-1];
+      }
+      return ASGST_Frame{last_Java_pc, thread->last_Java_sp(), thread->frame_anchor()->last_Java_fp()};
     }
     return empty;
   }
@@ -648,3 +656,154 @@ ASGST_Frame ASGST_GetFrame(void* ucontext, bool focusOnJava) {
   return ASGST_Frame{ret_frame.pc(), ret_frame.sp(), ret_frame.fp()};
 }
 
+
+void ASGST_SetSafepointCallback(ASGST_SafepointCallback callback, void *arg) {
+  JavaThread* thread = get_thread();
+  if (thread == nullptr) {
+    return;
+  }
+  thread->set_asgst_safepoint_callback(callback, arg);
+}
+
+void ASGST_GetSafepointCallback(ASGST_SafepointCallback *callback, void **arg) {
+  JavaThread* thread = get_thread();
+  if (thread == nullptr) {
+    *callback = nullptr;
+    *arg = nullptr;
+    return;
+  }
+  thread->get_asgst_safepoint_callback(callback, arg);
+}
+
+void ASGST_TriggerSafePoint() {
+  JavaThread* thread = get_thread();
+  if (thread == nullptr) {
+    return;
+  }
+  thread->trigger_asgst_safepoint();
+}
+
+// based on compute_top_java_frame from
+// https://github.com/openjdk/jdk/compare/master...fisk:jdk:jfr_safe_trace_v1
+// by Erik Österlund
+static bool compute_top_java_frame(JavaThread* thread, frame request, frame* top_frame) {
+  if (!thread->has_last_Java_frame()) {
+    return false;
+  }
+
+  void* sampled_sp = request.sp();
+  void* sampled_pc = request.pc();
+  const char* sampler = (thread == Thread::current()) ? "self" : "remote";
+
+  CodeBlob* sampled_cb = CodeCache::find_blob(sampled_pc);
+
+  if (sampled_cb == nullptr) {
+    // No code blob... probably native code. Perform a biased sample
+    *top_frame = thread->last_frame();
+    return true;
+  }
+
+  if (!sampled_cb->is_nmethod() &&
+      !sampled_cb->is_vtable_blob() &&
+      !sampled_cb->is_adapter_blob() &&
+      !sampled_cb->is_method_handles_adapter_blob()) {
+    // Cold code blob... perform a biased sample
+    *top_frame = thread->last_frame();
+    return true;
+  }
+
+  // For nmethods, vtable stubs, itable stubs, adapter blobs and method handle intrinsic blobs,
+  // want to perform an accurate unbiased sample
+  nmethod* sampled_nm = sampled_cb->as_nmethod_or_null();
+
+  // We sampled an nmethod. Let's find the frame it came from.
+  RegisterMap map(thread,
+                  RegisterMap::UpdateMap::skip,
+                  RegisterMap::ProcessFrames::skip,
+                  RegisterMap::WalkContinuation::skip);
+
+  // Search the first frame that is above the sampled sp
+  for (StackFrameStream frame_stream(thread, false /* update_registers */, false /* process_frames */);
+       !frame_stream.is_done();
+       frame_stream.next()) {
+    frame* f = frame_stream.current();
+
+    if (f->is_safepoint_blob_frame() || f->is_runtime_frame()) {
+      // Skip runtime stubs
+      continue;
+    }
+
+    // Seek the first matching frame
+    if (f->real_fp() <= sampled_sp) {
+      // Continue searching the matching frame or its caller
+      continue;
+    }
+
+    if (sampled_nm == nullptr) {
+      // The sample didn't have an nmethod; we decided to trace from its caller
+      *top_frame = *f;
+      return true;
+    }
+
+    // We might have a matching frame; check it
+    if (f->cb()->as_nmethod_or_null() == sampled_nm) {
+      // We found the sampled nmethod! Let's correct the safepoint bias
+      PcDesc* pc_desc = sampled_nm->pc_desc_near(address(sampled_pc) + 1);
+      if (pc_desc == nullptr || pc_desc->scope_decode_offset() == DebugInformationRecorder::serialized_null) {
+        // Bogus PC at frame boundary; we are close enough to the caller; trace from there
+        continue;
+      }
+      f->set_pc(pc_desc->real_pc(sampled_nm));
+      assert(sampled_nm->pc_desc_at(f->pc()) != nullptr, "invalid pc");
+
+      *top_frame = *f;
+      return true;
+    } else {
+      // Frame not matching... possibly due to polling after unwinding.
+      address saved_exception_pc = thread->saved_exception_pc();
+      nmethod* exception_nm = saved_exception_pc == nullptr ? nullptr : CodeCache::find_blob(saved_exception_pc)->as_nmethod_or_null();
+
+      if (exception_nm == sampled_nm && sampled_nm->is_at_poll_return(saved_exception_pc)) {
+        // We have polled at an unwind site in the compiled method. Let's reconstruct what the frame
+        // would have looked like before unwinding. This will point into garbage stack memory, but
+        // is safe, as the stack sampling only cares about PCs, and not the content of the stack.
+        intptr_t* previous_sp = f->sp() - sampled_nm->frame_size();
+
+        // We found the sampled nmethod! Let's correct the safepoint bias
+        PcDesc* pc_desc = sampled_nm->pc_desc_near(address(sampled_pc) + 1);
+        if (pc_desc == nullptr || pc_desc->scope_decode_offset() == DebugInformationRecorder::serialized_null) {
+          // Bogus PC at frame boundary; we are close enough to the caller; trace from there
+          *top_frame = *f;
+        } else {
+          *top_frame = frame(previous_sp, previous_sp, (intptr_t*)f->sp(), (address)pc_desc->real_pc(sampled_nm), sampled_nm);
+        }
+      } else {
+        // Mismatched sample; trace from caller
+        *top_frame = *f;
+      }
+
+      return true;
+    }
+  }
+
+  // No frame found
+  return false;
+}
+
+ASGST_Frame ASGST_ComputeTopFrameAtSafepoint(ASGST_Frame captured) {
+  JavaThread* thread = get_thread();
+  ASGST_Frame empty{nullptr, nullptr, nullptr};
+  if (thread == nullptr) {
+    return empty;
+  }
+  if (!thread->is_at_poll_safepoint()) {
+    return empty;
+  }
+
+  frame top_frame;
+  if (!compute_top_java_frame(thread, {captured.sp, captured.fp, captured.pc}, &top_frame)) {
+    return empty;
+  }
+
+  return ASGST_Frame{top_frame.pc(), top_frame.sp(), top_frame.fp()};
+}

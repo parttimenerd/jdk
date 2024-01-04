@@ -1188,6 +1188,36 @@ public:
   static bool has_oop_handles_to_release() {
     return _oop_handle_list != nullptr;
   }
+
+  volatile bool _requested_asgst_safepoint = false;
+  void* _asgst_safepoint_arg = nullptr;
+  void (*_asgst_safepoint_callback)(void *) = nullptr;
+
+public:
+  bool has_requested_asgst_safepoint() {
+    return _requested_asgst_safepoint;
+  }
+
+  void handle_asgst_requested_safepoint() {
+    if (_requested_asgst_safepoint && _asgst_safepoint_callback != nullptr) {
+      _requested_asgst_safepoint = false;
+      _asgst_safepoint_callback(_asgst_safepoint_arg);
+    }
+  }
+
+  void trigger_asgst_safepoint() {
+    _requested_asgst_safepoint = true;
+  }
+
+  void set_asgst_safepoint_callback(void (*callback)(void *), void *arg) {
+    _asgst_safepoint_callback = callback;
+    _asgst_safepoint_arg = arg;
+  }
+
+  void get_asgst_safepoint_callback(void (**callback)(void *), void **arg) {
+    *callback = _asgst_safepoint_callback;
+    *arg = _asgst_safepoint_arg;
+  }
 };
 
 inline JavaThread* JavaThread::current_or_null() {
