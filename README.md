@@ -14,7 +14,7 @@ Idea:
 - essentially
   - reduce the API to its bare minimum
   - don't implement anything in the VM that can be implemented in the profiler
-  - start fr
+  - start from scratch
 - aim: be the minimal possible version of the JEP that still allows the proficient
   profiler writer to implement a profiler that can do everything the JEP
   would allow, just not as easily
