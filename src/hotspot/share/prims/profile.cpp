@@ -499,13 +499,15 @@ int walk_stack(JavaThread* thread, frame top_frame, ASGST_WalkStackCallback java
     }
 
     ASGST_FrameInfo frame_info{
-      .type = 0,
+      .type = type,
       .comp_level = st.cb()->is_compiled() ? st.cb()->as_nmethod()->comp_level() : 0,
       .bci = bci,
       .method = method_id,
       .frame = ASGST_Frame{fr.pc(), fr.sp(), fr.fp()}
       };
-    javaCallback(&frame_info, arg);
+    if (javaCallback(&frame_info, arg) != 1) {
+      break;
+    }
 
     if (nonJavaCallback != nullptr) {
       frame fr = st.current_frame();

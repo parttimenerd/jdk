@@ -103,6 +103,7 @@ int ASGST_IsJavaFrame(ASGST_Frame pc);
 
 // Get the frame for the passed ucontext, or pc=nullptr if not available.
 // use the focus on Java version for storing away at safepoints
+// supports nullptr for ucontext, takes the current last Java frame
 JNIEXPORT
 ASGST_Frame ASGST_GetFrame(void* ucontext, bool focusOnJava);
 

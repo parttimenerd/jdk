@@ -22,34 +22,39 @@
  * questions.
  */
 
-package MyPackage;
+package BasicTest;
 
 /**
  * @test
- * @summary Verifies that AsyncGetCallTrace is call-able and provides sane information.
- * @compile ASGCTBaseTest.java
+ * @summary Verifies that ASGST's non safepoint API is call-able and provides sane information.
+ * @compile BasicTest.java
  * @requires os.family == "linux"
  * @requires os.arch=="x86" | os.arch=="i386" | os.arch=="amd64" | os.arch=="x86_64" | os.arch=="arm" | os.arch=="aarch64" | os.arch=="ppc64" | os.arch=="s390" | os.arch=="riscv64"
  * @requires vm.jvmti
- * @run main/othervm/native -agentlib:AsyncGetCallTraceTest MyPackage.ASGCTBaseTest
+ * @run main/othervm/native -agentlib:ASGSTBasicTest BasicTest.BasicTest
  */
 
 public class BasicTest {
   static {
     try {
-      System.loadLibrary("AsyncGetCallTraceTest");
+      System.loadLibrary("ASGSTBasicTest");
     } catch (UnsatisfiedLinkError ule) {
-      System.err.println("Could not load AsyncGetCallTrace library");
+      System.err.println("Could not load ASGSTBasicTest library");
       System.err.println("java.library.path: " + System.getProperty("java.library.path"));
       throw ule;
     }
   }
 
-  private static native boolean checkAsyncGetCallTraceCall();
+  private static native boolean checkBasicStackWalk();
+
+  private static native boolean check2Frames();
 
   public static void main(String[] args) {
-    if (!checkAsyncGetCallTraceCall()) {
-      throw new RuntimeException("AsyncGetCallTrace call failed.");
+    if (!checkBasicStackWalk()) {
+      throw new RuntimeException("Basic ASGST stack walk failed.");
+    }
+    if (!check2Frames()) {
+      throw new RuntimeException("Getting just 2 frames failed.");
     }
   }
 }

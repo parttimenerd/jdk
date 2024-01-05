@@ -33,3 +33,10 @@ JNI_GetDefaultJavaVMInitArgs
 JVM_IsForeignLinkerSupported
 JVM_FindClassFromBootLoader
 JVM_InitAgentProperties
+ASGST_WalkStackFromFrame
+ASGST_IsJavaFrame
+ASGST_GetFrame
+ASGST_SetSafepointCallback
+ASGST_GetSafepointCallback
+ASGST_TriggerSafePoint
+ASGST_ComputeTopFrameAtSafepoint
