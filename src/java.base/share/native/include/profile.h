@@ -135,6 +135,7 @@ void ASGST_TriggerSafePoint();
 // This is useful for capturing the top Java frame in a signal handler
 // and then walking it at a safepoint.
 // Returns a frame with pc=nullptr on error
+JNIEXPORT
 ASGST_Frame ASGST_ComputeTopFrameAtSafepoint(ASGST_Frame captured);
 
 };

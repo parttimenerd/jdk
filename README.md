@@ -20,6 +20,13 @@ Idea:
   would allow, just not as easily
 
 
+Current diff stats of files that aren't added or test related:
+
+```
+ make/data/hotspot-symbols/symbols-shared           |   7 +
+ src/hotspot/share/runtime/javaThread.hpp           |  30 ++++
+ src/hotspot/share/runtime/safepointMechanism.cpp   |   8 +-
+```
 
 # Welcome to the JDK!
 

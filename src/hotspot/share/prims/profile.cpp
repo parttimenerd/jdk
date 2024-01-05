@@ -535,6 +535,12 @@ JavaThread* get_thread() {
   return thread;
 }
 
+frame create_frame(void* sp, void* fp, void* pc) {
+  frame fr = frame();
+  fr.init((intptr_t*)sp, (intptr_t*)fp, (address)pc);
+  return fr;
+}
+
 int ASGST_WalkStackFromFrame(ASGST_Frame fr,
   ASGST_WalkStackCallback javaCallback,
   ASGST_CFrameCallback nonJavaCallback,
@@ -542,7 +548,7 @@ int ASGST_WalkStackFromFrame(ASGST_Frame fr,
 
   assert(javaCallback != nullptr, "invariant");
 
-  if (fr.fp == nullptr || fr.pc == nullptr || fr.sp == nullptr) {
+  if (fr.pc == nullptr) {
     return ASGST_no_Java_frame;
   }
 
@@ -567,7 +573,7 @@ int ASGST_WalkStackFromFrame(ASGST_Frame fr,
   // signify to other code in the VM that we're in ASGCT
   ThreadInAsgct tia(thread);
 
-  frame top_frame = frame(fr.sp, fr.fp, fr.pc);
+  frame top_frame = create_frame(fr.sp, fr.fp, fr.pc);
 
   switch (thread->thread_state()) {
   case _thread_new:
@@ -612,7 +618,7 @@ int ASGST_WalkStackFromFrame(ASGST_Frame fr,
 
 
 int ASGST_IsJavaFrame(ASGST_Frame fr) {
-  return frame(fr.fp, fr.sp, fr.pc).is_java_frame();
+  return create_frame(fr.fp, fr.sp, fr.pc).is_java_frame();
 }
 
 ASGST_Frame ASGST_GetFrame(void* ucontext, bool focusOnJava) {
@@ -625,14 +631,18 @@ ASGST_Frame ASGST_GetFrame(void* ucontext, bool focusOnJava) {
     frame ret_frame;
     if (thread->pd_get_top_frame_for_profiling(&ret_frame, ucontext, true)) {
       return ASGST_Frame{ret_frame.pc(), ret_frame.sp(), ret_frame.fp()};
-    } else if (thread->last_Java_sp() != nullptr) {
+    } else if (thread->frame_anchor()->last_Java_sp() != nullptr) {
       address last_Java_pc = thread->last_Java_pc();
       if (last_Java_pc == nullptr) {
         last_Java_pc = (address)thread->last_Java_sp()[-1];
       }
       return ASGST_Frame{last_Java_pc, thread->last_Java_sp(), thread->frame_anchor()->last_Java_fp()};
     }
-    return empty;
+    frame last_frame = os::fetch_frame_from_context(ucontext);
+    if (os::is_first_C_frame(&last_frame)) {
+      return empty;
+    }
+    return ASGST_Frame{last_frame.pc(), last_frame.sp(), last_frame.fp()};
   }
   intptr_t* ret_sp = nullptr;
   intptr_t* ret_fp = nullptr;
@@ -641,11 +651,11 @@ ASGST_Frame ASGST_GetFrame(void* ucontext, bool focusOnJava) {
     // ucontext wasn't useful
     return empty;
   }
-  frame ret_frame(ret_sp, ret_fp, ret_pc);
+  frame ret_frame = create_frame(ret_sp, ret_fp, ret_pc);
   if (!ret_frame.safe_for_sender(thread)) {
 #if COMPILER2_OR_JVMCI
     // C2 and JVMCI use ebp as a general register see if null fp helps
-    frame ret_frame2(ret_sp, nullptr, ret_pc);
+    frame ret_frame2 = create_frame(ret_sp, nullptr, ret_pc);
     if (!ret_frame2.safe_for_sender(thread)) {
       // nothing else to try if the frame isn't good
       return empty;
@@ -688,7 +698,7 @@ void ASGST_TriggerSafePoint() {
 // based on compute_top_java_frame from
 // https://github.com/openjdk/jdk/compare/master...fisk:jdk:jfr_safe_trace_v1
 // by Erik Österlund
-static bool compute_top_java_frame(JavaThread* thread, frame request, frame* top_frame) {
+bool compute_top_java_frame(JavaThread* thread, frame request, frame* top_frame) {
   if (!thread->has_last_Java_frame()) {
     return false;
   }
@@ -798,12 +808,9 @@ ASGST_Frame ASGST_ComputeTopFrameAtSafepoint(ASGST_Frame captured) {
   if (thread == nullptr) {
     return empty;
   }
-  if (!thread->is_at_poll_safepoint()) {
-    return empty;
-  }
 
   frame top_frame;
-  if (!compute_top_java_frame(thread, {captured.sp, captured.fp, captured.pc}, &top_frame)) {
+  if (!compute_top_java_frame(thread, create_frame(captured.sp, captured.fp, captured.pc), &top_frame)) {
     return empty;
   }
 
