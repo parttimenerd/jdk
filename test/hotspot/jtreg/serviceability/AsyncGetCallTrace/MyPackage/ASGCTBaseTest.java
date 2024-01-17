@@ -34,7 +34,7 @@ package MyPackage;
  * @run main/othervm/native -agentlib:AsyncGetCallTraceTest MyPackage.ASGCTBaseTest
  */
 
-public class BasicTest {
+public class ASGCTBaseTest {
   static {
     try {
       System.loadLibrary("AsyncGetCallTraceTest");
