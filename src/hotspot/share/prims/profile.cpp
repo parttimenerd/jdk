@@ -541,10 +541,17 @@ frame create_frame(void* sp, void* fp, void* pc) {
   return fr;
 }
 
+void checkEnabled() {
+  if (EnableMinimalASGST == 0) {
+    fatal("Minimal ASGST is not enabled, pass -XX:+EnableMinimalASGST to enable it");
+  }
+}
+
 int ASGST_WalkStackFromFrame(ASGST_Frame fr,
   ASGST_WalkStackCallback javaCallback,
   ASGST_CFrameCallback nonJavaCallback,
   void *arg, int options) {
+  checkEnabled();
 
   assert(javaCallback != nullptr, "invariant");
 
@@ -618,10 +625,12 @@ int ASGST_WalkStackFromFrame(ASGST_Frame fr,
 
 
 int ASGST_IsJavaFrame(ASGST_Frame fr) {
+  checkEnabled();
   return create_frame(fr.fp, fr.sp, fr.pc).is_java_frame();
 }
 
 ASGST_Frame ASGST_GetFrame(void* ucontext, bool focusOnJava) {
+  checkEnabled();
   JavaThread* thread = get_thread();
   ASGST_Frame empty{nullptr, nullptr, nullptr};
   if (thread == nullptr) {
@@ -670,6 +679,7 @@ ASGST_Frame ASGST_GetFrame(void* ucontext, bool focusOnJava) {
 
 
 void ASGST_SetSafepointCallback(ASGST_SafepointCallback callback, void *arg) {
+  checkEnabled();
   JavaThread* thread = get_thread();
   if (thread == nullptr) {
     return;
@@ -678,6 +688,7 @@ void ASGST_SetSafepointCallback(ASGST_SafepointCallback callback, void *arg) {
 }
 
 void ASGST_GetSafepointCallback(ASGST_SafepointCallback *callback, void **arg) {
+  checkEnabled();
   JavaThread* thread = get_thread();
   if (thread == nullptr) {
     *callback = nullptr;
@@ -688,6 +699,7 @@ void ASGST_GetSafepointCallback(ASGST_SafepointCallback *callback, void **arg) {
 }
 
 void ASGST_TriggerSafePoint() {
+  checkEnabled();
   JavaThread* thread = get_thread();
   if (thread == nullptr) {
     return;
@@ -803,6 +815,7 @@ bool compute_top_java_frame(JavaThread* thread, frame request, frame* top_frame)
 }
 
 ASGST_Frame ASGST_ComputeTopFrameAtSafepoint(ASGST_Frame captured) {
+  checkEnabled();
   JavaThread* thread = get_thread();
   ASGST_Frame empty{nullptr, nullptr, nullptr};
   if (thread == nullptr) {

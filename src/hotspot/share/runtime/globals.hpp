@@ -1971,6 +1971,9 @@ const int ObjectAlignmentInBytes = 8;
   JFR_ONLY(product(ccstr, StartFlightRecording, nullptr,                    \
           "Start flight recording with options"))                           \
                                                                             \
+  product(bool, EnableMinimalASGST, false, EXPERIMENTAL,                    \
+          "Enable minimal ASGCT")                                           \
+                                                                            \
   product(bool, UseFastUnorderedTimeStamps, false, EXPERIMENTAL,            \
           "Use platform unstable time where supported for timestamps only") \
                                                                             \

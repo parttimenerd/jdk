@@ -31,7 +31,7 @@ package BasicTest;
  * @requires os.family == "linux"
  * @requires os.arch=="x86" | os.arch=="i386" | os.arch=="amd64" | os.arch=="x86_64" | os.arch=="arm" | os.arch=="aarch64" | os.arch=="ppc64" | os.arch=="s390" | os.arch=="riscv64"
  * @requires vm.jvmti
- * @run main/othervm/native -agentlib:ASGSTBasicTest BasicTest.BasicTest
+ * @run main/othervm/native -XX:+UnlockExperimentalVMOptions -XX:+EnableMinimalASGST -agentlib:ASGSTBasicTest BasicTest.BasicTest
  */
 
 public class BasicTest {
