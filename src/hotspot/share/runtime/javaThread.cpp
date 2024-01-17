@@ -2242,3 +2242,8 @@ void JavaThread::add_oop_handles_for_release() {
   _oop_handle_list = new_head;
   Service_lock->notify_all();
 }
+
+void JavaThread::trigger_asgst_safepoint() {
+  _requested_asgst_safepoint = true;
+  SafepointMechanism::arm_local_poll_release(this);
+}

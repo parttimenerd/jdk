@@ -1205,9 +1205,7 @@ public:
     }
   }
 
-  void trigger_asgst_safepoint() {
-    _requested_asgst_safepoint = true;
-  }
+  void trigger_asgst_safepoint();
 
   void set_asgst_safepoint_callback(void (*callback)(void *), void *arg) {
     _asgst_safepoint_callback = callback;
