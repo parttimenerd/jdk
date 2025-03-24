@@ -150,6 +150,6 @@ bool Jfr::on_start_flight_recording_option(const JavaVMOption** option, char* de
   return JfrOptionSet::parse_start_flight_recording_option(option, delimiter);
 }
 
-void Jfr::classes_do(KlassClosure* cl) {
-  JfrRecorder::classes_do(cl);
+void Jfr::on_safepoint(JavaThread* jt) {
+  JfrRecorder::on_safepoint(jt);
 }
