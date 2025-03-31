@@ -33,6 +33,7 @@
 #include "jfr/recorder/repository/jfrRepository.hpp"
 #include "jfr/support/jfrResolution.hpp"
 #include "jfr/support/jfrThreadLocal.hpp"
+#include "memory/iterator.hpp"
 #include "runtime/java.hpp"
 
 bool Jfr::is_enabled() {
@@ -147,4 +148,8 @@ bool Jfr::on_flight_recorder_option(const JavaVMOption** option, char* delimiter
 
 bool Jfr::on_start_flight_recording_option(const JavaVMOption** option, char* delimiter) {
   return JfrOptionSet::parse_start_flight_recording_option(option, delimiter);
+}
+
+void Jfr::metadata_do(MetadataClosure* f) {
+  JfrRecorder::metadata_do(f);
 }

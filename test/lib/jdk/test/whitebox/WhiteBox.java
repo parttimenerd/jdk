@@ -798,4 +798,8 @@ public class WhiteBox {
 
   public native void preTouchMemory(long addr, long size);
   public native long rss();
+
+  // enable and disable CPU time sampler queue processing
+  // only works with debug builds
+  public native void setCPUTimeSamplerProcessQueue(boolean processQueue);
 }

@@ -31,14 +31,13 @@
 #include "jfr/writers/jfrJavaEventWriter.hpp"
 #include "runtime/interfaceSupport.inline.hpp"
 
-#ifdef ASSERT
 static void assert_precondition(JavaThread* jt) {
   assert(jt != nullptr, "invariant");
   DEBUG_ONLY(JfrJavaSupport::check_java_thread_in_java(jt);)
   assert(jt->has_last_Java_frame(), "invariant");
 }
 
-static void assert_epoch_identity(JavaThread* jt, u2 current_epoch) {
+static bool check_and_assert_epoch_identity(JavaThread* jt, u2 current_epoch) {
   assert_precondition(jt);
   // Verify the epoch updates got written through also to the vthread object.
   const u2 epoch_raw = ThreadIdAccess::epoch(jt->vthread());
@@ -46,9 +45,8 @@ static void assert_epoch_identity(JavaThread* jt, u2 current_epoch) {
   assert(!excluded, "invariant");
   assert(!JfrThreadLocal::is_excluded(jt), "invariant");
   const u2 vthread_epoch = epoch_raw & epoch_mask;
-  assert(vthread_epoch == current_epoch, "invariant");
+  return vthread_epoch == current_epoch; // might be false for the CPU-time sampler
 }
-#endif // ASSERT
 
 void* JfrIntrinsicSupport::write_checkpoint(JavaThread* jt) {
   DEBUG_ONLY(assert_precondition(jt);)
@@ -60,9 +58,12 @@ void* JfrIntrinsicSupport::write_checkpoint(JavaThread* jt) {
     // After the epoch test in the intrinsic, the thread sampler interleaved
     // and suspended the thread. As part of taking a sample, it updated
     // the vthread object and the thread local "for us". We are good.
-    DEBUG_ONLY(assert_epoch_identity(jt, current_epoch);)
-    ThreadInVMfromJava transition(jt);
-    return JfrJavaEventWriter::event_writer(jt);
+    if (check_and_assert_epoch_identity(jt, current_epoch)) {
+      // the CPU-time sampler can cause the invariant to fail,
+      // so we have to check it
+      ThreadInVMfromJava transition(jt);
+      return JfrJavaEventWriter::event_writer(jt);
+    }
   }
   const traceid vthread_tid = JfrThreadLocal::vthread_id(jt);
   // Transition before reading the epoch generation anew, now as _thread_in_vm. Can safepoint here.

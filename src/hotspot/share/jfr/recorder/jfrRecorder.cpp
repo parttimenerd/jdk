@@ -30,6 +30,7 @@
 #include "jfr/leakprofiler/sampling/objectSampler.hpp"
 #include "jfr/periodic/jfrOSInterface.hpp"
 #include "jfr/periodic/sampling/jfrThreadSampler.hpp"
+#include "jfr/periodic/sampling/jfrCPUTimeThreadSampler.hpp"
 #include "jfr/recorder/jfrRecorder.hpp"
 #include "jfr/recorder/checkpoint/jfrCheckpointManager.hpp"
 #include "jfr/recorder/repository/jfrRepository.hpp"
@@ -47,6 +48,7 @@
 #include "logging/log.hpp"
 #include "logging/logStream.hpp"
 #include "memory/resourceArea.inline.hpp"
+#include "memory/iterator.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/globals_extension.hpp"
 #include "utilities/growableArray.hpp"
@@ -304,6 +306,9 @@ bool JfrRecorder::create_components() {
   if (!create_thread_sampling()) {
     return false;
   }
+  if (!create_cpu_time_thread_sampling()) {
+    return false;
+  }
   if (!create_event_throttler()) {
     return false;
   }
@@ -318,6 +323,7 @@ static JfrStackTraceRepository* _stack_trace_repository;
 static JfrStringPool* _stringpool = nullptr;
 static JfrOSInterface* _os_interface = nullptr;
 static JfrThreadSampling* _thread_sampling = nullptr;
+static JfrCPUTimeThreadSampling* _cpu_time_thread_sampling = nullptr;
 static JfrCheckpointManager* _checkpoint_manager = nullptr;
 
 bool JfrRecorder::create_java_event_writer() {
@@ -390,6 +396,12 @@ bool JfrRecorder::create_thread_sampling() {
   return _thread_sampling != nullptr;
 }
 
+bool JfrRecorder::create_cpu_time_thread_sampling() {
+  assert(_cpu_time_thread_sampling == nullptr, "invariant");
+  _cpu_time_thread_sampling = JfrCPUTimeThreadSampling::create();
+  return _cpu_time_thread_sampling != nullptr;
+}
+
 bool JfrRecorder::create_event_throttler() {
   return JfrEventThrottler::create();
 }
@@ -428,6 +440,10 @@ void JfrRecorder::destroy_components() {
     JfrThreadSampling::destroy();
     _thread_sampling = nullptr;
   }
+  if (_cpu_time_thread_sampling != nullptr) {
+    JfrCPUTimeThreadSampling::destroy();
+    _cpu_time_thread_sampling = nullptr;
+  }
   JfrEventThrottler::destroy();
 }
 
@@ -461,4 +477,10 @@ bool JfrRecorder::is_recording() {
 
 void JfrRecorder::stop_recording() {
   _post_box->post(MSG_STOP);
+}
+
+void JfrRecorder::metadata_do(MetadataClosure* f) {
+  if (_cpu_time_thread_sampling != nullptr) {
+    _cpu_time_thread_sampling->metadata_do(f);
+  }
 }
