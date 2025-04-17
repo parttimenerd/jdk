@@ -131,6 +131,8 @@ jboolean JNICALL jfr_set_throttle(JNIEnv* env, jclass jvm, jlong event_type_id, 
 
 void JNICALL jfr_set_miscellaneous(JNIEnv* env, jclass jvm, jlong id, jlong value);
 
+jboolean JNICALL jfr_set_cpu_throttle(JNIEnv* env, jclass jvm, jdouble rate, jboolean autoadapt);
+
 void JNICALL jfr_emit_old_object_samples(JNIEnv* env, jclass jvm, jlong cutoff_ticks, jboolean, jboolean);
 
 jboolean JNICALL jfr_should_rotate_disk(JNIEnv* env, jclass jvm);
