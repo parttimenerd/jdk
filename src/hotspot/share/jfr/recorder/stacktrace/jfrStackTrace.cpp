@@ -223,7 +223,7 @@ bool JfrStackTrace::record_async(JavaThread* jt, const frame& frame) {
   assert(jt != nullptr, "invariant");
   assert(!_lineno, "invariant");
   Thread* current_thread = Thread::current();
-  assert(current_thread->is_JfrSampler_thread(), "invariant");
+  assert(current_thread->is_jfr_sampling(), "invariant");
   assert(jt != current_thread, "invariant");
   // Explicitly monitor the available space of the thread-local buffer used for enqueuing klasses as part of tagging methods.
   // We do this because if space becomes sparse, we cannot rely on the implicit allocation of a new buffer as part of the

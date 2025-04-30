@@ -27,7 +27,6 @@ import jdk.test.lib.jfr.EventNames;
 
 /**
  * @test
- * @key jfr
  * @requires vm.hasJFR & os.family == "linux"
  * @library /test/lib
  * @build jdk.jfr.event.profiling.BaseTestFullStackTrace

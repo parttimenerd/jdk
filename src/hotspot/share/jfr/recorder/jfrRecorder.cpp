@@ -402,6 +402,12 @@ bool JfrRecorder::create_cpu_time_thread_sampling() {
   return _cpu_time_thread_sampling != nullptr;
 }
 
+void JfrRecorder::on_safepoint(JavaThread* jt) {
+  if (_cpu_time_thread_sampling != nullptr) {
+    _cpu_time_thread_sampling->on_safepoint(jt);
+  }
+}
+
 bool JfrRecorder::create_event_throttler() {
   return JfrEventThrottler::create();
 }
@@ -477,10 +483,4 @@ bool JfrRecorder::is_recording() {
 
 void JfrRecorder::stop_recording() {
   _post_box->post(MSG_STOP);
-}
-
-void JfrRecorder::metadata_do(MetadataClosure* f) {
-  if (_cpu_time_thread_sampling != nullptr) {
-    _cpu_time_thread_sampling->metadata_do(f);
-  }
 }

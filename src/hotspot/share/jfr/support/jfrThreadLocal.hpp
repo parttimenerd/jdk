@@ -31,6 +31,7 @@
 #ifdef LINUX
 // required for timer_t type
 #include <signal.h>
+#include "jfr/periodic/sampling/jfrCPUTimeThreadSampler.hpp"
 #endif
 
 class Arena;
@@ -75,9 +76,6 @@ class JfrThreadLocal {
   bool _vthread;
   bool _notified;
   bool _dead;
-  LINUX_ONLY(bool _has_cpu_timer = false);
-  LINUX_ONLY(timer_t _cpu_timer);
-
   JfrBuffer* install_native_buffer() const;
   JfrBuffer* install_java_buffer() const;
   JfrStackFrame* install_stackframes() const;
@@ -286,22 +284,51 @@ class JfrThreadLocal {
 
   // CPU time sampling
 #ifdef LINUX
-  void set_timerid(timer_t timer) {
-    _has_cpu_timer = true;
-    _cpu_timer = timer;
-  }
+private:
 
-  void unset_timerid() {
-    _has_cpu_timer = false;
-  }
+ enum CPUTimeLockState {
+    UNLOCKED,
+    // locked for enqueuing
+    ENQUEUE,
+    // locked for dequeuing
+    DEQUEUE,
+    // locked for writing native event out of safepoint
+    OUT_OF_SAFEPOINT
+  };
 
-  timer_t timerid() const {
-    return _cpu_timer;
-  }
+  bool _has_cpu_timer = false;
+  timer_t _cpu_timer;
+  volatile CPUTimeLockState _cpu_time_jfr_locked = UNLOCKED;
+  volatile bool _has_cpu_time_jfr_events = false;
+  volatile u4 _cpu_time_lost_samples = 0;
+  JfrCPUTimeTraceStack _cpu_time_jfr_stack{100};
+  volatile bool _wants_cpu_time_out_of_safepoint_recording = false;
 
-  bool has_timerid() const {
-    return _has_cpu_timer;
-  }
+public:
+  void set_timerid(timer_t timer);
+  void unset_timerid();
+  timer_t timerid() const;
+  bool has_timerid() const;
+
+  bool is_cpu_time_jfr_enqueue_locked();
+  bool is_cpu_time_jfr_dequeue_locked();
+  bool is_any_cpu_time_jfr_queue_lock_aquired();
+
+  bool acquire_cpu_time_jfr_enqueue_lock();
+  bool acquire_cpu_time_jfr_out_of_safepoint_lock();
+  void acquire_cpu_time_jfr_dequeue_lock();
+  void release_cpu_time_jfr_queue_lock();
+
+  void set_has_cpu_time_jfr_events(bool has_events);
+  bool has_cpu_time_jfr_events();
+
+  JfrCPUTimeTraceStack& cpu_time_jfr_stack();
+
+  void increment_cpu_time_lost_samples();
+  u4 get_and_reset_cpu_time_lost_samples();
+
+  void set_wants_cpu_time_out_of_safepoint_recording(bool wants);
+  bool wants_cpu_time_out_of_safepoint_recording();
 #endif
 
   // Hooks

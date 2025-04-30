@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2024, SAP SE, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2024, SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -35,7 +35,7 @@ class frame;
 class InstanceKlass;
 class JavaThread;
 class JfrStackTrace;
-class MetadataClosure;
+class KlassClosure;
 
 class JfrAsyncStackFrame {
  private:
@@ -84,8 +84,6 @@ class JfrAsyncStackTrace {
   bool full_stacktrace() const { return _reached_root; }
 
   JfrAsyncStackTrace(JfrAsyncStackFrame* frames, u4 max_frames);
-
-  void metadata_do(MetadataClosure* f) const;
 
  public:
 

@@ -31,7 +31,6 @@ import jdk.test.lib.jfr.RecurseThread;
 
 /*
  * @test
- * @key jfr
  * @requires vm.hasJFR & os.family == "linux"
  * @library /test/lib
  * @modules jdk.jfr/jdk.jfr.internal

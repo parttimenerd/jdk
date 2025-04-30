@@ -58,68 +58,66 @@
 // incremented on each flushpoint
 static u8 flushpoint_id = 0;
 
-class JfrRotationLock : public StackObj {
- private:
-  static const Thread* _owner_thread;
-  static const int retry_wait_millis;
-  static volatile int _lock;
-  Thread* _thread;
-  bool _recursive;
+bool JfrRotationLock::acquire(Thread* thread) {
+  if (Atomic::cmpxchg(&_lock, 0, 1) == 0) {
+    assert(_owner_thread == nullptr, "invariant");
+    _owner_thread = thread;
+    return true;
+  }
+  return false;
+}
 
-  static bool acquire(Thread* thread) {
-    if (Atomic::cmpxchg(&_lock, 0, 1) == 0) {
-      assert(_owner_thread == nullptr, "invariant");
-      _owner_thread = thread;
+// The system can proceed to a safepoint
+// because even if the thread is a JavaThread,
+// it is running as _thread_in_native here.
+bool JfrRotationLock::lock(int retries) {
+  if (_obtained_lock) {
       return true;
+  }
+  assert(!is_owner(), "invariant");
+  int retry_count = 0;
+  while (!acquire(_thread)) {
+    if (++retry_count > retries && retries > 0) {
+      return false;
     }
-    return false;
+    os::naked_short_sleep(_retry_wait_millis);
   }
+  assert(is_owner(), "invariant");
+  _obtained_lock = true;
+  return true;
+}
 
-  // The system can proceed to a safepoint
-  // because even if the thread is a JavaThread,
-  // it is running as _thread_in_native here.
-  void lock() {
-    while (!acquire(_thread)) {
-      os::naked_short_sleep(retry_wait_millis);
-    }
-    assert(is_owner(), "invariant");
+JfrRotationLock::JfrRotationLock(bool lock_directly, int retry_wait_millis) : _retry_wait_millis(retry_wait_millis), _thread(Thread::current()), _recursive(false), _obtained_lock(false) {
+  assert(_thread != nullptr, "invariant");
+  if (_thread == _owner_thread) {
+    // Recursive case is not supported.
+    _recursive = true;
+    assert(_lock == 1, "invariant");
+    // For user, should not be "jfr, system".
+    log_info(jfr)("Unable to issue rotation due to recursive calls.");
+    return;
   }
+  if (lock_directly) {
+    lock(-1);
+  }
+}
 
- public:
-  JfrRotationLock() : _thread(Thread::current()), _recursive(false) {
-    assert(_thread != nullptr, "invariant");
-    if (_thread == _owner_thread) {
-      // Recursive case is not supported.
-      _recursive = true;
-      assert(_lock == 1, "invariant");
-      // For user, should not be "jfr, system".
-      log_info(jfr)("Unable to issue rotation due to recursive calls.");
-      return;
-    }
-    lock();
+JfrRotationLock::~JfrRotationLock() {
+  if (!_obtained_lock || _recursive) {
+    return;
   }
+  assert(is_owner(), "invariant");
+  _owner_thread = nullptr;
+  OrderAccess::storestore();
+  _lock = 0;
+}
 
-  ~JfrRotationLock() {
-    assert(is_owner(), "invariant");
-    if (_recursive) {
-      return;
-    }
-    _owner_thread = nullptr;
-    OrderAccess::storestore();
-    _lock = 0;
-  }
-
-  static bool is_owner() {
-    return _owner_thread == Thread::current();
-  }
-
-  bool is_acquired_recursively() const {
-    return _recursive;
-  }
-};
+bool JfrRotationLock::is_owner() {
+  return _owner_thread == Thread::current();
+}
 
 const Thread* JfrRotationLock::_owner_thread = nullptr;
-const int JfrRotationLock::retry_wait_millis = 10;
+const int JfrRotationLock::default_retry_wait_millis = 10;
 volatile int JfrRotationLock::_lock = 0;
 
 // Reset thread local state used for object allocation sampling.
@@ -484,14 +482,12 @@ void JfrRecorderService::invoke_safepoint_clear() {
 
 void JfrRecorderService::safepoint_clear() {
   assert(SafepointSynchronize::is_at_safepoint(), "invariant");
-  wait_till_no_writers_and_prevent_new_writers();
   _checkpoint_manager.begin_epoch_shift();
   _storage.clear();
   _chunkwriter.set_time_stamp();
   JfrDeprecationManager::on_safepoint_clear();
   JfrStackTraceRepository::clear();
   _checkpoint_manager.end_epoch_shift();
-  allow_writers();
 }
 
 void JfrRecorderService::post_safepoint_clear() {
@@ -708,33 +704,4 @@ void JfrRecorderService::emit_leakprofiler_events(int64_t cutoff_ticks, bool emi
   MACOS_AARCH64_ONLY(ThreadWXEnable __wx(WXWrite, current_thread));
   ThreadInVMfromNative transition(current_thread);
   LeakProfiler::emit_events(cutoff_ticks, emit_all, skip_bfs);
-}
-
-// -1 == don't write
-static volatile int _non_safepoint_writers = 0;
-
-void JfrRecorderService::wait_till_no_writers_and_prevent_new_writers() {
-  // try to cas -1 into it, when value is 0
-  while (Atomic::cmpxchg(&_non_safepoint_writers, 0, -1) != 0) {}
-}
-
-void JfrRecorderService::allow_writers() {
-  Atomic::store(&_non_safepoint_writers, 0);
-}
-
-void JfrRecorderService::wait_till_writable_and_add_writer() {
-  int prev = Atomic::load(&_non_safepoint_writers);
-  while (true) {
-    if (prev == -1) {
-      prev = 0;
-    }
-    if (Atomic::cmpxchg(&_non_safepoint_writers, prev, prev + 1) == prev) {
-      return;
-    }
-  }
-}
-
-void JfrRecorderService::remove_writer() {
-  assert(Atomic::load(&_non_safepoint_writers) > 0, "invariant");
-  Atomic::dec(&_non_safepoint_writers);
 }

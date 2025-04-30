@@ -117,10 +117,10 @@ class JfrStackTrace : public JfrCHeapObj {
   bool full_stacktrace() const { return _reached_root; }
 
   JfrStackTrace(traceid id, const JfrStackTrace& trace, const JfrStackTrace* next);
-  JfrStackTrace(JfrStackFrame* frames, u4 max_frames);
   ~JfrStackTrace();
 
  public:
+  JfrStackTrace(JfrStackFrame* frames, u4 max_frames);
   traceid hash() const { return _hash; }
   traceid id() const { return _id; }
   u4 nr_of_frames() const { return _nr_of_frames; }
