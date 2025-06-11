@@ -24,6 +24,7 @@
 
 #include "jfr/periodic/sampling/jfrCPUTimeThreadSampler.hpp"
 #include "logging/log.hpp"
+#include <cstdio>
 
 
 #if defined(LINUX)
@@ -163,11 +164,20 @@ void JfrCPUTimeTraceQueue::clear() {
   Atomic::release_store(&_head, (u4)0);
 }
 
-static int64_t compute_sampling_period(double rate) {
-  if (rate == 0) {
+static int64_t compute_sampling_period(const JfrCPUSamplerThrottle& throttle) {
+  if (throttle.is_rate()) {
+    printf("JFR CPU Sampler: Using rate %f\n", throttle.rate());
+  } else {
+    printf("JFR CPU Sampler: Using period %ld ns\n", throttle.period_nanos());
+  }
+  printf("is enabled : %s\n", throttle.enabled() ? "true" : "false");
+  if (!throttle.enabled()) {
     return 0;
   }
-  return os::active_processor_count() * 1000000000.0 / rate;
+  if (throttle.is_rate()) {
+    return os::active_processor_count() * 1000000000.0 / throttle.rate();
+  }
+  return throttle.period_nanos();
 }
 
 class JfrCPUSamplerThread : public NonJavaThread {
@@ -175,8 +185,7 @@ class JfrCPUSamplerThread : public NonJavaThread {
  private:
   Semaphore _sample;
   NonJavaThread* _sampler_thread;
-  double _rate;
-  bool _auto_adapt;
+  JfrCPUSamplerThrottle _throttle;
   volatile int64_t _current_sampling_period_ns;
   volatile bool _disenrolled;
   // top bit is used to indicate that no signal handler should proceed
@@ -187,7 +196,7 @@ class JfrCPUSamplerThread : public NonJavaThread {
 
   static const u4 STOP_SIGNAL_BIT = 0x80000000;
 
-  JfrCPUSamplerThread(double rate, bool auto_adapt);
+  JfrCPUSamplerThread(const JfrCPUSamplerThrottle& throttle);
 
   void start_thread();
 
@@ -197,7 +206,7 @@ class JfrCPUSamplerThread : public NonJavaThread {
 
   void auto_adapt_period_if_needed();
 
-  void set_rate(double rate, bool auto_adapt);
+  void set_throttle(const JfrCPUSamplerThrottle& throttle);
   int64_t get_sampling_period() const { return Atomic::load(&_current_sampling_period_ns); };
 
   void sample_thread(JfrSampleRequest& request, void* ucontext, JavaThread* jt, JfrThreadLocal* tl, JfrTicks& now);
@@ -231,18 +240,16 @@ public:
   void trigger_async_processing_of_cpu_time_jfr_requests();
 };
 
-JfrCPUSamplerThread::JfrCPUSamplerThread(double rate, bool auto_adapt) :
+JfrCPUSamplerThread::JfrCPUSamplerThread(const JfrCPUSamplerThrottle& throttle) :
   _sample(),
   _sampler_thread(nullptr),
-  _rate(rate),
-  _auto_adapt(auto_adapt),
-  _current_sampling_period_ns(compute_sampling_period(rate)),
+  _throttle(throttle),
+  _current_sampling_period_ns(compute_sampling_period(throttle)),
   _disenrolled(true),
   _active_signal_handlers(STOP_SIGNAL_BIT),
   _is_async_processing_of_cpu_time_jfr_requests_triggered(false),
   _warned_about_timer_creation_failure(false),
   _signal_handler_installed(false) {
-  assert(rate >= 0, "invariant");
 }
 
 void JfrCPUSamplerThread::trigger_async_processing_of_cpu_time_jfr_requests() {
@@ -367,6 +374,8 @@ void JfrCPUSamplerThread::stackwalk_threads_in_native() {
 
 static volatile size_t count = 0;
 
+static const JfrCPUSamplerThrottle DISABLED_THROTTLE = JfrCPUSamplerThrottle((u8)0);
+
 void JfrCPUTimeThreadSampling::send_empty_event(const JfrTicks &start_time, traceid tid, Tickspan cpu_time_period) {
   EventCPUTimeSample event(UNTIMED);
   event.set_failed(true);
@@ -442,42 +451,52 @@ JfrCPUTimeThreadSampling::~JfrCPUTimeThreadSampling() {
   }
 }
 
-void JfrCPUTimeThreadSampling::create_sampler(double rate, bool auto_adapt) {
+void JfrCPUTimeThreadSampling::create_sampler(const JfrCPUSamplerThrottle& throttle) {
   assert(_sampler == nullptr, "invariant");
-  _sampler = new JfrCPUSamplerThread(rate, auto_adapt);
+  _sampler = new JfrCPUSamplerThread(throttle);
   _sampler->start_thread();
   _sampler->enroll();
 }
 
-void JfrCPUTimeThreadSampling::update_run_state(double rate, bool auto_adapt) {
-  if (rate != 0) {
+void JfrCPUTimeThreadSampling::update_run_state(const JfrCPUSamplerThrottle& throttle) {
+  if (throttle.enabled()) {
+    printf("Updating CPU time thread sampling throttle to %f ns\n", compute_sampling_period(throttle));
     if (_sampler == nullptr) {
-      create_sampler(rate, auto_adapt);
+      create_sampler(throttle);
     } else {
-      _sampler->set_rate(rate, auto_adapt);
+      _sampler->set_throttle(throttle);
       _sampler->enroll();
     }
     return;
   }
   if (_sampler != nullptr) {
-    _sampler->set_rate(rate /* 0 */, auto_adapt);
+    _sampler->set_throttle(DISABLED_THROTTLE);
     _sampler->disenroll();
   }
 }
 
-void JfrCPUTimeThreadSampling::set_rate(double rate, bool auto_adapt) {
+void JfrCPUTimeThreadSampling::set_rate(double rate) {
+  printf("Setting CPU time thread sampling rate to %f\n", rate);
   assert(rate >= 0, "invariant");
   if (_instance == nullptr) {
     return;
   }
-  instance().set_rate_value(rate, auto_adapt);
+  instance().set_throttle_value(JfrCPUSamplerThrottle(rate));
 }
 
-void JfrCPUTimeThreadSampling::set_rate_value(double rate, bool auto_adapt) {
-  if (_sampler != nullptr) {
-    _sampler->set_rate(rate, auto_adapt);
+void JfrCPUTimeThreadSampling::set_period(u8 period_nanos) {
+  printf("Setting CPU time thread sampling period to %lu ns\n", period_nanos);
+  if (_instance == nullptr) {
+    return;
   }
-  update_run_state(rate, auto_adapt);
+  instance().set_throttle_value(JfrCPUSamplerThrottle(period_nanos));
+}
+
+void JfrCPUTimeThreadSampling::set_throttle_value(JfrCPUSamplerThrottle throttle) {
+  if (_sampler != nullptr) {
+    _sampler->set_throttle(throttle);
+  }
+  update_run_state(throttle);
 }
 
 void JfrCPUTimeThreadSampling::on_javathread_create(JavaThread *thread) {
@@ -705,23 +724,26 @@ void JfrCPUSamplerThread::stop_timer() {
 }
 
 void JfrCPUSamplerThread::auto_adapt_period_if_needed() {
+  if (!_throttle.is_rate()) {
+    return;
+  }
   int64_t current_period = get_sampling_period();
-  if (_auto_adapt || current_period == -1) {
-    int64_t period = compute_sampling_period(_rate);
-    if (period != current_period) {
-      Atomic::store(&_current_sampling_period_ns, period);
-      update_all_thread_timers();
-    }
+  int64_t period = compute_sampling_period(_throttle);
+  if (period != current_period) {
+    Atomic::store(&_current_sampling_period_ns, period);
+    update_all_thread_timers();
   }
 }
 
-void JfrCPUSamplerThread::set_rate(double rate, bool auto_adapt) {
-  _rate = rate;
-  _auto_adapt = auto_adapt;
-  if (_rate > 0 && Atomic::load_acquire(&_disenrolled) == false) {
+void JfrCPUSamplerThread::set_throttle(const JfrCPUSamplerThrottle& throttle) {
+  _throttle = throttle;
+  if (Atomic::load_acquire(&_disenrolled)) {
+    return;
+  }
+  if (_throttle.is_rate()) {
     auto_adapt_period_if_needed();
   } else {
-    Atomic::store(&_current_sampling_period_ns, compute_sampling_period(rate));
+    Atomic::store(&_current_sampling_period_ns, (int64_t)_throttle.period_nanos());
   }
 }
 

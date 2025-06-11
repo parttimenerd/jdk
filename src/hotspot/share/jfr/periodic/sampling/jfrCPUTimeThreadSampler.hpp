@@ -95,14 +95,42 @@ public:
 
 class JfrCPUSamplerThread;
 
+class JfrCPUSamplerThrottle {
+  double _rate;
+  u8 _period_nanos;
+  bool _is_rate;
+public:
+
+  JfrCPUSamplerThrottle(double rate) : _rate(rate), _is_rate(true) {
+    assert(rate >= 0, "invariant");
+  }
+  JfrCPUSamplerThrottle(u8 period_nanos) : _period_nanos(period_nanos), _is_rate(false) {
+  }
+
+  double rate() const {
+    assert(is_rate(), "invariant");
+    return _rate;
+  }
+  u8 period_nanos() const {
+    assert(!is_rate(), "invariant");
+    return _period_nanos;
+  }
+  bool is_rate() const {
+    return _is_rate;
+  }
+  bool enabled() const {
+    return is_rate() ? _rate > 0 : _period_nanos > 0;
+  }
+};
+
 class JfrCPUTimeThreadSampling : public JfrCHeapObj {
   friend class JfrRecorder;
  private:
 
   JfrCPUSamplerThread* _sampler;
 
-  void create_sampler(double rate, bool auto_adapt);
-  void set_rate_value(double rate, bool auto_adapt);
+  void create_sampler(const JfrCPUSamplerThrottle& throttle);
+  void set_throttle_value(JfrCPUSamplerThrottle throttle);
 
   JfrCPUTimeThreadSampling();
   ~JfrCPUTimeThreadSampling();
@@ -111,10 +139,11 @@ class JfrCPUTimeThreadSampling : public JfrCHeapObj {
   static JfrCPUTimeThreadSampling* create();
   static void destroy();
 
-  void update_run_state(double rate, bool auto_adapt);
+  void update_run_state(const JfrCPUSamplerThrottle& throttle);
 
  public:
-  static void set_rate(double rate, bool auto_adapt);
+  static void set_rate(double rate);
+  static void set_period(u8 period_nanos);
 
   static void on_javathread_create(JavaThread* thread);
   static void on_javathread_terminate(JavaThread* thread);
