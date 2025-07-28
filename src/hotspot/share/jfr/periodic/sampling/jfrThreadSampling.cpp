@@ -36,10 +36,14 @@
 #include "jfr/utilities/jfrTypes.hpp"
 #include "memory/resourceArea.hpp"
 #include "oops/method.hpp"
+#include "runtime/atomic.hpp"
 #include "runtime/continuation.hpp"
 #include "runtime/frame.inline.hpp"
 #include "runtime/javaThread.inline.hpp"
+#include "runtime/os.hpp"
 #include "runtime/stackFrameStream.inline.hpp"
+#include "utilities/globalDefinitions.hpp"
+#include <cstdlib>
 
 template <typename EventType>
 static inline void send_sample_event(const JfrTicks& start_time, const JfrTicks& end_time, traceid sid, traceid tid) {
@@ -350,16 +354,72 @@ static void drain_enqueued_requests(const JfrTicks& now, JfrThreadLocal* tl, Jav
   assert(!tl->has_enqueued_requests(), "invariant");
 }
 
+
+struct DrainStats {
+  volatile long _drains;
+  volatile long _drain_time_sum;
+  volatile long _drain_time_max;
+  volatile long _event_sum;
+  volatile long _event_max;
+
+  DrainStats() : _drains(0), _drain_time_sum(0), _drain_time_max(0), _event_sum(0), _event_max(0) {}
+  void update(long new_time, long new_events = 0) {
+    Atomic::inc(&_drains);
+    Atomic::add(&_drain_time_sum, new_time);
+    if (new_time > _drain_time_max) {
+      while (true) {
+        long old_max = _drain_time_max;
+        if (new_time <= old_max || Atomic::cmpxchg(&_drain_time_max, old_max, new_time) == old_max) {
+          break; // successfully updated max
+        }
+      }
+    }
+    if (new_events > 0) {
+      Atomic::add(&_event_sum, new_events);
+      if (new_events > _event_max) {
+        while (true) {
+          long old_max = _event_max;
+          if (new_events <= old_max || Atomic::cmpxchg(&_event_max, old_max, new_events) == old_max) {
+            break; // successfully updated max
+          }
+        }
+      }
+    }
+  }
+
+  void print(const char* name) {
+    if (_drains == 0) {
+      return;
+    }
+      printf("%s: Thread sampler drained %ld requests, took %ld ns, max %ld ns, avg %ld ns per request %ld events %ld max %f avg\n",
+             name, _drains, _drain_time_sum, _drain_time_max, _drain_time_sum / _drains, _event_sum, _event_max, _event_sum * 1.0 / _drains);
+  }
+
+  long count() const {
+    return Atomic::load(&_drains);
+  }
+};
+
+DrainStats out_of_thread_drain_stats;
+DrainStats safepoint_drain_stats;
+DrainStats safepoint_drain_stats_w_locking;
+DrainStats drain_stats;
+
 static void drain_enqueued_cpu_time_requests(const JfrTicks& now, JfrThreadLocal* tl, JavaThread* jt, Thread* current, bool lock) {
   assert(tl != nullptr, "invariant");
   assert(jt != nullptr, "invariant");
   assert(current != nullptr, "invariant");
+
 #ifdef LINUX
   tl->set_do_async_processing_of_cpu_time_jfr_requests(false);
+  long startWithLock = os::javaTimeNanos();
   if (lock) {
     tl->acquire_cpu_time_jfr_dequeue_lock();
   }
+    long start = os::javaTimeNanos();
+
   JfrCPUTimeTraceQueue& queue = tl->cpu_time_jfr_queue();
+  long size = queue.size();
   for (u4 i = 0; i < queue.size(); i++) {
     record_cpu_time_thread(queue.at(i), now, tl, jt, current);
   }
@@ -369,8 +429,25 @@ static void drain_enqueued_cpu_time_requests(const JfrTicks& now, JfrThreadLocal
   if (queue.lost_samples() > 0) {
     JfrCPUTimeThreadSampling::send_lost_event( now, JfrThreadLocal::thread_id(jt), queue.get_and_reset_lost_samples());
   }
+      long time = os::javaTimeNanos() - start;
+
+  drain_stats.update(os::javaTimeNanos() - start, size);
   if (lock) {
+    safepoint_drain_stats.update(os::javaTimeNanos() - start, size);
     tl->release_cpu_time_jfr_queue_lock();
+  }
+  if (lock) {
+        safepoint_drain_stats_w_locking.update(os::javaTimeNanos() - startWithLock, size);
+
+  } else {
+        out_of_thread_drain_stats.update(os::javaTimeNanos() - start, size);
+
+  }
+  if (drain_stats.count() % 100000 == 0) {
+    drain_stats.print(                    "all without locks   ");
+    safepoint_drain_stats.print(          "safepoint           ");
+    safepoint_drain_stats_w_locking.print("safepoint with locks");
+    out_of_thread_drain_stats.print(      "out of thread       ");
   }
 #endif
 }
@@ -378,7 +455,6 @@ static void drain_enqueued_cpu_time_requests(const JfrTicks& now, JfrThreadLocal
 // Entry point for a thread that has been sampled in native code and has a pending JFR CPU time request.
 void JfrThreadSampling::process_cpu_time_request(JavaThread* jt, JfrThreadLocal* tl, Thread* current, bool lock) {
   assert(jt != nullptr, "invariant");
-
   const JfrTicks now = JfrTicks::now();
   drain_enqueued_cpu_time_requests(now, tl, jt, current, lock);
 }
