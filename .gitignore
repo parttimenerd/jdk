@@ -25,3 +25,12 @@ NashornProfile.txt
 **/core.[0-9]*
 *.rej
 *.orig
+.clangd
+/jtreg
+/*.jar
+__pycache__
+*.pyc
+*.png
+*.jfr
+*.jar
+build/cache*

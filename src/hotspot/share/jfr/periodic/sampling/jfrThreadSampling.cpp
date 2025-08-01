@@ -96,7 +96,7 @@ static inline bool is_in_continuation(const frame& frame, JavaThread* jt) {
 //
 // If the JfrSampleRequest represents a valid interpreter frame, the Method* is retrieved and the sender frame is returned per the sender_frame.
 //
-// If it is not a valid interpreter frame, then the JfrSampleRequest is invalidated, and the current frame is returned per the sender frame.
+// If it is not a valid interpreter frame, then the JfrSampleRequest is invalidated, and the current frame is returned per the sender_frame.
 //
 static bool compute_sender_frame(JfrSampleRequest& request, frame& sender_frame, bool& in_continuation, JavaThread* jt) {
   assert(is_interpreter(request), "invariant");
@@ -360,7 +360,7 @@ static void drain_enqueued_requests(const JfrTicks& now, JfrThreadLocal* tl, Jav
 struct DrainStats {
   static const int HISTOGRAM_BUCKETS = 1000;
   static const long MAX_DRAIN_TIME_NS = 1000000000L; // 1 second in nanoseconds
-  static const long MAX_EVENT_COUNT = 200;
+  static const long MAX_EVENT_COUNT = 5000;
 
   volatile long _drains;
   volatile long _drain_time_sum;
@@ -370,14 +370,15 @@ struct DrainStats {
   volatile long _event_max;
   volatile long _event_min;
   volatile long _last_print_time;
+  volatile long _start_time;  // Wall clock time when first operation occurred
 
   // Time histogram: [0] = underflow, [1-1000] = buckets, [1001] = overflow
   volatile long _drain_time_histogram[HISTOGRAM_BUCKETS + 2];
-  // Event counts: [0-200] = exact counts, [201] = overflow (>200)
+  // Event counts: [0-1000] = exact counts, [1001] = overflow (>1000)
   volatile long _event_histogram[MAX_EVENT_COUNT + 2];
 
   DrainStats() : _drains(0), _drain_time_sum(0), _drain_time_max(0), _drain_time_min(LONG_MAX),
-                 _event_sum(0), _event_max(0), _event_min(LONG_MAX), _last_print_time(0) {
+                 _event_sum(0), _event_max(0), _event_min(LONG_MAX), _last_print_time(0), _start_time(0) {
     for (int i = 0; i < HISTOGRAM_BUCKETS + 2; i++) {
       _drain_time_histogram[i] = 0;
     }
@@ -387,6 +388,11 @@ struct DrainStats {
   }
 
   void update(long new_time, long new_events = 0) {
+    // Initialize start time on first update
+    if (_start_time == 0) {
+      _start_time = os::javaTimeNanos();
+    }
+
     Atomic::inc(&_drains);
     Atomic::add(&_drain_time_sum, new_time);
 
@@ -472,13 +478,30 @@ struct DrainStats {
     long event_max = Atomic::load(&_event_max);
     long event_min = (_event_min == LONG_MAX) ? 0 : Atomic::load(&_event_min);
 
+    // Calculate percentiles
+    long time_median = calculate_time_percentile(50.0);
+    long time_p95 = calculate_time_percentile(95.0);
+    long time_p99 = calculate_time_percentile(99.0);
+    long time_p999 = calculate_time_percentile(99.9);
+
+    long event_median = calculate_event_percentile(50.0);
+    long event_p95 = calculate_event_percentile(95.0);
+    long event_p99 = calculate_event_percentile(99.0);
+    long event_p999 = calculate_event_percentile(99.9);
+
     // Human readable summary
+    long current_wall_time = os::javaTimeNanos();
+    long wall_runtime_ns = (_start_time > 0) ? (current_wall_time - _start_time) : 0;
+    double wall_runtime_seconds = wall_runtime_ns / 1000000000.0;
+
     printf("\n=== %s Drain Statistics ===\n", name);
     printf("Requests: %ld\n", drains);
-    printf("Time (ns): sum=%ld, avg=%ld, min=%ld, max=%ld\n",
-           time_sum, drains > 0 ? time_sum / drains : 0, time_min, time_max);
-    printf("Events: sum=%ld, avg=%.2f, min=%ld, max=%ld\n",
-           event_sum, drains > 0 ? event_sum * 1.0 / drains : 0.0, event_min, event_max);
+    printf("Runtime: %.3f seconds (%.1f minutes)\n", wall_runtime_seconds, wall_runtime_seconds / 60.0);
+    printf("Request Rate: %.2f requests/second\n", wall_runtime_seconds > 0 ? drains / wall_runtime_seconds : 0.0);
+    printf("Time (ns): sum=%ld, avg=%ld, min=%ld, max=%ld, median=%ld, p95=%ld, p99=%ld, p99.9=%ld\n",
+           time_sum, drains > 0 ? time_sum / drains : 0, time_min, time_max, time_median, time_p95, time_p99, time_p999);
+    printf("Events: sum=%ld, avg=%.2f, min=%ld, max=%ld, median=%ld, p95=%ld, p99=%ld, p99.9=%ld\n",
+           event_sum, drains > 0 ? event_sum * 1.0 / drains : 0.0, event_min, event_max, event_median, event_p95, event_p99, event_p999);
 
     // ASCII visualization of time histogram (logarithmic)
     printf("\nTime Distribution (Log Scale, 0-1s):\n");
@@ -526,17 +549,17 @@ struct DrainStats {
         } else {
           // Calculate time range using the same logarithmic formula as update()
           double log_max = log10((double)(MAX_DRAIN_TIME_NS + 1));
-          
+
           // Start of range
           double log_min_start = (double)(bucket_ranges[j].start - 1) * log_max / HISTOGRAM_BUCKETS;
           long time_start = (long)(pow(10.0, log_min_start)) - 1;
           if (time_start < 0) time_start = 0;
-          
+
           // End of range
           double log_min_end = (double)(bucket_ranges[j].end - 2) * log_max / HISTOGRAM_BUCKETS;
           long time_end = (long)(pow(10.0, log_min_end)) - 1;
           if (time_end >= MAX_DRAIN_TIME_NS) time_end = MAX_DRAIN_TIME_NS - 1;
-          
+
           // Format the label with appropriate units
           if (time_end < 1000) {
             snprintf(label, sizeof(label), "%ldns-%ldns", time_start, time_end);
@@ -574,10 +597,12 @@ struct DrainStats {
         {21, 51, "21-50"},
         {51, 101, "51-100"},
         {101, 201, "101-200"},
-        {201, 202, ">200"}
+        {201, 501, "201-500"},
+        {501, 1001, "501-1000"},
+        {1001, 1002, ">1000"}
       };
 
-      for (int j = 0; j < 8; j++) {
+      for (int j = 0; j < 10; j++) {
         long total = 0;
         for (int k = ranges[j].start; k < ranges[j].end && k < MAX_EVENT_COUNT + 2; k++) {
           total += Atomic::load(&_event_histogram[k]);
@@ -592,9 +617,13 @@ struct DrainStats {
     }
 
     // Machine readable output with structured histogram data
-    printf("DRAIN_STATS_JSON:{\"name\":\"%s\",\"drains\":%ld,\"time\":{\"sum\":%ld,\"avg\":%ld,\"min\":%ld,\"max\":%ld},\"events\":{\"sum\":%ld,\"avg\":%.2f,\"min\":%ld,\"max\":%ld},\"time_histogram\":[",
-           name, drains, time_sum, drains > 0 ? time_sum / drains : 0, time_min, time_max,
-           event_sum, drains > 0 ? event_sum * 1.0 / drains : 0.0, event_min, event_max);
+    long json_current_time = os::javaTimeNanos();
+    long json_runtime_ns = (_start_time > 0) ? (json_current_time - _start_time) : 0;
+    double json_runtime_seconds = json_runtime_ns / 1000000000.0;
+
+    printf("DRAIN_STATS_JSON:{\"name\":\"%s\",\"drains\":%ld,\"runtime_ns\":%ld,\"runtime_seconds\":%.3f,\"time\":{\"sum\":%ld,\"avg\":%ld,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99.9\":%ld},\"events\":{\"sum\":%ld,\"avg\":%.2f,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99.9\":%ld},\"time_histogram\":[",
+           name, drains, json_runtime_ns, json_runtime_seconds, time_sum, drains > 0 ? time_sum / drains : 0, time_min, time_max, time_median, time_p95, time_p99, time_p999,
+           event_sum, drains > 0 ? event_sum * 1.0 / drains : 0.0, event_min, event_max, event_median, event_p95, event_p99, event_p999);
 
     // Generate structured time histogram with from/to ranges
     bool first_time = true;
@@ -666,6 +695,357 @@ struct DrainStats {
     }
     return false; // Either not enough time has passed or another thread is printing
   }
+
+  // Combine statistics from multiple DrainStats objects
+  static void print_combined(const char* name, const DrainStats& stats1, const DrainStats& stats2,
+                           const DrainStats& stats3, const DrainStats& stats4) {
+    // Aggregate basic statistics
+    long total_drains = stats1.count() + stats2.count() + stats3.count() + stats4.count();
+    if (total_drains == 0) {
+      return;
+    }
+
+    long total_time_sum = Atomic::load(&stats1._drain_time_sum) + Atomic::load(&stats2._drain_time_sum) +
+                         Atomic::load(&stats3._drain_time_sum) + Atomic::load(&stats4._drain_time_sum);
+    long total_event_sum = Atomic::load(&stats1._event_sum) + Atomic::load(&stats2._event_sum) +
+                          Atomic::load(&stats3._event_sum) + Atomic::load(&stats4._event_sum);
+
+    // Find combined min/max
+    long combined_time_min = LONG_MAX;
+    long combined_time_max = 0;
+    long combined_event_min = LONG_MAX;
+    long combined_event_max = 0;
+
+    const DrainStats* all_stats[] = {&stats1, &stats2, &stats3, &stats4};
+    for (int i = 0; i < 4; i++) {
+      if (all_stats[i]->count() > 0) {
+        long time_min = (all_stats[i]->_drain_time_min == LONG_MAX) ? 0 : Atomic::load(&all_stats[i]->_drain_time_min);
+        long time_max = Atomic::load(&all_stats[i]->_drain_time_max);
+        long event_min = (all_stats[i]->_event_min == LONG_MAX) ? 0 : Atomic::load(&all_stats[i]->_event_min);
+        long event_max = Atomic::load(&all_stats[i]->_event_max);
+
+        if (time_min < combined_time_min) combined_time_min = time_min;
+        if (time_max > combined_time_max) combined_time_max = time_max;
+        if (event_min < combined_event_min) combined_event_min = event_min;
+        if (event_max > combined_event_max) combined_event_max = event_max;
+      }
+    }
+    if (combined_time_min == LONG_MAX) combined_time_min = 0;
+    if (combined_event_min == LONG_MAX) combined_event_min = 0;
+
+    // Calculate combined percentiles
+    long combined_time_median = calculate_combined_time_percentile(stats1, stats2, stats3, stats4, 50.0);
+    long combined_time_p95 = calculate_combined_time_percentile(stats1, stats2, stats3, stats4, 95.0);
+    long combined_time_p99 = calculate_combined_time_percentile(stats1, stats2, stats3, stats4, 99.0);
+    long combined_time_p999 = calculate_combined_time_percentile(stats1, stats2, stats3, stats4, 99.9);
+
+    long combined_event_median = calculate_combined_event_percentile(stats1, stats2, stats3, stats4, 50.0);
+    long combined_event_p95 = calculate_combined_event_percentile(stats1, stats2, stats3, stats4, 95.0);
+    long combined_event_p99 = calculate_combined_event_percentile(stats1, stats2, stats3, stats4, 99.0);
+    long combined_event_p999 = calculate_combined_event_percentile(stats1, stats2, stats3, stats4, 99.9);
+
+    // Human readable summary
+    printf("\n=== %s Combined Drain Statistics ===\n", name);
+    printf("Requests: %ld\n", total_drains);
+    printf("Time (ns): sum=%ld, avg=%ld, min=%ld, max=%ld, median=%ld, p95=%ld, p99=%ld, p99.9=%ld\n",
+           total_time_sum, total_drains > 0 ? total_time_sum / total_drains : 0, combined_time_min, combined_time_max,
+           combined_time_median, combined_time_p95, combined_time_p99, combined_time_p999);
+    printf("Events: sum=%ld, avg=%.2f, min=%ld, max=%ld, median=%ld, p95=%ld, p99=%ld, p99.9=%ld\n",
+           total_event_sum, total_drains > 0 ? total_event_sum * 1.0 / total_drains : 0.0, combined_event_min, combined_event_max,
+           combined_event_median, combined_event_p95, combined_event_p99, combined_event_p999);
+
+    // Combine histograms
+    long combined_time_histogram[HISTOGRAM_BUCKETS + 2] = {0};
+    long combined_event_histogram[MAX_EVENT_COUNT + 2] = {0};
+
+    for (int i = 0; i < 4; i++) {
+      for (int j = 0; j < HISTOGRAM_BUCKETS + 2; j++) {
+        combined_time_histogram[j] += Atomic::load(&all_stats[i]->_drain_time_histogram[j]);
+      }
+      for (int j = 0; j < MAX_EVENT_COUNT + 2; j++) {
+        combined_event_histogram[j] += Atomic::load(&all_stats[i]->_event_histogram[j]);
+      }
+    }
+
+    // ASCII visualization of combined time histogram
+    printf("\nTime Distribution (Log Scale, 0-1s):\n");
+
+    // Define bucket ranges and calculate their actual time ranges
+    struct { int start, end; } bucket_ranges[] = {
+      {0, 1},     // underflow
+      {1, 51},    // buckets 1-50
+      {51, 101},  // buckets 51-100
+      {101, 201}, // buckets 101-200
+      {201, 301}, // buckets 201-300
+      {301, 401}, // buckets 301-400
+      {401, 501}, // buckets 401-500
+      {501, 601}, // buckets 501-600
+      {601, 701}, // buckets 601-700
+      {701, 801}, // buckets 701-800
+      {801, 901}, // buckets 801-900
+      {901, 1001}, // buckets 901-1000
+      {1001, 1002} // overflow
+    };
+
+    long time_max_count = 0;
+    for (int j = 0; j < 13; j++) {
+      long total = 0;
+      for (int k = bucket_ranges[j].start; k < bucket_ranges[j].end && k < HISTOGRAM_BUCKETS + 2; k++) {
+        total += combined_time_histogram[k];
+      }
+      if (total > time_max_count) time_max_count = total;
+    }
+
+    if (time_max_count > 0) {
+      for (int j = 0; j < 13; j++) {
+        long total = 0;
+        for (int k = bucket_ranges[j].start; k < bucket_ranges[j].end && k < HISTOGRAM_BUCKETS + 2; k++) {
+          total += combined_time_histogram[k];
+        }
+        if (total == 0) continue;
+
+        // Calculate the actual time range for this bucket range
+        char label[50];
+        if (bucket_ranges[j].start == 0) {
+          strcpy(label, "≤0ns");
+        } else if (bucket_ranges[j].start >= HISTOGRAM_BUCKETS + 1) {
+          strcpy(label, "≥1s");
+        } else {
+          // Calculate time range using the same logarithmic formula as update()
+          double log_max = log10((double)(MAX_DRAIN_TIME_NS + 1));
+
+          // Start of range
+          double log_min_start = (double)(bucket_ranges[j].start - 1) * log_max / HISTOGRAM_BUCKETS;
+          long time_start = (long)(pow(10.0, log_min_start)) - 1;
+          if (time_start < 0) time_start = 0;
+
+          // End of range
+          double log_min_end = (double)(bucket_ranges[j].end - 2) * log_max / HISTOGRAM_BUCKETS;
+          long time_end = (long)(pow(10.0, log_min_end)) - 1;
+          if (time_end >= MAX_DRAIN_TIME_NS) time_end = MAX_DRAIN_TIME_NS - 1;
+
+          // Format the label with appropriate units
+          if (time_end < 1000) {
+            snprintf(label, sizeof(label), "%ldns-%ldns", time_start, time_end);
+          } else if (time_end < 1000000) {
+            snprintf(label, sizeof(label), "%.1fμs-%.1fμs", time_start/1000.0, time_end/1000.0);
+          } else if (time_end < 1000000000) {
+            snprintf(label, sizeof(label), "%.2fms-%.2fms", time_start/1000000.0, time_end/1000000.0);
+          } else {
+            snprintf(label, sizeof(label), "%.3fs-%.3fs", time_start/1000000000.0, time_end/1000000000.0);
+          }
+        }
+
+        int bar_len = (int)((total * 40) / time_max_count);
+        printf("%15s: ", label);
+        for (int k = 0; k < bar_len; k++) printf("█");
+        printf(" %ld\n", total);
+      }
+    }
+
+    // ASCII visualization of combined event histogram
+    printf("\nEvent Count Distribution:\n");
+    long event_max_count = 0;
+    for (int i = 0; i < MAX_EVENT_COUNT + 2; i++) {
+      if (combined_event_histogram[i] > event_max_count) event_max_count = combined_event_histogram[i];
+    }
+
+    if (event_max_count > 0) {
+      // Group events for display
+      struct { int start, end; const char* label; } ranges[] = {
+        {0, 1, "0"},
+        {1, 6, "1-5"},
+        {6, 11, "6-10"},
+        {11, 21, "11-20"},
+        {21, 51, "21-50"},
+        {51, 101, "51-100"},
+        {101, 201, "101-200"},
+        {201, 501, "201-500"},
+        {501, 1001, "501-1000"},
+        {1001, 1002, ">1000"}
+      };
+
+      for (int j = 0; j < 10; j++) {
+        long total = 0;
+        for (int k = ranges[j].start; k < ranges[j].end && k < MAX_EVENT_COUNT + 2; k++) {
+          total += combined_event_histogram[k];
+        }
+        if (total == 0) continue;
+
+        int bar_len = (int)((total * 30) / event_max_count);
+        printf("%8s: ", ranges[j].label);
+        for (int k = 0; k < bar_len; k++) printf("█");
+        printf(" %ld\n", total);
+      }
+    }
+
+    // Machine readable combined JSON output
+    printf("COMBINED_DRAIN_STATS_JSON:{\"name\":\"%s\",\"drains\":%ld,\"time\":{\"sum\":%ld,\"avg\":%ld,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99_9\":%ld},\"events\":{\"sum\":%ld,\"avg\":%.2f,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99_9\":%ld},\"time_histogram\":[",
+           name, total_drains, total_time_sum, total_drains > 0 ? total_time_sum / total_drains : 0, combined_time_min, combined_time_max,
+           combined_time_median, combined_time_p95, combined_time_p99, combined_time_p999,
+           total_event_sum, total_drains > 0 ? total_event_sum * 1.0 / total_drains : 0.0, combined_event_min, combined_event_max,
+           combined_event_median, combined_event_p95, combined_event_p99, combined_event_p999);
+
+    // Generate structured combined time histogram
+    bool first_time = true;
+    for (int i = 0; i < HISTOGRAM_BUCKETS + 2; i++) {
+      if (combined_time_histogram[i] > 0) {
+        if (!first_time) printf(",");
+        first_time = false;
+
+        if (i == 0) {
+          printf("{\"from\":0,\"to\":1,\"count\":%ld,\"range\":\"underflow\"}", combined_time_histogram[i]);
+        } else if (i >= HISTOGRAM_BUCKETS + 1) {
+          printf("{\"from\":1000000000,\"to\":null,\"count\":%ld,\"range\":\"overflow\"}", combined_time_histogram[i]);
+        } else {
+          // Convert bucket back to time range
+          double log_max = log10((double)(MAX_DRAIN_TIME_NS + 1));
+          double log_min = (double)(i - 1) * log_max / HISTOGRAM_BUCKETS;
+          double log_max_bucket = (double)i * log_max / HISTOGRAM_BUCKETS;
+          long time_min_ns = (long)(pow(10.0, log_min)) - 1;
+          long time_max_ns = (long)(pow(10.0, log_max_bucket)) - 1;
+          if (time_min_ns < 0) time_min_ns = 0;
+          if (time_max_ns >= MAX_DRAIN_TIME_NS) time_max_ns = MAX_DRAIN_TIME_NS - 1;
+          printf("{\"from\":%ld,\"to\":%ld,\"count\":%ld}", time_min_ns, time_max_ns, combined_time_histogram[i]);
+        }
+      }
+    }
+    printf("],\"event_histogram\":[");
+
+    // Generate structured combined event histogram
+    bool first_event = true;
+    for (int i = 0; i < MAX_EVENT_COUNT + 2; i++) {
+      if (combined_event_histogram[i] > 0) {
+        if (!first_event) printf(",");
+        first_event = false;
+
+        if (i >= MAX_EVENT_COUNT + 1) {
+          printf("{\"from\":%ld,\"to\":null,\"count\":%ld,\"range\":\"overflow\"}", (long)MAX_EVENT_COUNT, combined_event_histogram[i]);
+        } else {
+          printf("{\"from\":%ld,\"to\":%ld,\"count\":%ld}", (long)i, (long)i, combined_event_histogram[i]);
+        }
+      }
+    }
+    printf("]}\n");
+  }
+
+  // Calculate percentiles from time histogram
+  long calculate_time_percentile(double percentile) const {
+    long total_samples = Atomic::load(&_drains);
+    if (total_samples == 0) return 0;
+
+    long target_count = (long)(total_samples * percentile / 100.0);
+    long cumulative_count = 0;
+
+    // Check underflow bucket first
+    cumulative_count += Atomic::load(&_drain_time_histogram[0]);
+    if (cumulative_count >= target_count) return 0;
+
+    // Check regular buckets
+    for (int i = 1; i <= HISTOGRAM_BUCKETS; i++) {
+      cumulative_count += Atomic::load(&_drain_time_histogram[i]);
+      if (cumulative_count >= target_count) {
+        // Found the bucket containing the percentile
+        // Convert bucket back to time value (middle of bucket range)
+        double log_max = log10((double)(MAX_DRAIN_TIME_NS + 1));
+        double log_mid = ((double)(i - 1) + 0.5) * log_max / HISTOGRAM_BUCKETS;
+        long time_mid = (long)(pow(10.0, log_mid)) - 1;
+        if (time_mid < 0) time_mid = 0;
+        return time_mid;
+      }
+    }
+
+    // If we get here, it's in the overflow bucket - return max value
+    return MAX_DRAIN_TIME_NS;
+  }
+
+  // Calculate percentiles from event histogram
+  long calculate_event_percentile(double percentile) const {
+    long total_samples = Atomic::load(&_drains);
+    if (total_samples == 0) return 0;
+
+    long target_count = (long)(total_samples * percentile / 100.0);
+    long cumulative_count = 0;
+
+    // Check regular buckets (direct mapping for events)
+    for (int i = 0; i <= MAX_EVENT_COUNT; i++) {
+      cumulative_count += Atomic::load(&_event_histogram[i]);
+      if (cumulative_count >= target_count) {
+        return i; // Direct mapping: bucket index = event count
+      }
+    }
+
+    // If we get here, it's in the overflow bucket
+    return MAX_EVENT_COUNT + 1;
+  }
+
+  // Calculate combined percentiles from multiple DrainStats objects
+  static long calculate_combined_time_percentile(const DrainStats& stats1, const DrainStats& stats2,
+                                               const DrainStats& stats3, const DrainStats& stats4,
+                                               double percentile) {
+    long total_samples = stats1.count() + stats2.count() + stats3.count() + stats4.count();
+    if (total_samples == 0) return 0;
+
+    long target_count = (long)(total_samples * percentile / 100.0);
+    long cumulative_count = 0;
+
+    // Combine time histograms
+    long combined_time_histogram[HISTOGRAM_BUCKETS + 2] = {0};
+    const DrainStats* all_stats[] = {&stats1, &stats2, &stats3, &stats4};
+    for (int i = 0; i < 4; i++) {
+      for (int j = 0; j < HISTOGRAM_BUCKETS + 2; j++) {
+        combined_time_histogram[j] += Atomic::load(&all_stats[i]->_drain_time_histogram[j]);
+      }
+    }
+
+    // Check underflow bucket first
+    cumulative_count += combined_time_histogram[0];
+    if (cumulative_count >= target_count) return 0;
+
+    // Check regular buckets
+    for (int i = 1; i <= HISTOGRAM_BUCKETS; i++) {
+      cumulative_count += combined_time_histogram[i];
+      if (cumulative_count >= target_count) {
+        // Convert bucket back to time value (middle of bucket range)
+        double log_max = log10((double)(MAX_DRAIN_TIME_NS + 1));
+        double log_mid = ((double)(i - 1) + 0.5) * log_max / HISTOGRAM_BUCKETS;
+        long time_mid = (long)(pow(10.0, log_mid)) - 1;
+        if (time_mid < 0) time_mid = 0;
+        return time_mid;
+      }
+    }
+
+    return MAX_DRAIN_TIME_NS;
+  }
+
+  static long calculate_combined_event_percentile(const DrainStats& stats1, const DrainStats& stats2,
+                                                const DrainStats& stats3, const DrainStats& stats4,
+                                                double percentile) {
+    long total_samples = stats1.count() + stats2.count() + stats3.count() + stats4.count();
+    if (total_samples == 0) return 0;
+
+    long target_count = (long)(total_samples * percentile / 100.0);
+    long cumulative_count = 0;
+
+    // Combine event histograms
+    long combined_event_histogram[MAX_EVENT_COUNT + 2] = {0};
+    const DrainStats* all_stats[] = {&stats1, &stats2, &stats3, &stats4};
+    for (int i = 0; i < 4; i++) {
+      for (int j = 0; j < MAX_EVENT_COUNT + 2; j++) {
+        combined_event_histogram[j] += Atomic::load(&all_stats[i]->_event_histogram[j]);
+      }
+    }
+
+    // Check regular buckets
+    for (int i = 0; i <= MAX_EVENT_COUNT; i++) {
+      cumulative_count += combined_event_histogram[i];
+      if (cumulative_count >= target_count) {
+        return i;
+      }
+    }
+
+    return MAX_EVENT_COUNT + 1;
+  }
 };
 
 DrainStats out_of_thread_drain_stats;
@@ -712,12 +1092,52 @@ static void drain_enqueued_cpu_time_requests(const JfrTicks& now, JfrThreadLocal
         out_of_thread_drain_stats.update(os::javaTimeNanos() - start, size);
 
   }
-  // Print stats every 30 seconds instead of every N operations
+  // Print individual drain category statistics every 30 seconds
   if (drain_stats.should_print()) {
-    drain_stats.print(                    "all without locks   ");
-    safepoint_drain_stats.print(          "safepoint           ");
-    safepoint_drain_stats_w_locking.print("safepoint with locks");
-    out_of_thread_drain_stats.print(      "out of thread       ");
+    // Check if STATS_FILE environment variable is set
+    const char* stats_file = ::getenv("STATS_FILE");
+    if (stats_file != nullptr) {
+      // Thread-safe file writing using PlatformMutex
+      static PlatformMutex stats_file_lock;
+
+      // RAII lock guard
+      class LockGuard {
+        PlatformMutex* _mutex;
+      public:
+        LockGuard(PlatformMutex* mutex) : _mutex(mutex) { _mutex->lock(); }
+        ~LockGuard() { _mutex->unlock(); }
+      };
+      LockGuard lock_guard(&stats_file_lock);
+
+      // Open file in append mode
+      FILE* file = fopen(stats_file, "a");
+      if (file != nullptr) {
+        // Temporarily redirect stdout to file
+        FILE* original_stdout = stdout;
+        stdout = file;
+
+        drain_stats.print("all without locks");
+        safepoint_drain_stats.print("safepoint");
+        safepoint_drain_stats_w_locking.print("safepoint with locks");
+        out_of_thread_drain_stats.print("out of thread");
+
+        // Restore stdout and close file
+        stdout = original_stdout;
+        fclose(file);
+      } else {
+        // Fall back to stdout if file can't be opened
+        drain_stats.print("all without locks");
+        safepoint_drain_stats.print("safepoint");
+        safepoint_drain_stats_w_locking.print("safepoint with locks");
+        out_of_thread_drain_stats.print("out of thread");
+      }
+    } else {
+      // Default behavior - print to stdout
+      drain_stats.print("all without locks");
+      safepoint_drain_stats.print("safepoint");
+      safepoint_drain_stats_w_locking.print("safepoint with locks");
+      out_of_thread_drain_stats.print("out of thread");
+    }
   }
 #endif
 }

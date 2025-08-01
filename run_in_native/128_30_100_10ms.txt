@@ -1,0 +1,226 @@
+
+=== all without locks Drain Statistics ===
+Requests: 1
+Runtime: 0.000 seconds (0.0 minutes)
+Request Rate: 8424.32 requests/second
+Time (ns): sum=35096, avg=35096, min=35096, max=35096, median=0, p95=0, p99=0, p99.9=0
+Events: sum=1, avg=1.00, min=1, max=1, median=0, p95=0, p99=0, p99.9=0
+
+Time Distribution (Log Scale, 0-1s):
+31.6μs-246.0μs: ████████████████████████████████████████ 1
+
+Event Count Distribution:
+     1-5: ██████████████████████████████ 1
+DRAIN_STATS_JSON:{"name":"all without locks","drains":1,"runtime_ns":157027,"runtime_seconds":0.000,"time":{"sum":35096,"avg":35096,"min":35096,"max":35096,"median":0,"p95":0,"p99":0,"p99.9":0},"events":{"sum":1,"avg":1.00,"min":1,"max":1,"median":0,"p95":0,"p99":0,"p99.9":0},"time_histogram":[{"from":35074,"to":35808,"count":1}],"event_histogram":[{"from":1,"to":1,"count":1}]}
+
+=== safepoint Drain Statistics ===
+Requests: 1
+Runtime: 0.000 seconds (0.0 minutes)
+Request Rate: 6679.45 requests/second
+Time (ns): sum=51587, avg=51587, min=51587, max=51587, median=0, p95=0, p99=0, p99.9=0
+Events: sum=1, avg=1.00, min=1, max=1, median=0, p95=0, p99=0, p99.9=0
+
+Time Distribution (Log Scale, 0-1s):
+31.6μs-246.0μs: ████████████████████████████████████████ 1
+
+Event Count Distribution:
+     1-5: ██████████████████████████████ 1
+DRAIN_STATS_JSON:{"name":"safepoint","drains":1,"runtime_ns":170592,"runtime_seconds":0.000,"time":{"sum":51587,"avg":51587,"min":51587,"max":51587,"median":0,"p95":0,"p99":0,"p99.9":0},"events":{"sum":1,"avg":1.00,"min":1,"max":1,"median":0,"p95":0,"p99":0,"p99.9":0},"time_histogram":[{"from":50932,"to":51998,"count":1}],"event_histogram":[{"from":1,"to":1,"count":1}]}
+
+=== safepoint with locks Drain Statistics ===
+Requests: 1
+Runtime: 0.000 seconds (0.0 minutes)
+Request Rate: 5679.82 requests/second
+Time (ns): sum=52810, avg=52810, min=52810, max=52810, median=0, p95=0, p99=0, p99.9=0
+Events: sum=1, avg=1.00, min=1, max=1, median=0, p95=0, p99=0, p99.9=0
+
+Time Distribution (Log Scale, 0-1s):
+31.6μs-246.0μs: ████████████████████████████████████████ 1
+
+Event Count Distribution:
+     1-5: ██████████████████████████████ 1
+DRAIN_STATS_JSON:{"name":"safepoint with locks","drains":1,"runtime_ns":193375,"runtime_seconds":0.000,"time":{"sum":52810,"avg":52810,"min":52810,"max":52810,"median":0,"p95":0,"p99":0,"p99.9":0},"events":{"sum":1,"avg":1.00,"min":1,"max":1,"median":0,"p95":0,"p99":0,"p99.9":0},"time_histogram":[{"from":51998,"to":53087,"count":1}],"event_histogram":[{"from":1,"to":1,"count":1}]}
+
+JFR_SAMPLE_STATISTICS:
+
+CPU Time Sample Statistics
+--------------------------
+
+Successful Samples: 365,012
+
+Failed Samples: 0
+
+Biased Samples: 241,269
+
+Total Samples: 365,012
+
+Lost Samples: 533
+JFR_SAMPLE_STATISTICS_END
+
+JFR_SAMPLE_STATISTICS:
+
+No events found for 'CPU Time Sample Statistics'.
+JFR_SAMPLE_STATISTICS_END
+
+=== all without locks Drain Statistics ===
+Requests: 1
+Runtime: 0.000 seconds (0.0 minutes)
+Request Rate: 64188.97 requests/second
+Time (ns): sum=16993, avg=16993, min=16993, max=16993, median=0, p95=0, p99=0, p99.9=0
+Events: sum=1, avg=1.00, min=1, max=1, median=0, p95=0, p99=0, p99.9=0
+
+Time Distribution (Log Scale, 0-1s):
+ 4.0μs-31.0μs: ████████████████████████████████████████ 1
+
+Event Count Distribution:
+     1-5: ██████████████████████████████ 1
+DRAIN_STATS_JSON:{"name":"all without locks","drains":1,"runtime_ns":33553,"runtime_seconds":0.000,"time":{"sum":16993,"avg":16993,"min":16993,"max":16993,"median":0,"p95":0,"p99":0,"p99.9":0},"events":{"sum":1,"avg":1.00,"min":1,"max":1,"median":0,"p95":0,"p99":0,"p99.9":0},"time_histogram":[{"from":16981,"to":17337,"count":1}],"event_histogram":[{"from":1,"to":1,"count":1}]}
+
+=== safepoint Drain Statistics ===
+Requests: 1
+Runtime: 0.000 seconds (0.0 minutes)
+Request Rate: 30607.25 requests/second
+Time (ns): sum=24226, avg=24226, min=24226, max=24226, median=0, p95=0, p99=0, p99.9=0
+Events: sum=1, avg=1.00, min=1, max=1, median=0, p95=0, p99=0, p99.9=0
+
+Time Distribution (Log Scale, 0-1s):
+ 4.0μs-31.0μs: ████████████████████████████████████████ 1
+
+Event Count Distribution:
+     1-5: ██████████████████████████████ 1
+DRAIN_STATS_JSON:{"name":"safepoint","drains":1,"runtime_ns":44855,"runtime_seconds":0.000,"time":{"sum":24226,"avg":24226,"min":24226,"max":24226,"median":0,"p95":0,"p99":0,"p99.9":0},"events":{"sum":1,"avg":1.00,"min":1,"max":1,"median":0,"p95":0,"p99":0,"p99.9":0},"time_histogram":[{"from":24153,"to":24659,"count":1}],"event_histogram":[{"from":1,"to":1,"count":1}]}
+
+=== safepoint with locks Drain Statistics ===
+Requests: 1
+Runtime: 0.000 seconds (0.0 minutes)
+Request Rate: 19890.60 requests/second
+Time (ns): sum=24737, avg=24737, min=24737, max=24737, median=0, p95=0, p99=0, p99.9=0
+Events: sum=1, avg=1.00, min=1, max=1, median=0, p95=0, p99=0, p99.9=0
+
+Time Distribution (Log Scale, 0-1s):
+ 4.0μs-31.0μs: ████████████████████████████████████████ 1
+
+Event Count Distribution:
+     1-5: ██████████████████████████████ 1
+DRAIN_STATS_JSON:{"name":"safepoint with locks","drains":1,"runtime_ns":62088,"runtime_seconds":0.000,"time":{"sum":24737,"avg":24737,"min":24737,"max":24737,"median":0,"p95":0,"p99":0,"p99.9":0},"events":{"sum":1,"avg":1.00,"min":1,"max":1,"median":0,"p95":0,"p99":0,"p99.9":0},"time_histogram":[{"from":24659,"to":25175,"count":1}],"event_histogram":[{"from":1,"to":1,"count":1}]}
+
+JFR_SAMPLE_STATISTICS:
+
+CPU Time Sample Statistics
+--------------------------
+
+Successful Samples: 360,140
+
+Failed Samples: 0
+
+Biased Samples: 236,563
+
+Total Samples: 360,140
+
+Lost Samples: 563
+JFR_SAMPLE_STATISTICS_END
+
+JFR_SAMPLE_STATISTICS:
+
+No events found for 'CPU Time Sample Statistics'.
+JFR_SAMPLE_STATISTICS_END
+
+=== all without locks Drain Statistics ===
+Requests: 1
+Runtime: 0.000 seconds (0.0 minutes)
+Request Rate: 27398.01 requests/second
+Time (ns): sum=36489, avg=36489, min=36489, max=36489, median=0, p95=0, p99=0, p99.9=0
+Events: sum=1, avg=1.00, min=1, max=1, median=0, p95=0, p99=0, p99.9=0
+
+Time Distribution (Log Scale, 0-1s):
+31.6μs-246.0μs: ████████████████████████████████████████ 1
+
+Event Count Distribution:
+     1-5: ██████████████████████████████ 1
+DRAIN_STATS_JSON:{"name":"all without locks","drains":1,"runtime_ns":60925,"runtime_seconds":0.000,"time":{"sum":36489,"avg":36489,"min":36489,"max":36489,"median":0,"p95":0,"p99":0,"p99.9":0},"events":{"sum":1,"avg":1.00,"min":1,"max":1,"median":0,"p95":0,"p99":0,"p99.9":0},"time_histogram":[{"from":35808,"to":36558,"count":1}],"event_histogram":[{"from":1,"to":1,"count":1}]}
+
+=== safepoint Drain Statistics ===
+Requests: 1
+Runtime: 0.000 seconds (0.0 minutes)
+Request Rate: 17188.04 requests/second
+Time (ns): sum=45596, avg=45596, min=45596, max=45596, median=0, p95=0, p99=0, p99.9=0
+Events: sum=1, avg=1.00, min=1, max=1, median=0, p95=0, p99=0, p99.9=0
+
+Time Distribution (Log Scale, 0-1s):
+31.6μs-246.0μs: ████████████████████████████████████████ 1
+
+Event Count Distribution:
+     1-5: ██████████████████████████████ 1
+DRAIN_STATS_JSON:{"name":"safepoint","drains":1,"runtime_ns":70874,"runtime_seconds":0.000,"time":{"sum":45596,"avg":45596,"min":45596,"max":45596,"median":0,"p95":0,"p99":0,"p99.9":0},"events":{"sum":1,"avg":1.00,"min":1,"max":1,"median":0,"p95":0,"p99":0,"p99.9":0},"time_histogram":[{"from":44976,"to":45918,"count":1}],"event_histogram":[{"from":1,"to":1,"count":1}]}
+
+=== safepoint with locks Drain Statistics ===
+Requests: 1
+Runtime: 0.000 seconds (0.0 minutes)
+Request Rate: 13042.06 requests/second
+Time (ns): sum=46087, avg=46087, min=46087, max=46087, median=0, p95=0, p99=0, p99.9=0
+Events: sum=1, avg=1.00, min=1, max=1, median=0, p95=0, p99=0, p99.9=0
+
+Time Distribution (Log Scale, 0-1s):
+31.6μs-246.0μs: ████████████████████████████████████████ 1
+
+Event Count Distribution:
+     1-5: ██████████████████████████████ 1
+DRAIN_STATS_JSON:{"name":"safepoint with locks","drains":1,"runtime_ns":88588,"runtime_seconds":0.000,"time":{"sum":46087,"avg":46087,"min":46087,"max":46087,"median":0,"p95":0,"p99":0,"p99.9":0},"events":{"sum":1,"avg":1.00,"min":1,"max":1,"median":0,"p95":0,"p99":0,"p99.9":0},"time_histogram":[{"from":45918,"to":46880,"count":1}],"event_histogram":[{"from":1,"to":1,"count":1}]}
+
+JFR_SAMPLE_STATISTICS:
+
+CPU Time Sample Statistics
+--------------------------
+
+Successful Samples: 372,771
+
+Failed Samples: 0
+
+Biased Samples: 251,664
+
+Total Samples: 372,771
+
+Lost Samples: 496
+JFR_SAMPLE_STATISTICS_END
+
+=== all without locks Drain Statistics ===
+Requests: 1
+Runtime: 0.000 seconds (0.0 minutes)
+Request Rate: 93632.96 requests/second
+Time (ns): sum=7785, avg=7785, min=7785, max=7785, median=0, p95=0, p99=0, p99.9=0
+Events: sum=1, avg=1.00, min=1, max=1, median=0, p95=0, p99=0, p99.9=0
+
+Time Distribution (Log Scale, 0-1s):
+ 4.0μs-31.0μs: ████████████████████████████████████████ 1
+
+Event Count Distribution:
+     1-5: ██████████████████████████████ 1
+DRAIN_STATS_JSON:{"name":"all without locks","drains":1,"runtime_ns":33343,"runtime_seconds":0.000,"time":{"sum":7785,"avg":7785,"min":7785,"max":7785,"median":0,"p95":0,"p99":0,"p99.9":0},"events":{"sum":1,"avg":1.00,"min":1,"max":1,"median":0,"p95":0,"p99":0,"p99.9":0},"time_histogram":[{"from":7725,"to":7887,"count":1}],"event_histogram":[{"from":1,"to":1,"count":1}]}
+
+=== safepoint Drain Statistics ===
+Requests: 1
+Runtime: 0.000 seconds (0.0 minutes)
+Request Rate: 26286.74 requests/second
+Time (ns): sum=9468, avg=9468, min=9468, max=9468, median=0, p95=0, p99=0, p99.9=0
+Events: sum=1, avg=1.00, min=1, max=1, median=0, p95=0, p99=0, p99.9=0
+
+Time Distribution (Log Scale, 0-1s):
+ 4.0μs-31.0μs: ████████████████████████████████████████ 1
+
+Event Count Distribution:
+     1-5: ██████████████████████████████ 1
+DRAIN_STATS_JSON:{"name":"safepoint","drains":1,"runtime_ns":49504,"runtime_seconds":0.000,"time":{"sum":9468,"avg":9468,"min":9468,"max":9468,"median":0,"p95":0,"p99":0,"p99.9":0},"events":{"sum":1,"avg":1.00,"min":1,"max":1,"median":0,"p95":0,"p99":0,"p99.9":0},"time_histogram":[{"from":9310,"to":9505,"count":1}],"event_histogram":[{"from":1,"to":1,"count":1}]}
+
+=== safepoint with locks Drain Statistics ===
+Requests: 1
+Runtime: 0.000 seconds (0.0 minutes)
+Request Rate: 18101.51 requests/second
+Time (ns): sum=9989, avg=9989, min=9989, max=9989, median=0, p95=0, p99=0, p99.9=0
+Events: sum=1, avg=1.00, min=1, max=1, median=0, p95=0, p99=0, p99.9=0
+
+Time Distribution (Log Scale, 0-1s):
+ 4.0μs-31.0μs: ████████████████████████████████████████ 1
+
+Event Count Distribution:
+     1-5: ██████████████████████████████ 1
+DRAIN_STATS_JSON:{"name":"safepoint with locks","drains":1,"runtime_ns":67517,"runtime_seconds":0.000,"time":{"sum":9989,"avg":9989,"min":9989,"max":9989,"median":0,"p95":0,"p99":0,"p99.9":0},"events":{"sum":1,"avg":1.00,"min":1,"max":1,"median":0,"p95":0,"p99":0,"p99.9":0},"time_histogram":[{"from":9907,"to":10114,"count":1}],"event_histogram":[{"from":1,"to":1,"count":1}]}

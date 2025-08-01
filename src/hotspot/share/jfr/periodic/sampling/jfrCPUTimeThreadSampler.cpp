@@ -25,6 +25,7 @@
 #include "jfr/periodic/sampling/jfrCPUTimeThreadSampler.hpp"
 #include "logging/log.hpp"
 
+#include <cstdlib>  // for getenv() and atoi()
 
 #if defined(LINUX)
 #include "jfr/periodic/sampling/jfrThreadSampling.hpp"
@@ -153,9 +154,23 @@ void JfrCPUTimeTraceQueue::resize(u4 capacity) {
 
 void JfrCPUTimeTraceQueue::resize_for_period(u4 period_millis) {
   u4 capacity = CPU_TIME_QUEUE_CAPACITY;
-  if (period_millis > 0 && period_millis < 10) {
+
+  // Check for QUEUE_SIZE environment variable override
+  const char* queue_size_env = getenv("QUEUE_SIZE");
+  if (queue_size_env != nullptr) {
+    int env_capacity = atoi(queue_size_env);
+    if (env_capacity > 0) {
+      capacity = (u4)env_capacity;
+      log_debug(jfr)("Using QUEUE_SIZE environment variable: %u", capacity);
+    }
+  }
+
+  // Scale capacity based on period if no environment override
+  if (queue_size_env == nullptr && period_millis > 0 && period_millis < 10) {
     capacity = (u4) ((double) capacity * 10 / period_millis);
   }
+
+  log_debug(jfr)("Setting JFR CPU time queue capacity to %u (period: %ums)", capacity, period_millis);
   resize(capacity);
 }
 
