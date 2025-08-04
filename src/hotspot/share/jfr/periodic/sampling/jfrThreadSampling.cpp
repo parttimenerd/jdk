@@ -43,6 +43,7 @@
 #include "runtime/os.hpp"
 #include "runtime/stackFrameStream.inline.hpp"
 #include "utilities/globalDefinitions.hpp"
+#include "utilities/ostream.hpp"
 #include <cstdlib>
 #include <cmath>
 #include <cstring>
@@ -621,7 +622,10 @@ struct DrainStats {
     long json_runtime_ns = (_start_time > 0) ? (json_current_time - _start_time) : 0;
     double json_runtime_seconds = json_runtime_ns / 1000000000.0;
 
-    printf("DRAIN_STATS_JSON:{\"name\":\"%s\",\"drains\":%ld,\"runtime_ns\":%ld,\"runtime_seconds\":%.3f,\"time\":{\"sum\":%ld,\"avg\":%ld,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99.9\":%ld},\"events\":{\"sum\":%ld,\"avg\":%.2f,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99.9\":%ld},\"time_histogram\":[",
+    // Build JSON string in memory to avoid printf buffering issues
+    stringStream json_buffer;
+
+    json_buffer.print("DRAIN_STATS_JSON:{\"name\":\"%s\",\"drains\":%ld,\"runtime_ns\":%ld,\"runtime_seconds\":%.3f,\"time\":{\"sum\":%ld,\"avg\":%ld,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99.9\":%ld},\"events\":{\"sum\":%ld,\"avg\":%.2f,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99.9\":%ld},\"time_histogram\":[",
            name, drains, json_runtime_ns, json_runtime_seconds, time_sum, drains > 0 ? time_sum / drains : 0, time_min, time_max, time_median, time_p95, time_p99, time_p999,
            event_sum, drains > 0 ? event_sum * 1.0 / drains : 0.0, event_min, event_max, event_median, event_p95, event_p99, event_p999);
 
@@ -630,13 +634,13 @@ struct DrainStats {
     for (int i = 0; i < HISTOGRAM_BUCKETS + 2; i++) {
       long count = Atomic::load(&_drain_time_histogram[i]);
       if (count > 0) {  // Only include non-zero buckets to reduce output size
-        if (!first_time) printf(",");
+        if (!first_time) json_buffer.print(",");
         first_time = false;
 
         if (i == 0) {
-          printf("{\"from\":0,\"to\":1,\"count\":%ld,\"range\":\"underflow\"}", count);
+          json_buffer.print("{\"from\":0,\"to\":1,\"count\":%ld,\"range\":\"underflow\"}", count);
         } else if (i >= HISTOGRAM_BUCKETS + 1) {
-          printf("{\"from\":1000000000,\"to\":null,\"count\":%ld,\"range\":\"overflow\"}", count);
+          json_buffer.print("{\"from\":1000000000,\"to\":null,\"count\":%ld,\"range\":\"overflow\"}", count);
         } else {
           // Convert bucket back to time range (reverse of logarithmic bucketing)
           // Forward formula: time_bucket = 1 + (int)((log_time * HISTOGRAM_BUCKETS) / log_max)
@@ -654,28 +658,31 @@ struct DrainStats {
           if (time_min_ns < 0) time_min_ns = 0;
           if (time_max_ns >= MAX_DRAIN_TIME_NS) time_max_ns = MAX_DRAIN_TIME_NS - 1;
 
-          printf("{\"from\":%ld,\"to\":%ld,\"count\":%ld}", time_min_ns, time_max_ns, count);
+          json_buffer.print("{\"from\":%ld,\"to\":%ld,\"count\":%ld}", time_min_ns, time_max_ns, count);
         }
       }
     }
-    printf("],\"event_histogram\":[");
+    json_buffer.print("],\"event_histogram\":[");
 
     // Generate structured event histogram
     bool first_event = true;
     for (int i = 0; i < MAX_EVENT_COUNT + 2; i++) {
       long count = Atomic::load(&_event_histogram[i]);
       if (count > 0) {  // Only include non-zero buckets
-        if (!first_event) printf(",");
+        if (!first_event) json_buffer.print(",");
         first_event = false;
 
         if (i >= MAX_EVENT_COUNT + 1) {
-          printf("{\"from\":%ld,\"to\":null,\"count\":%ld,\"range\":\"overflow\"}", (long)MAX_EVENT_COUNT, count);
+          json_buffer.print("{\"from\":%ld,\"to\":null,\"count\":%ld,\"range\":\"overflow\"}", (long)MAX_EVENT_COUNT, count);
         } else {
-          printf("{\"from\":%ld,\"to\":%ld,\"count\":%ld}", (long)i, (long)i, count);
+          json_buffer.print("{\"from\":%ld,\"to\":%ld,\"count\":%ld}", (long)i, (long)i, count);
         }
       }
     }
-    printf("]}\n");
+    json_buffer.print("]}");
+
+    // Output the complete JSON in one atomic operation
+    tty->print_cr("%s", json_buffer.base());
   }
 
   long count() const {
@@ -880,7 +887,9 @@ struct DrainStats {
     }
 
     // Machine readable combined JSON output
-    printf("COMBINED_DRAIN_STATS_JSON:{\"name\":\"%s\",\"drains\":%ld,\"time\":{\"sum\":%ld,\"avg\":%ld,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99_9\":%ld},\"events\":{\"sum\":%ld,\"avg\":%.2f,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99_9\":%ld},\"time_histogram\":[",
+    stringStream combined_json_buffer;
+
+    combined_json_buffer.print("COMBINED_DRAIN_STATS_JSON:{\"name\":\"%s\",\"drains\":%ld,\"time\":{\"sum\":%ld,\"avg\":%ld,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99_9\":%ld},\"events\":{\"sum\":%ld,\"avg\":%.2f,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99_9\":%ld},\"time_histogram\":[",
            name, total_drains, total_time_sum, total_drains > 0 ? total_time_sum / total_drains : 0, combined_time_min, combined_time_max,
            combined_time_median, combined_time_p95, combined_time_p99, combined_time_p999,
            total_event_sum, total_drains > 0 ? total_event_sum * 1.0 / total_drains : 0.0, combined_event_min, combined_event_max,
@@ -890,13 +899,13 @@ struct DrainStats {
     bool first_time = true;
     for (int i = 0; i < HISTOGRAM_BUCKETS + 2; i++) {
       if (combined_time_histogram[i] > 0) {
-        if (!first_time) printf(",");
+        if (!first_time) combined_json_buffer.print(",");
         first_time = false;
 
         if (i == 0) {
-          printf("{\"from\":0,\"to\":1,\"count\":%ld,\"range\":\"underflow\"}", combined_time_histogram[i]);
+          combined_json_buffer.print("{\"from\":0,\"to\":1,\"count\":%ld,\"range\":\"underflow\"}", combined_time_histogram[i]);
         } else if (i >= HISTOGRAM_BUCKETS + 1) {
-          printf("{\"from\":1000000000,\"to\":null,\"count\":%ld,\"range\":\"overflow\"}", combined_time_histogram[i]);
+          combined_json_buffer.print("{\"from\":1000000000,\"to\":null,\"count\":%ld,\"range\":\"overflow\"}", combined_time_histogram[i]);
         } else {
           // Convert bucket back to time range
           double log_max = log10((double)(MAX_DRAIN_TIME_NS + 1));
@@ -906,27 +915,30 @@ struct DrainStats {
           long time_max_ns = (long)(pow(10.0, log_max_bucket)) - 1;
           if (time_min_ns < 0) time_min_ns = 0;
           if (time_max_ns >= MAX_DRAIN_TIME_NS) time_max_ns = MAX_DRAIN_TIME_NS - 1;
-          printf("{\"from\":%ld,\"to\":%ld,\"count\":%ld}", time_min_ns, time_max_ns, combined_time_histogram[i]);
+          combined_json_buffer.print("{\"from\":%ld,\"to\":%ld,\"count\":%ld}", time_min_ns, time_max_ns, combined_time_histogram[i]);
         }
       }
     }
-    printf("],\"event_histogram\":[");
+    combined_json_buffer.print("],\"event_histogram\":[");
 
     // Generate structured combined event histogram
     bool first_event = true;
     for (int i = 0; i < MAX_EVENT_COUNT + 2; i++) {
       if (combined_event_histogram[i] > 0) {
-        if (!first_event) printf(",");
+        if (!first_event) combined_json_buffer.print(",");
         first_event = false;
 
         if (i >= MAX_EVENT_COUNT + 1) {
-          printf("{\"from\":%ld,\"to\":null,\"count\":%ld,\"range\":\"overflow\"}", (long)MAX_EVENT_COUNT, combined_event_histogram[i]);
+          combined_json_buffer.print("{\"from\":%ld,\"to\":null,\"count\":%ld,\"range\":\"overflow\"}", (long)MAX_EVENT_COUNT, combined_event_histogram[i]);
         } else {
-          printf("{\"from\":%ld,\"to\":%ld,\"count\":%ld}", (long)i, (long)i, combined_event_histogram[i]);
+          combined_json_buffer.print("{\"from\":%ld,\"to\":%ld,\"count\":%ld}", (long)i, (long)i, combined_event_histogram[i]);
         }
       }
     }
-    printf("]}\n");
+    combined_json_buffer.print("]}");
+
+    // Output the complete combined JSON in one atomic operation
+    tty->print_cr("%s", combined_json_buffer.base());
   }
 
   // Calculate percentiles from time histogram

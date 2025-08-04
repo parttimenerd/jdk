@@ -10,6 +10,7 @@ Usage:
     python3 benchmark_queue_sizes.py --run-renaissance    # Run Renaissance tests
     python3 benchmark_queue_sizes.py --visualize          # Generate visualizations only
     python3 benchmark_queue_sizes.py --all                # Run all tests and visualize
+    python3 benchmark_queue_sizes.py --threads 8          # Use 8 threads instead of CPU count
 
 Runtime Estimates:
     Native benchmark: ~26 hours (108 tests × 4.5 minutes avg per test)
@@ -21,7 +22,9 @@ import argparse
 import csv
 import json
 import os
+import psutil
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -44,10 +47,118 @@ except ImportError as e:
     print(f"⚠️ Could not import drain analysis functions: {e}")
     print("   Falling back to basic parsing methods")
 
+# Process Management Utilities
+def wait_for_java_processes(timeout_seconds=60):
+    """Wait for Java processes to finish, with timeout"""
+    print("    🔍 Checking for running Java processes...")
+
+    start_time = time.time()
+    while time.time() - start_time < timeout_seconds:
+        java_processes = []
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                if proc.info['name'] and 'java' in proc.info['name'].lower():
+                    # Filter out IDE/system Java processes by looking at command line
+                    cmdline = ' '.join(proc.info['cmdline'] or [])
+                    if any(keyword in cmdline.lower() for keyword in ['idea', 'eclipse', 'vscode', 'netbeans']):
+                        continue  # Skip IDE processes
+                    java_processes.append(proc)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+
+        if not java_processes:
+            print("    ✅ No benchmark Java processes running")
+            return True
+
+        print(f"    ⏳ Waiting for {len(java_processes)} Java processes to finish...")
+        time.sleep(2)
+
+    print(f"    ⚠️ Timeout: {len(java_processes)} Java processes still running after {timeout_seconds}s")
+    for proc in java_processes:
+        try:
+            cmdline = ' '.join(proc.cmdline() or [])[:100]  # First 100 chars
+            print(f"      PID {proc.pid}: {cmdline}")
+        except:
+            print(f"      PID {proc.pid}: <cannot read cmdline>")
+
+    return False
+
+def kill_lingering_java_processes(force=False):
+    """Kill lingering Java processes that might interfere with benchmarks"""
+    print("    🧹 Cleaning up lingering Java processes...")
+
+    killed_count = 0
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            if proc.info['name'] and 'java' in proc.info['name'].lower():
+                # Filter out IDE/system Java processes
+                cmdline = ' '.join(proc.info['cmdline'] or [])
+                if any(keyword in cmdline.lower() for keyword in ['idea', 'eclipse', 'vscode', 'netbeans']):
+                    continue  # Skip IDE processes
+
+                # Look for benchmark-related processes
+                if any(keyword in cmdline.lower() for keyword in ['run.sh', 'renaissance', 'jfr', 'benchmark']):
+                    print(f"      🔪 Killing Java process PID {proc.pid}")
+                    if force:
+                        proc.kill()  # SIGKILL
+                    else:
+                        proc.terminate()  # SIGTERM
+                    killed_count += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+
+    if killed_count > 0:
+        print(f"    🧹 Killed {killed_count} lingering Java processes")
+        time.sleep(3)  # Give time for cleanup
+    else:
+        print("    ✅ No lingering Java processes to clean up")
+
+def has_json_parsing_errors(log_path: Path) -> bool:
+    """Check if the log file contains JSON parsing errors that indicate incomplete/corrupted output"""
+    try:
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+
+        # Look for JSON parsing error indicators
+        json_error_indicators = [
+            "Error parsing JSON:",
+            "JSONDecodeError",
+            "No DRAIN_STATS_JSON found",
+            "Could not parse all required statistics",
+            "Missing Successful Samples",
+            "Missing Total Samples",
+            "Missing Lost Samples"
+        ]
+
+        # Check if any error indicators are present
+        for indicator in json_error_indicators:
+            if indicator in content:
+                print(f"    ⚠️ Found JSON parsing issue: {indicator}")
+                return True
+
+        # Also check if we have incomplete JSON (truncated output)
+        if 'DRAIN_STATS_JSON:' in content:
+            # Count complete vs incomplete JSON entries
+            json_lines = [line for line in content.split('\n') if 'DRAIN_STATS_JSON:' in line]
+            for line in json_lines:
+                match = re.search(r'DRAIN_STATS_JSON:\s*(\{.*\})', line)
+                if match:
+                    try:
+                        json.loads(match.group(1))
+                    except json.JSONDecodeError:
+                        print(f"    ⚠️ Found malformed JSON in DRAIN_STATS_JSON")
+                        return True
+
+        return False
+
+    except Exception as e:
+        print(f"    ⚠️ Error checking for JSON parsing errors: {e}")
+        return True  # Assume there are errors if we can't check
+
 # Configuration
-QUEUE_SIZES = [50, 100, 200, 300, 400, 500, 750, 1000, 2000, 5000]
+QUEUE_SIZES = [2, 5, 10, 20, 50, 100, 200, 300, 400, 500, 750, 1000, 2000]
 SAMPLING_INTERVALS = ["1ms", "2ms", "5ms", "10ms", "20ms"]
-NATIVE_DURATIONS = [5, 10, 20, 60, 250]  # seconds
+NATIVE_DURATIONS = [5, 250]  # seconds
 STACK_DEPTHS = [100, 1200]  # Different stack depths to test
 TEST_DURATION = 250  # seconds
 THREADS = os.cpu_count() or 4  # Use number of CPUs, fallback to 4
@@ -70,13 +181,20 @@ DATA_DIR = RESULTS_DIR / "data"
 PLOTS_DIR = RESULTS_DIR / "plots"
 
 class BenchmarkRunner:
-    def __init__(self, minimal=False):
+    def __init__(self, minimal=False, threads=None, max_retries=2):
         self.setup_directories()
         self.results = {
             'native': [],
             'renaissance': []
         }
         self.minimal = minimal
+        self.max_retries = max_retries
+
+        # Always plot after every iteration for real-time feedback
+        self.plot_frequency = 1  # Plot after every single test
+
+        # Set thread count - use provided value, fallback to CPU count or 4
+        self.threads = threads if threads is not None else (os.cpu_count() or 4)
 
         # Set configuration based on minimal flag
         if minimal:
@@ -95,24 +213,35 @@ class BenchmarkRunner:
             self.renaissance_iterations = RENAISSANCE_ITERATIONS
 
     def estimate_runtime(self, test_type: str) -> Tuple[int, str]:
-        """Estimate total runtime for benchmark suite"""
+        """Estimate total runtime for benchmark suite using real data from previous runs"""
         if test_type == 'native':
-            # Native test time = test_duration + setup/teardown (estimated 30s per test)
-            single_test_time = self.test_duration + 30
+            # Try to get real timing data from previous CSV files
+            actual_time_per_test = self._get_actual_test_duration('native')
+            if actual_time_per_test is None:
+                # Fallback to estimated timing if no real data available
+                actual_time_per_test = self.test_duration + 30  # estimated setup/teardown
+                print(f"⚠️ No historical data found, using estimated {actual_time_per_test:.1f}s per test")
+
             total_tests = len(self.queue_sizes) * len(self.sampling_intervals) * len(self.native_durations) * len(self.stack_depths)
-            total_seconds = total_tests * single_test_time
+            total_seconds = total_tests * actual_time_per_test
+
         elif test_type == 'renaissance':
-            # Renaissance tests take 3:30 minutes (210s) + setup/teardown (estimated 30s per test)
-            single_test_time = 210 + 30  # 4 minutes total per test
+            # Try to get real timing data from previous CSV files
+            actual_time_per_test = self._get_actual_test_duration('renaissance')
+            if actual_time_per_test is None:
+                # Fallback: Renaissance tests take 3:30 minutes (210s) + setup/teardown (estimated 30s per test)
+                actual_time_per_test = 210 + 30  # 4 minutes total per test
+                print(f"⚠️ No historical data found, using estimated {actual_time_per_test:.1f}s per test")
+
             total_tests = len(self.queue_sizes) * len(self.sampling_intervals) * len(self.stack_depths)
-            total_seconds = total_tests * single_test_time * self.renaissance_iterations
+            total_seconds = total_tests * actual_time_per_test * self.renaissance_iterations
         else:
             return 0, "Unknown test type"
 
         # Convert to human readable format
-        hours = total_seconds // 3600
-        minutes = (total_seconds % 3600) // 60
-        remaining_seconds = total_seconds % 60
+        hours = int(total_seconds) // 3600
+        minutes = (int(total_seconds) % 3600) // 60
+        remaining_seconds = int(total_seconds) % 60
 
         if hours > 0:
             time_str = f"{hours}h {minutes}m {remaining_seconds}s"
@@ -122,6 +251,67 @@ class BenchmarkRunner:
             time_str = f"{remaining_seconds}s"
 
         return total_seconds, time_str
+
+    def _get_actual_test_duration(self, test_type: str) -> Optional[float]:
+        """Get average actual test duration from historical CSV data"""
+        import glob
+        import pandas as pd
+
+        # Look for CSV files with actual timing data
+        pattern = f"{DATA_DIR}/{test_type}_*.csv"
+        csv_files = glob.glob(pattern)
+
+        if not csv_files:
+            return None
+
+        all_durations = []
+
+        for csv_file in csv_files:
+            try:
+                df = pd.read_csv(csv_file)
+                if 'test_duration_actual' in df.columns:
+                    # Filter out outliers (tests that finished way too early, likely due to errors)
+                    durations = df['test_duration_actual'].dropna()
+                    if test_type == 'native':
+                        # For native tests, filter out tests that finished much faster than expected
+                        # (likely due to errors or early termination)
+                        min_expected = self.test_duration * 0.25  # At least 25% of test duration
+                        durations = durations[durations >= min_expected]
+                    elif test_type == 'renaissance':
+                        # Renaissance tests should take at least 2 minutes (120s)
+                        durations = durations[durations >= 120]
+
+                    all_durations.extend(durations.tolist())
+            except Exception as e:
+                print(f"Warning: Could not read {csv_file} for timing data: {e}")
+                continue
+
+        if not all_durations:
+            return None
+
+        # Calculate median duration to avoid outliers affecting the estimate
+        import statistics
+        median_duration = statistics.median(all_durations)
+
+        # Adjust estimate based on current test duration vs historical data
+        if test_type == 'native':
+            # Check if historical data is for a similar test duration
+            historical_test_duration = median_duration - 30  # Rough estimate of historical test duration (minus overhead)
+            if abs(historical_test_duration - self.test_duration) > 50:  # Significant difference (>50s)
+                # Scale the overhead estimation based on test duration ratio
+                overhead_ratio = median_duration / max(historical_test_duration, 1)
+                estimated_duration = self.test_duration * overhead_ratio
+                print(f"📊 Scaling estimate: Historical data from {historical_test_duration:.0f}s tests, current {self.test_duration}s tests")
+                print(f"📊 Scaled estimate: {len(all_durations)} samples, historical median={median_duration:.1f}s, scaled estimate={estimated_duration:.1f}s")
+            else:
+                # Add some buffer for variance (10% extra)
+                estimated_duration = median_duration * 1.10
+                print(f"📊 Using real data: {len(all_durations)} samples, median={median_duration:.1f}s, estimate={estimated_duration:.1f}s")
+        else:
+            # For Renaissance tests, use median with buffer
+            estimated_duration = median_duration * 1.10
+            print(f"📊 Using real data: {len(all_durations)} samples, median={median_duration:.1f}s, estimate={estimated_duration:.1f}s")
+        return estimated_duration
 
     def setup_directories(self):
         """Create necessary directories for results"""
@@ -280,7 +470,45 @@ class BenchmarkRunner:
             df.to_csv(latest_csv, index=False)
             print(f"    💾 Updated {latest_csv.name} with {len(self.results[test_type])} results")
 
+    def run_test_with_retry(self, test_func, *args, **kwargs) -> Dict:
+        """Run a test function with retry logic for JSON parsing failures"""
+        max_retries = self.max_retries
+        for attempt in range(max_retries + 1):  # 0-based, so +1 for inclusive range
+            if attempt > 0:
+                print(f"    🔄 Retry attempt {attempt}/{max_retries}")
+                # Clean up any lingering processes before retry
+                kill_lingering_java_processes(force=False)
+                time.sleep(5)  # Give some time between retries
+
+            result = test_func(*args, **kwargs)
+
+            # Check if test was successful
+            if result.get('success', False):
+                # Additional check: verify no JSON parsing errors in the log
+                log_file = result.get('log_file')
+                if log_file:
+                    log_path = LOGS_DIR / log_file
+                    if log_path.exists() and has_json_parsing_errors(log_path):
+                        print(f"    ⚠️ Test succeeded but found JSON parsing errors in log")
+                        if attempt < max_retries:
+                            print(f"    🔄 Will retry due to JSON parsing issues")
+                            continue
+                        else:
+                            print(f"    ⚠️ Max retries reached, keeping result despite JSON issues")
+
+                print(f"    ✅ Test successful" + (f" (after {attempt} retries)" if attempt > 0 else ""))
+                return result
+            else:
+                print(f"    ❌ Test failed" + (f" (attempt {attempt + 1}/{max_retries + 1})" if attempt < max_retries else ""))
+
+        print(f"    ❌ Test failed after {max_retries + 1} attempts")
+        return result  # Return the last failed result
+
     def run_native_test(self, queue_size: int, interval: str, stack_depth: int, native_duration: Optional[int] = None) -> Dict:
+        """Run a single native test with retry logic for JSON parsing failures"""
+        return self.run_test_with_retry(self._run_native_test_internal, queue_size, interval, stack_depth, native_duration)
+
+    def _run_native_test_internal(self, queue_size: int, interval: str, stack_depth: int, native_duration: Optional[int] = None) -> Dict:
         """Run a single native test and extract loss percentage"""
         print(f"  Running: queue={queue_size}, interval={interval}, stack_depth={stack_depth}, native_duration={native_duration}")
 
@@ -293,7 +521,7 @@ class BenchmarkRunner:
             "./run.sh",
             "-d", str(self.test_duration),
             "-s", str(stack_depth),
-            "-t", str(THREADS),
+            "-t", str(self.threads),
             "-i", interval,
             "-q", str(queue_size),
             "--no-analysis",  # Enable analysis tables but skip plots/visualizations
@@ -319,6 +547,9 @@ class BenchmarkRunner:
                 )
 
             print(f"    Return code: {result.returncode}")
+
+            # Wait for any lingering Java processes to finish
+            wait_for_java_processes(timeout_seconds=30)
 
             # Extract loss percentage and out-of-thread data from log
             extracted_data = self.extract_loss_percentage(log_path)
@@ -385,6 +616,10 @@ class BenchmarkRunner:
             }
 
     def run_renaissance_test(self, queue_size: int, interval: str, stack_depth: int) -> Dict:
+        """Run a single Renaissance test with retry logic for JSON parsing failures"""
+        return self.run_test_with_retry(self._run_renaissance_test_internal, queue_size, interval, stack_depth)
+
+    def _run_renaissance_test_internal(self, queue_size: int, interval: str, stack_depth: int) -> Dict:
         """Run a single Renaissance test and extract loss percentage"""
         print(f"  Running Renaissance: queue={queue_size}, interval={interval}, stack_depth={stack_depth}")
 
@@ -397,6 +632,7 @@ class BenchmarkRunner:
             "--mode", "renaissance",
             "-n", str(self.renaissance_iterations),
             "-s", str(stack_depth),
+            "-t", str(self.threads),
             "-i", interval,
             "-q", str(queue_size),
             "--no-analysis",  # Enable analysis tables but skip plots/visualizations
@@ -415,6 +651,9 @@ class BenchmarkRunner:
                     stdout=log_file,
                     stderr=subprocess.STDOUT,
                 )
+
+            # Wait for any lingering Java processes to finish
+            wait_for_java_processes(timeout_seconds=30)
 
             # Extract loss percentage from log
             extracted_data = self.extract_loss_percentage(log_path)
@@ -1150,6 +1389,7 @@ class BenchmarkRunner:
         print(f"  Intervals: {self.sampling_intervals}")
         print(f"  Durations: {self.native_durations}")
         print(f"  Stack depths: {self.stack_depths}")
+        print(f"  Threads: {self.threads}")
 
         current_test = 0
         start_time = time.time()
@@ -1182,6 +1422,9 @@ class BenchmarkRunner:
                             result['test_number'] = current_test
                             result['test_duration_actual'] = test_time
                             self.update_csv_realtime('native', result)
+
+                            # Generate real-time plots after every successful test
+                            self.plot_realtime_progress('native')
                         else:
                             print(f"    ❌ Failed or no data (took {test_time:.1f}s)")
                             if result:
@@ -1189,13 +1432,19 @@ class BenchmarkRunner:
                                 result['test_duration_actual'] = test_time
                                 self.update_csv_realtime('native', result)
 
-                        # Small delay between tests
+                        # Small delay between tests and wait for any lingering processes
                         time.sleep(2)
+                        wait_for_java_processes(timeout_seconds=15)
 
         total_time = time.time() - start_time
         print(f"\n✅ Native benchmark complete!")
         print(f"   Total runtime: {total_time/3600:.1f} hours ({total_time/60:.1f} minutes)")
         print(f"   Results saved to {DATA_DIR}")
+
+        # Generate final comprehensive real-time plots
+        print(f"   📊 Generating final real-time plots...")
+        self.plot_realtime_progress('native')
+
         self.save_results('native')
 
     def run_renaissance_benchmark(self):
@@ -1216,6 +1465,7 @@ class BenchmarkRunner:
         print(f"  Intervals: {self.sampling_intervals}")
         print(f"  Stack depths: {self.stack_depths}")
         print(f"  Iterations: {self.renaissance_iterations}")
+        print(f"  Threads: {self.threads}")
 
         current_test = 0
         start_time = time.time()
@@ -1247,6 +1497,9 @@ class BenchmarkRunner:
                         result['test_number'] = current_test
                         result['test_duration_actual'] = test_time
                         self.update_csv_realtime('renaissance', result)
+
+                        # Generate real-time plots after every successful test
+                        self.plot_realtime_progress('renaissance')
                     else:
                         print(f"    ❌ Failed or no data (took {test_time:.1f}s)")
                         if result:
@@ -1254,8 +1507,20 @@ class BenchmarkRunner:
                             result['test_duration_actual'] = test_time
                             self.update_csv_realtime('renaissance', result)
 
-                    # Small delay between tests
+                    # Small delay between tests and wait for any lingering processes
                     time.sleep(2)
+                    wait_for_java_processes(timeout_seconds=15)
+
+        total_time = time.time() - start_time
+        print(f"\n✅ Renaissance benchmark complete!")
+        print(f"   Total runtime: {total_time/3600:.1f} hours ({total_time/60:.1f} minutes)")
+        print(f"   Results saved to {DATA_DIR}")
+
+        # Generate final comprehensive real-time plots
+        print(f"   📊 Generating final real-time plots...")
+        self.plot_realtime_progress('renaissance')
+
+        self.save_results('renaissance')
 
     def save_results(self, test_type: str):
         """Save results to JSON and CSV with descriptive filenames"""
@@ -1320,6 +1585,172 @@ class BenchmarkRunner:
         else:
             print(f"No results found for {test_type}. Run benchmark first.")
             return None
+
+    def plot_realtime_progress(self, test_type: str = 'native'):
+        """Generate real-time plots after each test iteration"""
+        try:
+            # Only generate plots if we have sufficient data
+            if len(self.results[test_type]) < 2:
+                return
+
+            print(f"    📊 Generating real-time plots ({len(self.results[test_type])} results so far)...")
+
+            # Convert current results to DataFrame
+            df = self.flatten_for_csv(self.results[test_type])
+
+            # Only include successful tests with loss percentage data
+            df = df[df['success'] == True]
+            df = df.dropna(subset=['loss_percentage'])
+
+            if len(df) < 2:
+                print(f"    ⚠️ Not enough successful results yet ({len(df)} successful)")
+                return
+
+            # Set plotting style
+            plt.style.use('seaborn-v0_8')
+            sns.set_palette("husl")
+
+            # Create plots for each sampling interval
+            for interval in df['interval'].unique():
+                interval_data = df[df['interval'] == interval]
+
+                if len(interval_data) < 2:
+                    continue
+
+                # Create figure for this interval
+                fig, ax = plt.subplots(figsize=(12, 8))
+
+                if test_type == 'native':
+                    # Plot lines for each combination of stack depth and native duration
+                    for stack_depth in sorted(interval_data['stack_depth'].unique()):
+                        for native_duration in sorted(interval_data['native_duration'].unique()):
+                            subset = interval_data[
+                                (interval_data['stack_depth'] == stack_depth) &
+                                (interval_data['native_duration'] == native_duration)
+                            ]
+
+                            if len(subset) < 1:
+                                continue
+
+                            # Sort by queue size for proper line plotting
+                            subset = subset.sort_values('queue_size')
+
+                            # Create label for this combination
+                            label = f"Stack {stack_depth}, Duration {native_duration}s"
+
+                            # Plot the line
+                            ax.plot(subset['queue_size'], subset['loss_percentage'],
+                                   marker='o', linewidth=2, markersize=6, label=label)
+
+                elif test_type == 'renaissance':
+                    # Plot lines for each stack depth (no native duration in Renaissance)
+                    for stack_depth in sorted(interval_data['stack_depth'].unique()):
+                        subset = interval_data[interval_data['stack_depth'] == stack_depth]
+
+                        if len(subset) < 1:
+                            continue
+
+                        # Sort by queue size for proper line plotting
+                        subset = subset.sort_values('queue_size')
+
+                        # Create label for this combination
+                        label = f"Stack {stack_depth}"
+
+                        # Plot the line
+                        ax.plot(subset['queue_size'], subset['loss_percentage'],
+                               marker='o', linewidth=2, markersize=6, label=label)                # Customize the plot
+                ax.set_xlabel('Queue Size', fontsize=12)
+                ax.set_ylabel('Loss Percentage (%)', fontsize=12)
+                ax.set_title(f'Loss Rate vs Queue Size - Interval: {interval}\n'
+                           f'Progress: {len(interval_data)} tests completed', fontsize=14, fontweight='bold')
+                ax.grid(True, alpha=0.3)
+                ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+
+                # Set x-axis to log scale if we have a wide range of queue sizes
+                if interval_data['queue_size'].max() / interval_data['queue_size'].min() > 10:
+                    ax.set_xscale('log')
+
+                # Save the plot
+                realtime_plots_dir = PLOTS_DIR / "realtime"
+                realtime_plots_dir.mkdir(exist_ok=True)
+
+                plot_filename = f"{test_type}_realtime_loss_vs_queue_{interval}_progress_{len(df)}_tests.png"
+                plot_path = realtime_plots_dir / plot_filename
+
+                plt.tight_layout()
+                plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+                plt.close(fig)
+
+                print(f"    📊 Saved real-time plot: {plot_filename}")
+
+            # Also create a summary plot with all intervals
+            if len(df['interval'].unique()) > 1:
+                fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+                axes = axes.flatten()
+
+                for i, interval in enumerate(sorted(df['interval'].unique())):
+                    if i >= len(axes):
+                        break
+
+                    ax = axes[i]
+                    interval_data = df[df['interval'] == interval]
+
+                    if test_type == 'native':
+                        for stack_depth in sorted(interval_data['stack_depth'].unique()):
+                            for native_duration in sorted(interval_data['native_duration'].unique()):
+                                subset = interval_data[
+                                    (interval_data['stack_depth'] == stack_depth) &
+                                    (interval_data['native_duration'] == native_duration)
+                                ]
+
+                                if len(subset) < 1:
+                                    continue
+
+                                subset = subset.sort_values('queue_size')
+                                label = f"S{stack_depth}, D{native_duration}s"
+
+                                ax.plot(subset['queue_size'], subset['loss_percentage'],
+                                       marker='o', linewidth=2, markersize=4, label=label)
+
+                    elif test_type == 'renaissance':
+                        for stack_depth in sorted(interval_data['stack_depth'].unique()):
+                            subset = interval_data[interval_data['stack_depth'] == stack_depth]
+
+                            if len(subset) < 1:
+                                continue
+
+                            subset = subset.sort_values('queue_size')
+                            label = f"Stack {stack_depth}"
+
+                            ax.plot(subset['queue_size'], subset['loss_percentage'],
+                                   marker='o', linewidth=2, markersize=4, label=label)
+
+                    ax.set_xlabel('Queue Size')
+                    ax.set_ylabel('Loss %')
+                    ax.set_title(f'{interval}')
+                    ax.grid(True, alpha=0.3)
+                    ax.legend(fontsize=8)
+
+                    if interval_data['queue_size'].max() / interval_data['queue_size'].min() > 10:
+                        ax.set_xscale('log')
+
+                # Hide unused subplots
+                for i in range(len(df['interval'].unique()), len(axes)):
+                    axes[i].set_visible(False)
+
+                fig.suptitle(f'Real-time Progress: {len(df)} Tests Completed', fontsize=16, fontweight='bold')
+
+                summary_filename = f"{test_type}_realtime_summary_progress_{len(df)}_tests.png"
+                summary_path = realtime_plots_dir / summary_filename
+
+                plt.tight_layout()
+                plt.savefig(summary_path, dpi=300, bbox_inches='tight')
+                plt.close(fig)
+
+                print(f"    📊 Saved real-time summary: {summary_filename}")
+
+        except Exception as e:
+            print(f"    ⚠️ Error generating real-time plots: {e}")
 
     def create_visualizations(self):
         """Create comprehensive visualizations"""
@@ -1651,6 +2082,10 @@ def main():
                        help='Run only native benchmarks (skip Renaissance)')
     parser.add_argument('--only-renaissance', action='store_true',
                        help='Run only Renaissance benchmarks (skip native)')
+    parser.add_argument('--threads', type=int, default=None,
+                       help=f'Number of threads to use (default: {os.cpu_count() or 4}, auto-detect CPU count)')
+    parser.add_argument('--retries', type=int, default=2,
+                       help='Number of retries for tests with JSON parsing failures (default: 2)')
 
     args = parser.parse_args()
 
@@ -1663,7 +2098,7 @@ def main():
         return
 
     # Create benchmark runner with minimal configuration if requested
-    runner = BenchmarkRunner(minimal=args.minimal)
+    runner = BenchmarkRunner(minimal=args.minimal, threads=args.threads, max_retries=args.retries)
 
     # Show configuration info
     print(f"JFR Queue Size Benchmark Suite")
@@ -1674,40 +2109,18 @@ def main():
         print(f"Sampling intervals: {runner.sampling_intervals}")
         print(f"Native durations: {runner.native_durations}")
         print(f"Test duration: {runner.test_duration}s")
+        print(f"Threads: {runner.threads}")
     else:
         print(f"Mode: Full (comprehensive analysis)")
         print(f"Queue sizes: {len(runner.queue_sizes)} values from {min(runner.queue_sizes)} to {max(runner.queue_sizes)}")
         print(f"Sampling intervals: {len(runner.sampling_intervals)} values from {runner.sampling_intervals[0]} to {runner.sampling_intervals[-1]}")
         print(f"Test duration: {runner.test_duration}s")
+        print(f"Threads: {runner.threads}")
     print(f"{'='*50}")
 
     # Show estimates if requested
     if args.estimate:
         print("⏱️ Benchmark Runtime Estimates")
-
-        # Show native estimates
-        native_seconds, native_time = runner.estimate_runtime('native')
-        native_tests = len(runner.queue_sizes) * len(runner.sampling_intervals) * len(runner.native_durations) * len(runner.stack_depths)
-        print(f"🔧 Native Benchmark:")
-        print(f"   Tests: {native_tests}")
-        print(f"   Estimated time: {native_time}")
-        print(f"   Expected completion: {datetime.fromtimestamp(time.time() + native_seconds).strftime('%Y-%m-%d %H:%M:%S')}")
-
-        # Only show Renaissance estimates if not in minimal mode and not only-native
-        if not args.minimal and not args.only_native:
-            renaissance_seconds, renaissance_time = runner.estimate_runtime('renaissance')
-            renaissance_tests = len(runner.queue_sizes) * len(runner.sampling_intervals) * len(runner.stack_depths)
-            print(f"🏛️ Renaissance Benchmark:")
-            print(f"   Tests: {renaissance_tests}")
-            print(f"   Estimated time: {renaissance_time}")
-            print(f"   Expected completion: {datetime.fromtimestamp(time.time() + renaissance_seconds).strftime('%Y-%m-%d %H:%M:%S')}")
-
-            total_seconds = native_seconds + renaissance_seconds
-            total_tests = native_tests + renaissance_tests
-        else:
-            # In minimal mode, only-native mode, or only-renaissance mode, only show native totals
-            total_seconds = native_seconds
-            total_tests = native_tests
 
         # Special case: if only-renaissance, show only Renaissance estimates
         if args.only_renaissance:
@@ -1720,10 +2133,37 @@ def main():
 
             total_seconds = renaissance_seconds
             total_tests = renaissance_tests
+        else:
+            # Show native estimates (unless only-renaissance)
+            native_seconds, native_time = runner.estimate_runtime('native')
+            native_tests = len(runner.queue_sizes) * len(runner.sampling_intervals) * len(runner.native_durations) * len(runner.stack_depths)
+            print(f"🔧 Native Benchmark:")
+            print(f"   Tests: {native_tests}")
+            print(f"   Estimated time: {native_time}")
+            print(f"   Expected completion: {datetime.fromtimestamp(time.time() + native_seconds).strftime('%Y-%m-%d %H:%M:%S')}")
 
-        hours = total_seconds // 3600
-        minutes = (total_seconds % 3600) // 60
-        remaining_seconds = total_seconds % 60
+            # Show Renaissance estimates if:
+            # 1. --all is specified (regardless of minimal mode)
+            # 2. Not in minimal mode and not only-native
+            # 3. --run-renaissance is specified
+            if args.all or args.run_renaissance or (not args.minimal and not args.only_native):
+                renaissance_seconds, renaissance_time = runner.estimate_runtime('renaissance')
+                renaissance_tests = len(runner.queue_sizes) * len(runner.sampling_intervals) * len(runner.stack_depths)
+                print(f"🏛️ Renaissance Benchmark:")
+                print(f"   Tests: {renaissance_tests}")
+                print(f"   Estimated time: {renaissance_time}")
+                print(f"   Expected completion: {datetime.fromtimestamp(time.time() + renaissance_seconds).strftime('%Y-%m-%d %H:%M:%S')}")
+
+                total_seconds = native_seconds + renaissance_seconds
+                total_tests = native_tests + renaissance_tests
+            else:
+                # Only native will run
+                total_seconds = native_seconds
+                total_tests = native_tests
+
+        hours = int(total_seconds) // 3600
+        minutes = (int(total_seconds) % 3600) // 60
+        remaining_seconds = int(total_seconds) % 60
         if hours > 0:
             total_time = f"{hours}h {minutes}m {remaining_seconds}s"
         elif minutes > 0:
@@ -1731,13 +2171,19 @@ def main():
         else:
             total_time = f"{remaining_seconds}s"
 
-        if not args.minimal and not args.only_native and not args.only_renaissance:
-            print(f"🎯 Combined Total:")
+        # Determine the appropriate total label based on what will actually run
+        if args.only_renaissance:
+            print(f"🎯 Total (Renaissance Only):")
             print(f"   Tests: {total_tests}")
             print(f"   Estimated time: {total_time}")
             print(f"   Expected completion: {datetime.fromtimestamp(time.time() + total_seconds).strftime('%Y-%m-%d %H:%M:%S')}")
-        elif args.only_renaissance:
-            print(f"🎯 Total (Renaissance Only):")
+        elif args.only_native:
+            print(f"🎯 Total (Native Only):")
+            print(f"   Tests: {total_tests}")
+            print(f"   Estimated time: {total_time}")
+            print(f"   Expected completion: {datetime.fromtimestamp(time.time() + total_seconds).strftime('%Y-%m-%d %H:%M:%S')}")
+        elif args.all or args.run_renaissance or (not args.minimal and not args.only_native):
+            print(f"🎯 Combined Total:")
             print(f"   Tests: {total_tests}")
             print(f"   Estimated time: {total_time}")
             print(f"   Expected completion: {datetime.fromtimestamp(time.time() + total_seconds).strftime('%Y-%m-%d %H:%M:%S')}")
