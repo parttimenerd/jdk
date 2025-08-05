@@ -625,7 +625,7 @@ struct DrainStats {
     // Build JSON string in memory to avoid printf buffering issues
     stringStream json_buffer;
 
-    json_buffer.print("DRAIN_STATS_JSON:{\"name\":\"%s\",\"drains\":%ld,\"runtime_ns\":%ld,\"runtime_seconds\":%.3f,\"time\":{\"sum\":%ld,\"avg\":%ld,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99.9\":%ld},\"events\":{\"sum\":%ld,\"avg\":%.2f,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99.9\":%ld},\"time_histogram\":[",
+    json_buffer.print("DRAIN_STATS_JSON:{\"name\":\"%s\",\"drains\":%ld,\"runtime_ns\":%ld,\"runtime_seconds\":%.3f,\"time\":{\"sum\":%ld,\"avg\":%ld,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99_9\":%ld},\"events\":{\"sum\":%ld,\"avg\":%.2f,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99_9\":%ld},\"time_histogram\":[",
            name, drains, json_runtime_ns, json_runtime_seconds, time_sum, drains > 0 ? time_sum / drains : 0, time_min, time_max, time_median, time_p95, time_p99, time_p999,
            event_sum, drains > 0 ? event_sum * 1.0 / drains : 0.0, event_min, event_max, event_median, event_p95, event_p99, event_p999);
 

@@ -20,11 +20,13 @@ Runtime Estimates:
 
 import argparse
 import csv
+import glob
 import json
 import os
 import psutil
 import re
 import signal
+import statistics
 import subprocess
 import sys
 import time
@@ -33,6 +35,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -41,51 +44,15 @@ import seaborn as sns
 try:
     from analyze_drain_categories import extract_drain_stats_by_label, DRAIN_CATEGORIES, calculate_event_weighted_percentiles
     ANALYSIS_AVAILABLE = True
-    print("✅ Successfully imported drain analysis functions")
 except ImportError as e:
     ANALYSIS_AVAILABLE = False
-    print(f"⚠️ Could not import drain analysis functions: {e}")
-    print("   Falling back to basic parsing methods")
 
 # Process Management Utilities
-def wait_for_java_processes(timeout_seconds=60):
-    """Wait for Java processes to finish, with timeout"""
-    print("    🔍 Checking for running Java processes...")
 
-    start_time = time.time()
-    while time.time() - start_time < timeout_seconds:
-        java_processes = []
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            try:
-                if proc.info['name'] and 'java' in proc.info['name'].lower():
-                    # Filter out IDE/system Java processes by looking at command line
-                    cmdline = ' '.join(proc.info['cmdline'] or [])
-                    if any(keyword in cmdline.lower() for keyword in ['idea', 'eclipse', 'vscode', 'netbeans']):
-                        continue  # Skip IDE processes
-                    java_processes.append(proc)
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
-
-        if not java_processes:
-            print("    ✅ No benchmark Java processes running")
-            return True
-
-        print(f"    ⏳ Waiting for {len(java_processes)} Java processes to finish...")
-        time.sleep(2)
-
-    print(f"    ⚠️ Timeout: {len(java_processes)} Java processes still running after {timeout_seconds}s")
-    for proc in java_processes:
-        try:
-            cmdline = ' '.join(proc.cmdline() or [])[:100]  # First 100 chars
-            print(f"      PID {proc.pid}: {cmdline}")
-        except:
-            print(f"      PID {proc.pid}: <cannot read cmdline>")
-
-    return False
-
-def kill_lingering_java_processes(force=False):
+def kill_lingering_java_processes(force=False, verbose=False):
     """Kill lingering Java processes that might interfere with benchmarks"""
-    print("    🧹 Cleaning up lingering Java processes...")
+    if verbose:
+        print("    🧹 Cleaning up lingering Java processes...")
 
     killed_count = 0
     for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
@@ -98,7 +65,8 @@ def kill_lingering_java_processes(force=False):
 
                 # Look for benchmark-related processes
                 if any(keyword in cmdline.lower() for keyword in ['run.sh', 'renaissance', 'jfr', 'benchmark']):
-                    print(f"      🔪 Killing Java process PID {proc.pid}")
+                    if verbose:
+                        print(f"      🔪 Killing Java process PID {proc.pid}")
                     if force:
                         proc.kill()  # SIGKILL
                     else:
@@ -108,12 +76,14 @@ def kill_lingering_java_processes(force=False):
             continue
 
     if killed_count > 0:
-        print(f"    🧹 Killed {killed_count} lingering Java processes")
+        if verbose:
+            print(f"    🧹 Killed {killed_count} lingering Java processes")
         time.sleep(3)  # Give time for cleanup
     else:
-        print("    ✅ No lingering Java processes to clean up")
+        if verbose:
+            print("    ✅ No lingering Java processes to clean up")
 
-def has_json_parsing_errors(log_path: Path) -> bool:
+def has_json_parsing_errors(log_path: Path, verbose: bool = False) -> bool:
     """Check if the log file contains JSON parsing errors that indicate incomplete/corrupted output"""
     try:
         with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -133,7 +103,8 @@ def has_json_parsing_errors(log_path: Path) -> bool:
         # Check if any error indicators are present
         for indicator in json_error_indicators:
             if indicator in content:
-                print(f"    ⚠️ Found JSON parsing issue: {indicator}")
+                if verbose:
+                    print(f"    ⚠️ Found JSON parsing issue: {indicator}")
                 return True
 
         # Also check if we have incomplete JSON (truncated output)
@@ -146,17 +117,19 @@ def has_json_parsing_errors(log_path: Path) -> bool:
                     try:
                         json.loads(match.group(1))
                     except json.JSONDecodeError:
-                        print(f"    ⚠️ Found malformed JSON in DRAIN_STATS_JSON")
+                        if verbose:
+                            print(f"    ⚠️ Found malformed JSON in DRAIN_STATS_JSON")
                         return True
 
         return False
 
     except Exception as e:
-        print(f"    ⚠️ Error checking for JSON parsing errors: {e}")
+        if verbose:
+            print(f"    ⚠️ Error checking for JSON parsing errors: {e}")
         return True  # Assume there are errors if we can't check
 
 # Configuration
-QUEUE_SIZES = [2, 5, 10, 20, 50, 100, 200, 300, 400, 500, 750, 1000, 2000]
+QUEUE_SIZES = [1, 2, 5, 10, 20, 50, 100, 200, 300, 400, 500, 750, 1000, 2000]
 SAMPLING_INTERVALS = ["1ms", "2ms", "5ms", "10ms", "20ms"]
 NATIVE_DURATIONS = [5, 250]  # seconds
 STACK_DEPTHS = [100, 1200]  # Different stack depths to test
@@ -181,7 +154,7 @@ DATA_DIR = RESULTS_DIR / "data"
 PLOTS_DIR = RESULTS_DIR / "plots"
 
 class BenchmarkRunner:
-    def __init__(self, minimal=False, threads=None, max_retries=2):
+    def __init__(self, minimal=False, threads=None, max_retries=2, verbose=False):
         self.setup_directories()
         self.results = {
             'native': [],
@@ -189,6 +162,7 @@ class BenchmarkRunner:
         }
         self.minimal = minimal
         self.max_retries = max_retries
+        self.verbose = verbose
 
         # Always plot after every iteration for real-time feedback
         self.plot_frequency = 1  # Plot after every single test
@@ -212,6 +186,17 @@ class BenchmarkRunner:
             self.test_duration = TEST_DURATION
             self.renaissance_iterations = RENAISSANCE_ITERATIONS
 
+    def _get_plot_filename(self, base_name: str, progress_mode: bool = False) -> str:
+        """Generate appropriate filename based on progress mode"""
+        if progress_mode:
+            # Insert '_progress' before the file extension
+            name_parts = base_name.split('.')
+            if len(name_parts) > 1:
+                return f"{'.'.join(name_parts[:-1])}_progress.{name_parts[-1]}"
+            else:
+                return f"{base_name}_progress"
+        return base_name
+
     def estimate_runtime(self, test_type: str) -> Tuple[int, str]:
         """Estimate total runtime for benchmark suite using real data from previous runs"""
         if test_type == 'native':
@@ -220,7 +205,7 @@ class BenchmarkRunner:
             if actual_time_per_test is None:
                 # Fallback to estimated timing if no real data available
                 actual_time_per_test = self.test_duration + 30  # estimated setup/teardown
-                print(f"⚠️ No historical data found, using estimated {actual_time_per_test:.1f}s per test")
+                self.vprint(f"⚠️ No historical data found, using estimated {actual_time_per_test:.1f}s per test")
 
             total_tests = len(self.queue_sizes) * len(self.sampling_intervals) * len(self.native_durations) * len(self.stack_depths)
             total_seconds = total_tests * actual_time_per_test
@@ -231,7 +216,7 @@ class BenchmarkRunner:
             if actual_time_per_test is None:
                 # Fallback: Renaissance tests take 3:30 minutes (210s) + setup/teardown (estimated 30s per test)
                 actual_time_per_test = 210 + 30  # 4 minutes total per test
-                print(f"⚠️ No historical data found, using estimated {actual_time_per_test:.1f}s per test")
+                self.vprint(f"⚠️ No historical data found, using estimated {actual_time_per_test:.1f}s per test")
 
             total_tests = len(self.queue_sizes) * len(self.sampling_intervals) * len(self.stack_depths)
             total_seconds = total_tests * actual_time_per_test * self.renaissance_iterations
@@ -283,7 +268,7 @@ class BenchmarkRunner:
 
                     all_durations.extend(durations.tolist())
             except Exception as e:
-                print(f"Warning: Could not read {csv_file} for timing data: {e}")
+                self.vprint(f"Warning: Could not read {csv_file} for timing data: {e}")
                 continue
 
         if not all_durations:
@@ -301,22 +286,27 @@ class BenchmarkRunner:
                 # Scale the overhead estimation based on test duration ratio
                 overhead_ratio = median_duration / max(historical_test_duration, 1)
                 estimated_duration = self.test_duration * overhead_ratio
-                print(f"📊 Scaling estimate: Historical data from {historical_test_duration:.0f}s tests, current {self.test_duration}s tests")
-                print(f"📊 Scaled estimate: {len(all_durations)} samples, historical median={median_duration:.1f}s, scaled estimate={estimated_duration:.1f}s")
+                self.vprint(f"📊 Scaling estimate: Historical data from {historical_test_duration:.0f}s tests, current {self.test_duration}s tests")
+                self.vprint(f"📊 Scaled estimate: {len(all_durations)} samples, historical median={median_duration:.1f}s, scaled estimate={estimated_duration:.1f}s")
             else:
                 # Add some buffer for variance (10% extra)
                 estimated_duration = median_duration * 1.10
-                print(f"📊 Using real data: {len(all_durations)} samples, median={median_duration:.1f}s, estimate={estimated_duration:.1f}s")
+                self.vprint(f"📊 Using real data: {len(all_durations)} samples, median={median_duration:.1f}s, estimate={estimated_duration:.1f}s")
         else:
             # For Renaissance tests, use median with buffer
             estimated_duration = median_duration * 1.10
-            print(f"📊 Using real data: {len(all_durations)} samples, median={median_duration:.1f}s, estimate={estimated_duration:.1f}s")
+            self.vprint(f"📊 Using real data: {len(all_durations)} samples, median={median_duration:.1f}s, estimate={estimated_duration:.1f}s")
         return estimated_duration
 
     def setup_directories(self):
         """Create necessary directories for results"""
         for dir_path in [RESULTS_DIR, LOGS_DIR, DATA_DIR, PLOTS_DIR]:
             dir_path.mkdir(exist_ok=True)
+
+    def vprint(self, *args, **kwargs):
+        """Print only if verbose mode is enabled"""
+        if self.verbose:
+            print(*args, **kwargs)
 
     def flatten_for_csv(self, results: List[Dict]) -> pd.DataFrame:
         """Flatten complex nested fields for CSV export"""
@@ -468,7 +458,7 @@ class BenchmarkRunner:
         if self.results[test_type]:
             df = self.flatten_for_csv(self.results[test_type])
             df.to_csv(latest_csv, index=False)
-            print(f"    💾 Updated {latest_csv.name} with {len(self.results[test_type])} results")
+            self.vprint(f"    💾 Updated {latest_csv.name} with {len(self.results[test_type])} results")
 
     def run_test_with_retry(self, test_func, *args, **kwargs) -> Dict:
         """Run a test function with retry logic for JSON parsing failures"""
@@ -477,7 +467,7 @@ class BenchmarkRunner:
             if attempt > 0:
                 print(f"    🔄 Retry attempt {attempt}/{max_retries}")
                 # Clean up any lingering processes before retry
-                kill_lingering_java_processes(force=False)
+                kill_lingering_java_processes(force=False, verbose=self.verbose)
                 time.sleep(5)  # Give some time between retries
 
             result = test_func(*args, **kwargs)
@@ -485,16 +475,21 @@ class BenchmarkRunner:
             # Check if test was successful
             if result.get('success', False):
                 # Additional check: verify no JSON parsing errors in the log
+                # But only retry if we didn't get the essential data (loss_percentage)
                 log_file = result.get('log_file')
-                if log_file:
+                if log_file and result.get('loss_percentage') is None:
                     log_path = LOGS_DIR / log_file
-                    if log_path.exists() and has_json_parsing_errors(log_path):
-                        print(f"    ⚠️ Test succeeded but found JSON parsing errors in log")
+                    if log_path.exists() and has_json_parsing_errors(log_path, self.verbose):
+                        print(f"    ⚠️ Test succeeded but found JSON parsing errors and missing loss data")
                         if attempt < max_retries:
-                            print(f"    🔄 Will retry due to JSON parsing issues")
+                            print(f"    🔄 Will retry due to JSON parsing issues and missing data")
                             continue
                         else:
                             print(f"    ⚠️ Max retries reached, keeping result despite JSON issues")
+                elif log_file:
+                    log_path = LOGS_DIR / log_file
+                    if log_path.exists() and has_json_parsing_errors(log_path, self.verbose):
+                        print(f"    ⚠️ Test succeeded and extracted loss data, but found JSON parsing errors (not retrying)")
 
                 print(f"    ✅ Test successful" + (f" (after {attempt} retries)" if attempt > 0 else ""))
                 return result
@@ -533,8 +528,8 @@ class BenchmarkRunner:
 
         # Generate log filename
 
-        print(f"    Command: {' '.join(cmd)}")
-        print(f"    Log file: {log_path}")
+        self.vprint(f"    Command: {' '.join(cmd)}")
+        self.vprint(f"    Log file: {log_path}")
 
         # Run test
         try:
@@ -546,10 +541,7 @@ class BenchmarkRunner:
                     stderr=subprocess.STDOUT,
                 )
 
-            print(f"    Return code: {result.returncode}")
-
-            # Wait for any lingering Java processes to finish
-            wait_for_java_processes(timeout_seconds=30)
+            self.vprint(f"    Return code: {result.returncode}")
 
             # Extract loss percentage and out-of-thread data from log
             extracted_data = self.extract_loss_percentage(log_path)
@@ -562,11 +554,11 @@ class BenchmarkRunner:
                 out_of_thread_details = extracted_data.get('out_of_thread_details')
                 all_without_locks_events = extracted_data.get('all_without_locks_events')
                 all_without_locks_details = extracted_data.get('all_without_locks_details')
-                print(f"    Extracted loss percentage: {loss_percentage}")
+                print(f"    Loss: {loss_percentage}%")
                 if out_of_thread_percentage is not None:
-                    print(f"    Extracted out-of-thread: {out_of_thread_events:,} events ({out_of_thread_percentage:.6f}%)")
+                    print(f"    Out-of-thread: {out_of_thread_events:,} events ({out_of_thread_percentage:.2f}%)")
                 if all_without_locks_events is not None:
-                    print(f"    Extracted all-without-locks: {all_without_locks_events:,} events")
+                    self.vprint(f"    All-without-locks: {all_without_locks_events:,} events")
             else:
                 # Fallback for old format
                 loss_percentage = extracted_data
@@ -575,7 +567,7 @@ class BenchmarkRunner:
                 out_of_thread_details = None
                 all_without_locks_events = None
                 all_without_locks_details = None
-                print(f"    Extracted loss percentage: {loss_percentage}")
+                print(f"    Loss: {loss_percentage}%")
 
             result_data = {
                 'queue_size': queue_size,
@@ -652,9 +644,6 @@ class BenchmarkRunner:
                     stderr=subprocess.STDOUT,
                 )
 
-            # Wait for any lingering Java processes to finish
-            wait_for_java_processes(timeout_seconds=30)
-
             # Extract loss percentage from log
             extracted_data = self.extract_loss_percentage(log_path)
 
@@ -666,11 +655,11 @@ class BenchmarkRunner:
                 out_of_thread_details = extracted_data.get('out_of_thread_details')
                 all_without_locks_events = extracted_data.get('all_without_locks_events')
                 all_without_locks_details = extracted_data.get('all_without_locks_details')
-                print(f"    Extracted loss percentage: {loss_percentage}")
+                print(f"    Loss: {loss_percentage}%")
                 if out_of_thread_percentage is not None:
-                    print(f"    Extracted out-of-thread: {out_of_thread_events:,} events ({out_of_thread_percentage:.6f}%)")
+                    print(f"    Out-of-thread: {out_of_thread_events:,} events ({out_of_thread_percentage:.2f}%)")
                 if all_without_locks_events is not None:
-                    print(f"    Extracted all-without-locks: {all_without_locks_events:,} events")
+                    self.vprint(f"    All-without-locks: {all_without_locks_events:,} events")
             else:
                 loss_percentage = extracted_data
                 out_of_thread_events = None
@@ -678,7 +667,7 @@ class BenchmarkRunner:
                 out_of_thread_details = None
                 all_without_locks_events = None
                 all_without_locks_details = None
-                print(f"    Extracted loss percentage: {loss_percentage}")
+                print(f"    Loss: {loss_percentage}%")
 
             result_data = {
                 'queue_size': queue_size,
@@ -724,11 +713,11 @@ class BenchmarkRunner:
             section_match = re.search(analysis_pattern, content, re.DOTALL)
 
             if not section_match:
-                print("    ⚠️ Could not find 'QUEUE SIZE ANALYSIS - Event-Weighted Percentiles' section")
+                self.vprint("    ⚠️ Could not find 'QUEUE SIZE ANALYSIS - Event-Weighted Percentiles' section")
                 return {}
 
             analysis_text = section_match.group(1)
-            print(f"    📊 Found queue size analysis section ({len(analysis_text)} chars)")
+            self.vprint(f"    📊 Found queue size analysis section ({len(analysis_text)} chars)")
 
             queue_stats = {}
 
@@ -770,26 +759,26 @@ class BenchmarkRunner:
                         queue_stats[current_category][percentile_key] = queue_size
 
             if queue_stats:
-                print(f"    📊 Extracted percentiles for categories: {list(queue_stats.keys())}")
+                self.vprint(f"    📊 Extracted percentiles for categories: {list(queue_stats.keys())}")
                 for category, stats in queue_stats.items():
                     percentiles = [k for k in stats.keys() if k.startswith('p')]
                     events = stats.get('total_events', 'N/A')
-                    print(f"      {category}: {len(percentiles)} percentiles, {events:,} total events")
+                    self.vprint(f"      {category}: {len(percentiles)} percentiles, {events:,} total events")
 
             return queue_stats
 
         except Exception as e:
-            print(f"    ⚠️ Error extracting queue size percentiles: {e}")
+            self.vprint(f"    ⚠️ Error extracting queue size percentiles: {e}")
             return {}
 
     def parse_drain_stats_with_analysis_script(self, log_file_path: Path):
         """Parse drain statistics using the analysis script's parsing logic"""
         if not ANALYSIS_AVAILABLE:
-            print("    ⚠️ Analysis script functions not available, falling back to basic parsing")
+            self.vprint("    ⚠️ Analysis script functions not available, falling back to basic parsing")
             return {'loss_percentage': None, 'out_of_thread_events': None, 'out_of_thread_percentage': None}
 
         try:
-            print(f"    🔍 Using analysis script to parse: {log_file_path}")
+            self.vprint(f"    🔍 Using analysis script to parse: {log_file_path}")
 
             # Read all DRAIN_STATS_JSON lines from the log file
             all_stats = []
@@ -802,14 +791,14 @@ class BenchmarkRunner:
                                 data = json.loads(match.group(1))
                                 all_stats.append(data)
                             except json.JSONDecodeError as e:
-                                print(f"    ⚠️ Error parsing JSON: {e}")
+                                self.vprint(f"    ⚠️ Error parsing JSON: {e}")
                                 continue
 
             if not all_stats:
-                print(f"    ⚠️ No DRAIN_STATS_JSON found in {log_file_path}")
+                self.vprint(f"    ⚠️ No DRAIN_STATS_JSON found in {log_file_path}")
                 return {'loss_percentage': None, 'out_of_thread_events': None, 'out_of_thread_percentage': None}
 
-            print(f"    📊 Found {len(all_stats)} drain statistics entries")
+            self.vprint(f"    📊 Found {len(all_stats)} drain statistics entries")
 
             # Extract drain categories and calculate event counts
             result = {
@@ -858,7 +847,7 @@ class BenchmarkRunner:
                             'median': events_data.get('50th', events_data.get('median', 0)),
                             'p95': events_data.get('95th', events_data.get('p95', 0)),
                             'p99': events_data.get('99th', events_data.get('p99', 0)),
-                            'p99_9': events_data.get('99.9th', events_data.get('p99.9', events_data.get('p99_9', 0)))
+                            'p99_9': events_data.get('p99_9', events_data.get('99.9th', events_data.get('p99.9', 0)))
                         },
                         'time_ns': {
                             'sum': time_data.get('sum', 0),
@@ -868,7 +857,7 @@ class BenchmarkRunner:
                             'median': time_data.get('50th', time_data.get('median', 0)),
                             'p95': time_data.get('95th', time_data.get('p95', 0)),
                             'p99': time_data.get('99th', time_data.get('p99', 0)),
-                            'p99_9': time_data.get('99.9th', time_data.get('p99.9', time_data.get('p99_9', 0)))
+                            'p99_9': time_data.get('p99_9', time_data.get('99.9th', time_data.get('p99.9', 0)))
                         },
                         'queue_size_percentiles': {
                             'median': queue_percentiles.get('median', 0),
@@ -886,9 +875,9 @@ class BenchmarkRunner:
                     # Count events only from "without locks" categories
                     if 'without locks' in category_name.lower():
                         total_events_without_locks += events_sum
-                        print(f"    📊 {category_name}: {events_sum:,} events (counted in without-locks total)")
+                        self.vprint(f"    📊 {category_name}: {events_sum:,} events (counted in without-locks total)")
                     else:
-                        print(f"    📊 {category_name}: {events_sum:,} events (excluded from without-locks total)")
+                        self.vprint(f"    📊 {category_name}: {events_sum:,} events (excluded from without-locks total)")
 
                     # Track specific categories
                     if 'out of thread' in category_name.lower():
@@ -928,12 +917,12 @@ class BenchmarkRunner:
                 if (total + lost) > 0:
                     loss_percentage = (lost / (total + lost)) * 100
                     result['loss_percentage'] = loss_percentage
-                    print(f"    📊 JFR Loss: {lost:,}/{total + lost:,} = {loss_percentage:.2f}%")
+                    self.vprint(f"    📊 JFR Loss: {lost:,}/{total + lost:,} = {loss_percentage:.2f}%")
 
             return result
 
         except Exception as e:
-            print(f"    ⚠️ Error parsing with analysis script: {e}")
+            self.vprint(f"    ⚠️ Error parsing with analysis script: {e}")
             return {'loss_percentage': None, 'out_of_thread_events': None, 'out_of_thread_percentage': None}
 
     def parse_raw_drain_stats(self, raw_file_path: Path):
@@ -942,7 +931,7 @@ class BenchmarkRunner:
             with open(raw_file_path, 'r', encoding='utf-8', errors='replace') as f:
                 content = f.read()
 
-            print(f"    📊 Parsing drain statistics from .raw file ({len(content):,} chars)")
+            self.vprint(f"    📊 Parsing drain statistics from .raw file ({len(content):,} chars)")
 
             result = {
                 'loss_percentage': None,
@@ -963,7 +952,7 @@ class BenchmarkRunner:
             all_without_locks_events = 0
 
             for category_name, section_content in drain_sections:
-                print(f"    📋 Processing drain category: {category_name}")
+                self.vprint(f"    📋 Processing drain category: {category_name}")
 
                 # Parse basic statistics
                 requests_match = re.search(r'Requests:\s*(\d+)', section_content)
@@ -1011,9 +1000,9 @@ class BenchmarkRunner:
                     # Only count events from "without locks" categories
                     if 'without locks' in category_name.lower():
                         total_events_without_locks += events_sum
-                        print(f"      {category_name}: {events_sum:,} events (counted in without-locks total)")
+                        self.vprint(f"      {category_name}: {events_sum:,} events (counted in without-locks total)")
                     else:
-                        print(f"      {category_name}: {events_sum:,} events (excluded from without-locks total)")
+                        self.vprint(f"      {category_name}: {events_sum:,} events (excluded from without-locks total)")
 
                     # Track specific categories
                     if 'out of thread' in category_name.lower():
@@ -1055,12 +1044,12 @@ class BenchmarkRunner:
                     if (total + lost) > 0:
                         loss_percentage = (lost / (total + lost)) * 100
                         result['loss_percentage'] = loss_percentage
-                        print(f"    📊 JFR Loss: {lost:,}/{total + lost:,} = {loss_percentage:.2f}%")
+                        self.vprint(f"    📊 JFR Loss: {lost:,}/{total + lost:,} = {loss_percentage:.2f}%")
 
             return result
 
         except Exception as e:
-            print(f"    ⚠️ Error parsing .raw drain statistics: {e}")
+            self.vprint(f"    ⚠️ Error parsing .raw drain statistics: {e}")
             return {'loss_percentage': None, 'out_of_thread_events': None, 'out_of_thread_percentage': None}
 
     def extract_loss_percentage(self, log_path: Path):
@@ -1069,25 +1058,25 @@ class BenchmarkRunner:
             # First try to read the corresponding .raw file for more detailed drain statistics
             raw_file_path = Path(str(log_path) + ".raw")
             if raw_file_path.exists():
-                print(f"    🔍 Found .raw file: {raw_file_path}")
+                self.vprint(f"    🔍 Found .raw file: {raw_file_path}")
 
                 # Prioritize using the analysis script on the .raw file since it contains DRAIN_STATS_JSON
                 if ANALYSIS_AVAILABLE:
-                    print(f"    🔍 Using analysis script on .raw file: {raw_file_path}")
+                    self.vprint(f"    🔍 Using analysis script on .raw file: {raw_file_path}")
                     result = self.parse_drain_stats_with_analysis_script(raw_file_path)
                     if result.get('out_of_thread_events') is not None or result.get('loss_percentage') is not None:
                         return result
-                    print(f"    ⚠️ Analysis script didn't find data in .raw file, falling back to raw parsing...")
+                    self.vprint(f"    ⚠️ Analysis script didn't find data in .raw file, falling back to raw parsing...")
 
                 return self.parse_raw_drain_stats(raw_file_path)
 
             # If no .raw file, try using the analysis script on the main log file
             if ANALYSIS_AVAILABLE:
-                print(f"    🔍 No .raw file found, trying analysis script on main log: {log_path}")
+                self.vprint(f"    🔍 No .raw file found, trying analysis script on main log: {log_path}")
                 result = self.parse_drain_stats_with_analysis_script(log_path)
                 if result.get('out_of_thread_events') is not None or result.get('loss_percentage') is not None:
                     return result
-                print(f"    ⚠️ Analysis script didn't find data in main log, falling back to basic parsing...")
+                self.vprint(f"    ⚠️ Analysis script didn't find data in main log, falling back to basic parsing...")
 
             # Fallback to parsing the main log file
             # Try different encodings to handle special characters
@@ -1098,7 +1087,7 @@ class BenchmarkRunner:
                 try:
                     with open(log_path, 'r', encoding=encoding, errors='replace') as f:
                         content = f.read()
-                    print(f"    📝 Successfully read log with {encoding} encoding: {log_path}")
+                    self.vprint(f"    📝 Successfully read log with {encoding} encoding: {log_path}")
                     break
                 except UnicodeDecodeError:
                     continue
@@ -1108,9 +1097,9 @@ class BenchmarkRunner:
                 with open(log_path, 'rb') as f:
                     raw_content = f.read()
                 content = raw_content.decode('utf-8', errors='replace')
-                print(f"    📝 Read log with fallback binary mode: {log_path}")
+                self.vprint(f"    📝 Read log with fallback binary mode: {log_path}")
 
-            print(f"    📏 Log size: {len(content):,} characters")
+            self.vprint(f"    📏 Log size: {len(content):,} characters")
 
             result = {
                 'loss_percentage': None,
@@ -1128,7 +1117,7 @@ class BenchmarkRunner:
 
             if out_of_thread_match:
                 section_content = out_of_thread_match.group(1)
-                print(f"    📊 Found out-of-thread section ({len(section_content)} chars)")
+                self.vprint(f"    📊 Found out-of-thread section ({len(section_content)} chars)")
 
                 # Parse detailed statistics from the section
                 out_of_thread_details = {}
@@ -1170,18 +1159,18 @@ class BenchmarkRunner:
                     out_of_thread_details['events'] = out_of_thread_events
                     result['out_of_thread_events'] = out_of_thread_events
 
-                    print(f"    📊 Parsed out-of-thread details:")
-                    print(f"       Requests: {out_of_thread_details.get('requests', 'N/A')}")
-                    print(f"       Runtime: {out_of_thread_details.get('runtime_seconds', 'N/A')}s ({out_of_thread_details.get('runtime_minutes', 'N/A')} min)")
-                    print(f"       Request Rate: {out_of_thread_details.get('request_rate', 'N/A')} req/s")
-                    print(f"       Events: {out_of_thread_events:,}")
+                    self.vprint(f"    📊 Parsed out-of-thread details:")
+                    self.vprint(f"       Requests: {out_of_thread_details.get('requests', 'N/A')}")
+                    self.vprint(f"       Runtime: {out_of_thread_details.get('runtime_seconds', 'N/A')}s ({out_of_thread_details.get('runtime_minutes', 'N/A')} min)")
+                    self.vprint(f"       Request Rate: {out_of_thread_details.get('request_rate', 'N/A')} req/s")
+                    self.vprint(f"       Events: {out_of_thread_events:,}")
                     if 'time_ns' in out_of_thread_details:
                         time_stats = out_of_thread_details['time_ns']
-                        print(f"       Time (ns): avg={time_stats['avg']:,}, median={time_stats['median']:,}, p95={time_stats['p95']:,}")
+                        self.vprint(f"       Time (ns): avg={time_stats['avg']:,}, median={time_stats['median']:,}, p95={time_stats['p95']:,}")
 
                 result['out_of_thread_details'] = out_of_thread_details
             else:
-                print(f"    ⚠️ Could not find 'out of thread Drain Statistics' section")
+                self.vprint(f"    ⚠️ Could not find 'out of thread Drain Statistics' section")
 
             # Extract "all without locks" statistics from Drain Statistics sections
             # Look for the complete "=== all without locks Drain Statistics ===" section
@@ -1190,7 +1179,7 @@ class BenchmarkRunner:
 
             if all_without_locks_match:
                 section_content = all_without_locks_match.group(1)
-                print(f"    📊 Found all-without-locks section ({len(section_content)} chars)")
+                self.vprint(f"    📊 Found all-without-locks section ({len(section_content)} chars)")
 
                 # Parse detailed statistics from the section
                 all_without_locks_details = {}
@@ -1232,18 +1221,18 @@ class BenchmarkRunner:
                     all_without_locks_details['events'] = all_without_locks_events
                     result['all_without_locks_events'] = all_without_locks_events
 
-                    print(f"    📊 Parsed all-without-locks details:")
-                    print(f"       Requests: {all_without_locks_details.get('requests', 'N/A'):,}")
-                    print(f"       Runtime: {all_without_locks_details.get('runtime_seconds', 'N/A')}s ({all_without_locks_details.get('runtime_minutes', 'N/A')} min)")
-                    print(f"       Request Rate: {all_without_locks_details.get('request_rate', 'N/A'):,} req/s")
-                    print(f"       Events: {all_without_locks_events:,}")
+                    self.vprint(f"    📊 Parsed all-without-locks details:")
+                    self.vprint(f"       Requests: {all_without_locks_details.get('requests', 'N/A'):,}")
+                    self.vprint(f"       Runtime: {all_without_locks_details.get('runtime_seconds', 'N/A')}s ({all_without_locks_details.get('runtime_minutes', 'N/A')} min)")
+                    self.vprint(f"       Request Rate: {all_without_locks_details.get('request_rate', 'N/A'):,} req/s")
+                    self.vprint(f"       Events: {all_without_locks_events:,}")
                     if 'time_ns' in all_without_locks_details:
                         time_stats = all_without_locks_details['time_ns']
-                        print(f"       Time (ns): sum={time_stats['sum']:,}, avg={time_stats['avg']:,}, median={time_stats['median']:,}")
+                        self.vprint(f"       Time (ns): sum={time_stats['sum']:,}, avg={time_stats['avg']:,}, median={time_stats['median']:,}")
 
                 result['all_without_locks_details'] = all_without_locks_details
             else:
-                print(f"    ⚠️ Could not find 'all without locks Drain Statistics' section")
+                self.vprint(f"    ⚠️ Could not find 'all without locks Drain Statistics' section")
 
             # Calculate out-of-thread percentage using all drain statistics sections
             all_events_pattern = r'Events:\s*sum=(\d+)'
@@ -1251,25 +1240,25 @@ class BenchmarkRunner:
 
             if len(all_events_matches) >= 1:
                 total_events = sum(int(match) for match in all_events_matches)
-                print(f"    📊 Found {len(all_events_matches)} drain statistics sections with total events: {total_events:,}")
+                self.vprint(f"    📊 Found {len(all_events_matches)} drain statistics sections with total events: {total_events:,}")
 
                 if result.get('out_of_thread_events') and total_events > 0:
                     out_of_thread_percentage = (result['out_of_thread_events'] / total_events) * 100
                     result['out_of_thread_percentage'] = out_of_thread_percentage
-                    print(f"    📊 Calculated out-of-thread percentage: {out_of_thread_percentage:.6f}% ({result['out_of_thread_events']:,}/{total_events:,})")
+                    self.vprint(f"    📊 Calculated out-of-thread percentage: {out_of_thread_percentage:.6f}% ({result['out_of_thread_events']:,}/{total_events:,})")
                 elif total_events == 0:
-                    print(f"    ⚠️ Total events is 0, cannot calculate percentage")
+                    self.vprint(f"    ⚠️ Total events is 0, cannot calculate percentage")
             else:
-                print(f"    ⚠️ Could not find any drain statistics sections with events")            # First try direct search for all statistics in entire content
-            print(f"    🔍 Searching entire log for JFR statistics...")
+                self.vprint(f"    ⚠️ Could not find any drain statistics sections with events")            # First try direct search for all statistics in entire content
+            self.vprint(f"    🔍 Searching entire log for JFR statistics...")
             successful_match = re.search(r'Successful Samples:\s*([\d,]+)', content)
             total_match = re.search(r'Total Samples:\s*([\d,]+)', content)
             lost_match = re.search(r'Lost Samples:\s*([\d,]+)', content)
 
-            print(f"    Direct search results:")
-            print(f"       Successful: {'✅' if successful_match else '❌'} {successful_match.group(1) if successful_match else 'Not found'}")
-            print(f"       Total: {'✅' if total_match else '❌'} {total_match.group(1) if total_match else 'Not found'}")
-            print(f"       Lost: {'✅' if lost_match else '❌'} {lost_match.group(1) if lost_match else 'Not found'}")
+            self.vprint(f"    Direct search results:")
+            self.vprint(f"       Successful: {'✅' if successful_match else '❌'} {successful_match.group(1) if successful_match else 'Not found'}")
+            self.vprint(f"       Total: {'✅' if total_match else '❌'} {total_match.group(1) if total_match else 'Not found'}")
+            self.vprint(f"       Lost: {'✅' if lost_match else '❌'} {lost_match.group(1) if lost_match else 'Not found'}")
 
             if successful_match and total_match and lost_match:
                 # Remove commas and convert to int
@@ -1280,15 +1269,15 @@ class BenchmarkRunner:
                 # Calculate loss percentage: lost / (total + lost) * 100
                 if (total + lost) > 0:
                     loss_percentage = (lost / (total + lost)) * 100
-                    print(f"    📊 Parsed: Successful={successful:,}, Total={total:,}, Lost={lost:,}")
-                    print(f"    📊 Total attempted: {total + lost:,}")
-                    print(f"    📊 Calculated loss rate: {loss_percentage:.2f}%")
+                    self.vprint(f"    📊 Parsed: Successful={successful:,}, Total={total:,}, Lost={lost:,}")
+                    self.vprint(f"    📊 Total attempted: {total + lost:,}")
+                    self.vprint(f"    📊 Calculated loss rate: {loss_percentage:.2f}%")
 
                     # Return loss percentage and out-of-thread data
                     result['loss_percentage'] = loss_percentage
                     return result
                 else:
-                    print(f"    ⚠️ Total attempted samples is 0")
+                    self.vprint(f"    ⚠️ Total attempted samples is 0")
                     result['loss_percentage'] = 0.0
                     return result
 
@@ -1300,7 +1289,7 @@ class BenchmarkRunner:
 
             if match:
                 loss_rate = float(match.group(1))
-                print(f"    Found loss rate pattern: {loss_rate}%")
+                self.vprint(f"    Found loss rate pattern: {loss_rate}%")
                 result['loss_percentage'] = loss_rate
                 return result
 
@@ -1432,9 +1421,8 @@ class BenchmarkRunner:
                                 result['test_duration_actual'] = test_time
                                 self.update_csv_realtime('native', result)
 
-                        # Small delay between tests and wait for any lingering processes
+                        # Small delay between tests
                         time.sleep(2)
-                        wait_for_java_processes(timeout_seconds=15)
 
         total_time = time.time() - start_time
         print(f"\n✅ Native benchmark complete!")
@@ -1507,9 +1495,8 @@ class BenchmarkRunner:
                             result['test_duration_actual'] = test_time
                             self.update_csv_realtime('renaissance', result)
 
-                    # Small delay between tests and wait for any lingering processes
+                    # Small delay between tests
                     time.sleep(2)
-                    wait_for_java_processes(timeout_seconds=15)
 
         total_time = time.time() - start_time
         print(f"\n✅ Renaissance benchmark complete!")
@@ -1610,18 +1597,68 @@ class BenchmarkRunner:
             plt.style.use('seaborn-v0_8')
             sns.set_palette("husl")
 
-            # Create plots for each sampling interval
-            for interval in df['interval'].unique():
+            # Calculate global y-range for all data to ensure consistency across plots
+            all_loss_percentages = df['loss_percentage'].dropna()
+            if len(all_loss_percentages) == 0:
+                print(f"    ⚠️ No valid loss percentage data")
+                return
+
+            # For normal scale: minimum should be 0, maximum with some padding but capped at 100%
+            y_min_normal = 0  # Always start from 0 for normal scale
+            y_max_normal = min(100.0, all_loss_percentages.max() * 1.1)  # Cap at 100% loss
+
+            # Create combined grid plot for all intervals
+            # Order intervals by numeric value (1ms, 2ms, 5ms, 10ms, 20ms)
+            def interval_sort_key(interval):
+                """Sort intervals by numeric value"""
+                return int(interval.replace('ms', ''))
+
+            intervals = sorted(df['interval'].unique(), key=interval_sort_key)
+            n_intervals = len(intervals)
+
+            if n_intervals == 0:
+                print(f"    ⚠️ No intervals found in data")
+                return
+
+            # Calculate grid dimensions
+            if n_intervals <= 2:
+                cols = n_intervals
+                rows = 1
+            elif n_intervals <= 4:
+                cols = 2
+                rows = 2
+            elif n_intervals <= 6:
+                cols = 3
+                rows = 2
+            else:
+                cols = 3
+                rows = (n_intervals + 2) // 3
+
+            # Create figure with subplots
+            fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 5*rows))
+
+            # Handle single subplot case
+            if n_intervals == 1:
+                axes = [axes]
+            elif rows == 1:
+                axes = axes if hasattr(axes, '__len__') else [axes]
+            else:
+                axes = axes.flatten()
+
+            for i, interval in enumerate(intervals):
+                if i >= len(axes):
+                    break
+
+                ax = axes[i]
                 interval_data = df[df['interval'] == interval]
 
-                if len(interval_data) < 2:
+                if len(interval_data) < 1:
+                    ax.set_title(f'{interval} (No Data)')
+                    ax.axis('off')
                     continue
 
-                # Create figure for this interval
-                fig, ax = plt.subplots(figsize=(12, 8))
-
                 if test_type == 'native':
-                    # Plot lines for each combination of stack depth and native duration
+                    # Plot points for each combination of stack depth and native duration
                     for stack_depth in sorted(interval_data['stack_depth'].unique()):
                         for native_duration in sorted(interval_data['native_duration'].unique()):
                             subset = interval_data[
@@ -1632,125 +1669,511 @@ class BenchmarkRunner:
                             if len(subset) < 1:
                                 continue
 
-                            # Sort by queue size for proper line plotting
+                            # Sort by queue size for proper plotting
                             subset = subset.sort_values('queue_size')
 
                             # Create label for this combination
-                            label = f"Stack {stack_depth}, Duration {native_duration}s"
+                            label = f"S{stack_depth}, D{native_duration}s"
 
-                            # Plot the line
+                            # Plot the points
                             ax.plot(subset['queue_size'], subset['loss_percentage'],
-                                   marker='o', linewidth=2, markersize=6, label=label)
+                                   marker='o', linestyle='None', markersize=4, label=label)
 
                 elif test_type == 'renaissance':
-                    # Plot lines for each stack depth (no native duration in Renaissance)
+                    # Plot points for each stack depth (no native duration in Renaissance)
                     for stack_depth in sorted(interval_data['stack_depth'].unique()):
                         subset = interval_data[interval_data['stack_depth'] == stack_depth]
 
                         if len(subset) < 1:
                             continue
 
-                        # Sort by queue size for proper line plotting
+                        # Sort by queue size for proper plotting
                         subset = subset.sort_values('queue_size')
 
                         # Create label for this combination
                         label = f"Stack {stack_depth}"
 
-                        # Plot the line
+                        # Plot the points
                         ax.plot(subset['queue_size'], subset['loss_percentage'],
-                               marker='o', linewidth=2, markersize=6, label=label)                # Customize the plot
-                ax.set_xlabel('Queue Size', fontsize=12)
-                ax.set_ylabel('Loss Percentage (%)', fontsize=12)
-                ax.set_title(f'Loss Rate vs Queue Size - Interval: {interval}\n'
-                           f'Progress: {len(interval_data)} tests completed', fontsize=14, fontweight='bold')
+                               marker='o', linestyle='None', markersize=4, label=label)
+
+                # Customize the subplot
+                ax.set_xlabel('Queue Size', fontsize=10)
+                ax.set_ylabel('Loss %', fontsize=10)
+                ax.set_title(f'{interval} ({len(interval_data)} tests)', fontsize=12, fontweight='bold')
                 ax.grid(True, alpha=0.3)
-                ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+
+                # Set shared y-axis range for consistency across all subplots
+                ax.set_ylim(y_min_normal, y_max_normal)
+
+                # Add legend if there are multiple lines
+                lines, labels = ax.get_legend_handles_labels()
+                if lines:
+                    ax.legend(fontsize=8, loc='best')
 
                 # Set x-axis to log scale if we have a wide range of queue sizes
-                if interval_data['queue_size'].max() / interval_data['queue_size'].min() > 10:
+                if len(interval_data) > 1 and interval_data['queue_size'].max() / interval_data['queue_size'].min() > 10:
                     ax.set_xscale('log')
 
-                # Save the plot
-                realtime_plots_dir = PLOTS_DIR / "realtime"
-                realtime_plots_dir.mkdir(exist_ok=True)
+                    # Add more minor ticks for log scale with finer subdivisions
+                    ax.xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.1, 1.0, 0.1)))
+                    # Show selective minor tick labels to prevent scientific notation
+                    ax.xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}' if x in [20, 50, 200, 500, 2000, 5000] else ''))
+                    ax.grid(True, which='minor', alpha=0.25)
+                    ax.grid(True, which='major', alpha=0.5)
+                else:
+                    # Add more minor ticks for normal scale
+                    ax.xaxis.set_minor_locator(ticker.AutoMinorLocator(5))
 
-                plot_filename = f"{test_type}_realtime_loss_vs_queue_{interval}_progress_{len(df)}_tests.png"
-                plot_path = realtime_plots_dir / plot_filename
+                # Add more minor ticks for y-axis (always normal scale for these plots)
+                ax.yaxis.set_minor_locator(ticker.AutoMinorLocator(5))
+                ax.grid(True, which='minor', alpha=0.15)
 
-                plt.tight_layout()
-                plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-                plt.close(fig)
+                # Prevent scientific notation on axes
+                ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
 
-                print(f"    📊 Saved real-time plot: {plot_filename}")
+            # Hide unused subplots
+            for i in range(n_intervals, len(axes)):
+                axes[i].set_visible(False)
 
-            # Also create a summary plot with all intervals
-            if len(df['interval'].unique()) > 1:
-                fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+            # Add overall title (minimal)
+            fig.suptitle(f'{test_type.title()} Progress',
+                        fontsize=16, fontweight='bold', y=0.99)
+
+            # Save the combined plot
+            realtime_plots_dir = PLOTS_DIR / "realtime"
+            realtime_plots_dir.mkdir(exist_ok=True)
+
+            plot_filename = f"{test_type}_realtime_combined_progress.png"
+            plot_path = realtime_plots_dir / plot_filename
+
+            plt.tight_layout()
+            plt.subplots_adjust(top=0.92)  # Move title higher to avoid overlap
+            plt.savefig(plot_path, dpi=600, bbox_inches='tight')
+            plt.close(fig)
+
+            print(f"    📊 Saved combined real-time plot: {plot_filename}")
+            print(f"    📍 Absolute path: {plot_path.absolute()}")
+
+            # Also create log-scaled version with unified y-range and 1% reference line
+            self._create_log_scaled_combined_plot(df, test_type, realtime_plots_dir)
+
+            # Generate high DPI individual plots for each interval
+            self._create_individual_interval_plots(df, test_type, realtime_plots_dir, intervals)
+
+        except Exception as e:
+            print(f"    ⚠️ Error generating real-time plots: {e}")
+
+    def _create_log_scaled_combined_plot(self, df, test_type: str, realtime_plots_dir):
+        """Create a log-scaled combined plot with unified y-range and 1% reference line"""
+        try:
+            # Order intervals by numeric value (1ms, 2ms, 5ms, 10ms, 20ms)
+            def interval_sort_key(interval):
+                """Sort intervals by numeric value"""
+                return int(interval.replace('ms', ''))
+
+            intervals = sorted(df['interval'].unique(), key=interval_sort_key)
+            n_intervals = len(intervals)
+
+            if n_intervals == 0:
+                return
+
+            # Calculate global y-range for all data
+            all_loss_percentages = df['loss_percentage'].dropna()
+            if len(all_loss_percentages) == 0:
+                return
+
+            # Set y-range with some padding, ensuring we capture the 1% line
+            y_min = max(0.001, all_loss_percentages.min() * 0.5)  # Don't go below 0.001%
+            y_max = min(100.0, max(1.0, all_loss_percentages.max() * 2.0))   # Cap at 100% loss, ensure 1% line is visible
+
+            # Calculate grid dimensions
+            if n_intervals <= 2:
+                cols = n_intervals
+                rows = 1
+            elif n_intervals <= 4:
+                cols = 2
+                rows = 2
+            elif n_intervals <= 6:
+                cols = 3
+                rows = 2
+            else:
+                cols = 3
+                rows = (n_intervals + 2) // 3
+
+            # Create figure with subplots
+            fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 5*rows))
+
+            # Handle single subplot case
+            if n_intervals == 1:
+                axes = [axes]
+            elif rows == 1:
+                axes = axes if hasattr(axes, '__len__') else [axes]
+            else:
                 axes = axes.flatten()
 
-                for i, interval in enumerate(sorted(df['interval'].unique())):
-                    if i >= len(axes):
-                        break
+            for i, interval in enumerate(intervals):
+                if i >= len(axes):
+                    break
 
-                    ax = axes[i]
-                    interval_data = df[df['interval'] == interval]
+                ax = axes[i]
+                interval_data = df[df['interval'] == interval]
 
-                    if test_type == 'native':
-                        for stack_depth in sorted(interval_data['stack_depth'].unique()):
-                            for native_duration in sorted(interval_data['native_duration'].unique()):
-                                subset = interval_data[
-                                    (interval_data['stack_depth'] == stack_depth) &
-                                    (interval_data['native_duration'] == native_duration)
-                                ]
+                if len(interval_data) < 1:
+                    ax.set_title(f'{interval} (No Data)')
+                    ax.axis('off')
+                    continue
 
-                                if len(subset) < 1:
-                                    continue
-
-                                subset = subset.sort_values('queue_size')
-                                label = f"S{stack_depth}, D{native_duration}s"
-
-                                ax.plot(subset['queue_size'], subset['loss_percentage'],
-                                       marker='o', linewidth=2, markersize=4, label=label)
-
-                    elif test_type == 'renaissance':
-                        for stack_depth in sorted(interval_data['stack_depth'].unique()):
-                            subset = interval_data[interval_data['stack_depth'] == stack_depth]
+                if test_type == 'native':
+                    # Plot points for each combination of stack depth and native duration
+                    for stack_depth in sorted(interval_data['stack_depth'].unique()):
+                        for native_duration in sorted(interval_data['native_duration'].unique()):
+                            subset = interval_data[
+                                (interval_data['stack_depth'] == stack_depth) &
+                                (interval_data['native_duration'] == native_duration)
+                            ]
 
                             if len(subset) < 1:
                                 continue
 
+                            # Sort by queue size for proper plotting
                             subset = subset.sort_values('queue_size')
-                            label = f"Stack {stack_depth}"
 
+                            # Create label for this combination
+                            label = f"S{stack_depth}, D{native_duration}s"
+
+                            # Plot the points
                             ax.plot(subset['queue_size'], subset['loss_percentage'],
-                                   marker='o', linewidth=2, markersize=4, label=label)
+                                   marker='o', linestyle='None', markersize=4, label=label)
 
-                    ax.set_xlabel('Queue Size')
-                    ax.set_ylabel('Loss %')
-                    ax.set_title(f'{interval}')
-                    ax.grid(True, alpha=0.3)
-                    ax.legend(fontsize=8)
+                elif test_type == 'renaissance':
+                    # Plot points for each stack depth (no native duration in Renaissance)
+                    for stack_depth in sorted(interval_data['stack_depth'].unique()):
+                        subset = interval_data[interval_data['stack_depth'] == stack_depth]
 
-                    if interval_data['queue_size'].max() / interval_data['queue_size'].min() > 10:
-                        ax.set_xscale('log')
+                        if len(subset) < 1:
+                            continue
 
-                # Hide unused subplots
-                for i in range(len(df['interval'].unique()), len(axes)):
-                    axes[i].set_visible(False)
+                        # Sort by queue size for proper plotting
+                        subset = subset.sort_values('queue_size')
 
-                fig.suptitle(f'Real-time Progress: {len(df)} Tests Completed', fontsize=16, fontweight='bold')
+                        # Create label for this combination
+                        label = f"Stack {stack_depth}"
 
-                summary_filename = f"{test_type}_realtime_summary_progress_{len(df)}_tests.png"
-                summary_path = realtime_plots_dir / summary_filename
+                        # Plot the points
+                        ax.plot(subset['queue_size'], subset['loss_percentage'],
+                               marker='o', linestyle='None', markersize=4, label=label)
 
-                plt.tight_layout()
-                plt.savefig(summary_path, dpi=300, bbox_inches='tight')
-                plt.close(fig)
+                # Add the psychologically important 1% reference line
+                ax.axhline(y=1.0, color='red', linestyle=':', linewidth=1, alpha=0.7, label='1% threshold')
 
-                print(f"    📊 Saved real-time summary: {summary_filename}")
+                # Customize the subplot
+                ax.set_xlabel('Queue Size (log scale)', fontsize=10)
+                ax.set_ylabel('Loss % (log scale)', fontsize=10)
+                ax.set_title(f'{interval} ({len(interval_data)} tests)', fontsize=12, fontweight='bold')
+                ax.grid(True, alpha=0.3)
+
+                # Set unified y-range and log scale
+                ax.set_ylim(y_min, y_max)
+                ax.set_yscale('log')
+
+                # Always set x-axis to log scale for the log-scaled plot
+                ax.set_xscale('log')
+
+                # Prevent scientific notation on axes even with log scale
+                ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.4f}' if y < 0.01 else f'{y:,.2f}'))
+
+                # Set major tick locators first to ensure they're always visible
+                ax.xaxis.set_major_locator(ticker.LogLocator(base=10.0, numticks=8))
+                ax.yaxis.set_major_locator(ticker.LogLocator(base=10.0, numticks=8))
+
+                # Add minor ticks with conservative subdivision to avoid overcrowding
+                ax.xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.2, 1.0, 0.2)))  # Less crowded subdivisions
+                ax.yaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.2, 1.0, 0.2)))  # Less crowded subdivisions
+
+                # Selective minor tick labeling - only show key values to avoid overcrowding
+                ax.xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}' if x in [20, 50, 200, 500, 2000] else ''))
+                # Reduce y-axis minor labels to prevent disappearing labels
+                key_y_values = [0.002, 0.005, 0.02, 0.05, 0.2, 0.5, 2.0, 5.0, 20.0, 50.0]
+                ax.yaxis.set_minor_formatter(ticker.FuncFormatter(lambda y, pos: f'{y:.3f}' if y in key_y_values else ''))
+
+                ax.grid(True, which='minor', alpha=0.3)   # Make minor grid more visible
+                ax.grid(True, which='major', alpha=0.6)   # Ensure major grid is visible
+
+                # Add legend if there are multiple lines
+                lines, labels = ax.get_legend_handles_labels()
+                if lines:
+                    ax.legend(fontsize=8, loc='best')
+
+            # Hide unused subplots
+            for i in range(n_intervals, len(axes)):
+                axes[i].set_visible(False)
+
+            # Add overall title (minimal)
+            fig.suptitle(f'{test_type.title()} (Log Scale)',
+                        fontsize=16, fontweight='bold', y=0.99)
+
+            # Save the log-scaled combined plot (without test count in the filename)
+            log_plot_filename = f"{test_type}_realtime_combined_logscale.png"
+            log_plot_path = realtime_plots_dir / log_plot_filename
+
+            plt.tight_layout()
+            plt.subplots_adjust(top=0.92)  # Move title higher to avoid overlap
+            plt.savefig(log_plot_path, dpi=600, bbox_inches='tight')
+            plt.close(fig)
+
+            print(f"    📊 Saved log-scale combined plot: {log_plot_filename}")
+            print(f"    📍 Absolute path: {log_plot_path.absolute()}")
 
         except Exception as e:
-            print(f"    ⚠️ Error generating real-time plots: {e}")
+            print(f"    ⚠️ Error generating log-scale plot: {e}")
+
+    def _create_individual_interval_plots(self, df, test_type: str, realtime_plots_dir, intervals):
+        """Create high DPI individual plots for each interval"""
+        try:
+            individual_plots_dir = realtime_plots_dir / "individual"
+            individual_plots_dir.mkdir(exist_ok=True)
+
+            for interval in intervals:
+                interval_data = df[df['interval'] == interval]
+
+                if len(interval_data) < 1:
+                    continue
+
+                # Create individual plot for this interval
+                fig, ax = plt.subplots(figsize=(10, 8))
+
+                if test_type == 'native':
+                    # Plot points for each combination of stack depth and native duration
+                    for stack_depth in sorted(interval_data['stack_depth'].unique()):
+                        for native_duration in sorted(interval_data['native_duration'].unique()):
+                            subset = interval_data[
+                                (interval_data['stack_depth'] == stack_depth) &
+                                (interval_data['native_duration'] == native_duration)
+                            ]
+
+                            if len(subset) < 1:
+                                continue
+
+                            # Sort by queue size for proper plotting
+                            subset = subset.sort_values('queue_size')
+
+                            # Create label for this combination
+                            label = f"Stack {stack_depth}, Duration {native_duration}s"
+
+                            # Plot the points
+                            ax.plot(subset['queue_size'], subset['loss_percentage'],
+                                   marker='o', linestyle='None', markersize=8, label=label)
+
+                elif test_type == 'renaissance':
+                    # Plot points for each stack depth (no native duration in Renaissance)
+                    for stack_depth in sorted(interval_data['stack_depth'].unique()):
+                        subset = interval_data[interval_data['stack_depth'] == stack_depth]
+
+                        if len(subset) < 1:
+                            continue
+
+                        # Sort by queue size for proper plotting
+                        subset = subset.sort_values('queue_size')
+
+                        # Create label for this combination
+                        label = f"Stack Depth {stack_depth}"
+
+                        # Plot the points
+                        ax.plot(subset['queue_size'], subset['loss_percentage'],
+                               marker='o', linestyle='None', markersize=8, label=label)
+
+                # Customize the plot
+                ax.set_xlabel('Queue Size', fontsize=14)
+                ax.set_ylabel('Loss Percentage (%)', fontsize=14)
+                ax.set_title(f'{test_type.title()} Test - {interval} Interval ({len(interval_data)} tests)',
+                            fontsize=16, fontweight='bold', pad=15)  # Move title higher
+                ax.grid(True, alpha=0.3)
+
+                # Add legend if there are multiple lines
+                lines, labels = ax.get_legend_handles_labels()
+                if lines:
+                    ax.legend(fontsize=12, loc='best')
+
+                # Set x-axis to log scale if we have a wide range of queue sizes
+                if len(interval_data) > 1 and interval_data['queue_size'].max() / interval_data['queue_size'].min() > 10:
+                    ax.set_xscale('log')
+
+                    # Add more minor ticks for log scale with finer subdivisions
+                    ax.xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.1, 1.0, 0.1)))
+                    # Show selective minor tick labels to prevent scientific notation
+                    ax.xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}' if x in [20, 50, 200, 500, 2000, 5000] else ''))
+                    ax.grid(True, which='minor', alpha=0.25)
+                    ax.grid(True, which='major', alpha=0.5)
+                else:
+                    # Add more minor ticks for normal scale
+                    ax.xaxis.set_minor_locator(ticker.AutoMinorLocator(5))
+
+                # Add more minor ticks for y-axis (always normal scale for individual plots)
+                ax.yaxis.set_minor_locator(ticker.AutoMinorLocator(5))
+                ax.grid(True, which='minor', alpha=0.15)
+
+                # Prevent scientific notation on axes
+                ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
+
+                # Save the individual plot with high DPI (without test count in the filename)
+                plot_filename = f"{test_type}_{interval}_individual.png"
+                plot_path = individual_plots_dir / plot_filename
+
+                plt.tight_layout()
+                plt.savefig(plot_path, dpi=600, bbox_inches='tight')
+                plt.close(fig)
+
+                self.vprint(f"    📊 Saved individual plot: {plot_filename}")
+
+            print(f"    📊 Saved {len(intervals)} individual interval plots to: individual/")
+            print(f"    📍 Directory: {individual_plots_dir.absolute()}")
+
+            # Create additional Renaissance plots with all intervals combined
+            if test_type == 'renaissance':
+                self._create_renaissance_combined_interval_plots(df, realtime_plots_dir)
+
+        except Exception as e:
+            print(f"    ⚠️ Error generating individual interval plots: {e}")
+
+    def _create_renaissance_combined_interval_plots(self, df, output_dir):
+        """Create two Renaissance plots with all intervals combined into one plot"""
+        try:
+            # Plot 1: Normal scale
+            self._create_renaissance_all_intervals_plot(df, output_dir, log_scale=False)
+
+            # Plot 2: Log scale
+            self._create_renaissance_all_intervals_plot(df, output_dir, log_scale=True)
+
+        except Exception as e:
+            print(f"    ⚠️ Error generating Renaissance combined interval plots: {e}")
+
+    def _create_renaissance_all_intervals_plot(self, df, output_dir, log_scale=False):
+        """Create a Renaissance plot with all intervals in one plot"""
+        try:
+            # Create figure
+            fig, ax = plt.subplots(figsize=(12, 9))
+
+            # Define colors and markers for different intervals
+            colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+            markers = ['o', 's', '^', 'D', 'x']
+
+            # Order intervals by numeric value
+            def interval_sort_key(interval):
+                return int(interval.replace('ms', ''))
+
+            intervals = sorted(df['interval'].unique(), key=interval_sort_key)
+
+            # Plot each interval as a separate line
+            for i, interval in enumerate(intervals):
+                interval_data = df[df['interval'] == interval]
+
+                if len(interval_data) < 1:
+                    continue
+
+                # Sort by queue size for proper plotting
+                interval_data = interval_data.sort_values('queue_size')
+
+                # Plot with distinct color and marker
+                color_idx = i % len(colors)
+                marker_idx = i % len(markers)
+
+                ax.plot(interval_data['queue_size'], interval_data['loss_percentage'],
+                       marker=markers[marker_idx], linestyle='None', markersize=10,
+                       color=colors[color_idx], label=f'{interval}')
+
+            # Set axes
+            ax.set_xlabel('Queue Size', fontsize=14)
+            ax.set_ylabel('Loss Percentage (%)', fontsize=14)
+
+            # Apply log scales if requested
+            if log_scale:
+                ax.set_xscale('log')
+                ax.set_yscale('log')
+                title = 'Renaissance (Log Scale)'
+
+                # Add 1% reference line for log plot
+                ax.axhline(y=1.0, color='red', linestyle=':', linewidth=1.5, alpha=0.7, label='1% threshold')
+
+                # Set y-range with some padding
+                all_loss_percentages = df['loss_percentage'].dropna()
+                if len(all_loss_percentages) > 0:
+                    y_min = max(0.001, all_loss_percentages.min() * 0.5)
+                    y_max = min(100.0, max(1.0, all_loss_percentages.max() * 2.0))
+                    ax.set_ylim(y_min, y_max)
+
+                # Prevent scientific notation on axes even with log scale
+                ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.4f}' if y < 0.01 else f'{y:,.2f}'))
+
+                # Set major tick locators first to ensure they're always visible
+                ax.xaxis.set_major_locator(ticker.LogLocator(base=10.0, numticks=8))
+                ax.yaxis.set_major_locator(ticker.LogLocator(base=10.0, numticks=8))
+
+                # Add minor ticks with conservative subdivision to avoid overcrowding
+                ax.xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.2, 1.0, 0.2)))  # Less crowded subdivisions
+                ax.yaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.2, 1.0, 0.2)))  # Less crowded subdivisions
+
+                # Selective minor tick labeling - only show key values to avoid overcrowding
+                ax.xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}' if x in [20, 50, 200, 500, 2000] else ''))
+                # Reduce y-axis minor labels to prevent disappearing labels
+                key_y_values = [0.002, 0.005, 0.02, 0.05, 0.2, 0.5, 2.0, 5.0, 20.0, 50.0]
+                ax.yaxis.set_minor_formatter(ticker.FuncFormatter(lambda y, pos: f'{y:.3f}' if y in key_y_values else ''))
+
+                # Add more minor ticks for log scale with finer subdivisions
+                ax.grid(True, which='minor', alpha=0.3)   # Make minor grid more visible
+                ax.grid(True, which='major', alpha=0.6)   # Ensure major grid is visible
+
+                # Force tick label visibility - this prevents matplotlib from hiding labels
+                ax.tick_params(axis='both', which='major', labelsize=8, labelbottom=True, labelleft=True)
+                ax.tick_params(axis='both', which='minor', labelsize=6)
+
+                # Force tick label visibility - this prevents matplotlib from hiding labels
+                ax.tick_params(axis='both', which='major', labelsize=8, labelbottom=True, labelleft=True)
+                ax.tick_params(axis='both', which='minor', labelsize=6)
+            else:
+                title = 'Renaissance'
+
+                # For normal scale: set shared y-axis range
+                all_loss_percentages = df['loss_percentage'].dropna()
+                if len(all_loss_percentages) > 0:
+                    y_min = 0  # Always start from 0 for normal scale
+                    y_max = min(100.0, all_loss_percentages.max() * 1.1)  # Cap at 100% loss with 10% padding
+                    ax.set_ylim(y_min, y_max)
+
+                # Prevent scientific notation on axes for normal scale
+                ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
+
+                # Add more minor ticks for normal scale
+                ax.xaxis.set_minor_locator(ticker.AutoMinorLocator(5))  # 5 minor ticks between major ticks
+                ax.yaxis.set_minor_locator(ticker.AutoMinorLocator(5))
+                ax.grid(True, which='minor', alpha=0.2)
+
+            # Set title with more padding to move it higher (minimal title)
+            ax.set_title(title, fontsize=18, fontweight='bold', pad=25)
+
+            # Add grid and legend
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=12, loc='best')
+
+            # Save the plot with high DPI
+            filename_suffix = 'logscale' if log_scale else 'normal'
+            plot_filename = f"renaissance_all_intervals_{filename_suffix}.png"
+            plot_path = output_dir / plot_filename
+
+            plt.tight_layout()
+            plt.savefig(plot_path, dpi=600, bbox_inches='tight')
+            plt.close(fig)
+
+            print(f"    📊 Saved Renaissance combined intervals plot ({filename_suffix}): {plot_filename}")
+            print(f"    📍 Absolute path: {plot_path.absolute()}")
+
+        except Exception as e:
+            print(f"    ⚠️ Error generating Renaissance all intervals plot: {e}")
 
     def create_visualizations(self):
         """Create comprehensive visualizations"""
@@ -1775,13 +2198,88 @@ class BenchmarkRunner:
 
         print(f"📊 Visualizations saved to {PLOTS_DIR}")
 
-    def plot_native_results(self, df: pd.DataFrame):
+    def create_progress_visualizations(self, csv_file: Optional[str] = None):
+        """Create visualizations from live CSV data with 'progress' suffix"""
+        print("📊 Generating progress visualizations from live CSV data...")
+
+        # Set style
+        plt.style.use('seaborn-v0_8')
+        sns.set_palette("husl")
+
+        # Determine CSV file to use
+        if csv_file:
+            csv_path = Path(csv_file)
+            if not csv_path.exists():
+                print(f"❌ Specified CSV file not found: {csv_file}")
+                return
+        else:
+            # Look for the most recent CSV file
+            csv_files = list(DATA_DIR.glob("*_results_latest.csv"))
+            if not csv_files:
+                print("❌ No CSV files found. Run benchmark first or specify --csv-file")
+                return
+            csv_path = max(csv_files, key=lambda x: x.stat().st_mtime)
+
+        print(f"📂 Loading data from: {csv_path}")
+
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception as e:
+            print(f"❌ Failed to load CSV: {e}")
+            return
+
+        if df.empty:
+            print("⚠️ CSV file is empty")
+            return
+
+        # Determine test type from filename or data
+        if 'native' in csv_path.name:
+            test_type = 'native'
+        elif 'renaissance' in csv_path.name:
+            test_type = 'renaissance'
+        else:
+            # Try to determine from data - be more specific about column detection
+            has_native_cols = 'native_duration' in df.columns
+            has_renaissance_cols = 'interval' in df.columns and 'stack_depth' in df.columns and 'native_duration' not in df.columns
+
+            if has_native_cols:
+                test_type = 'native'
+            elif has_renaissance_cols:
+                test_type = 'renaissance'
+            else:
+                # Default fallback - check if there are more Renaissance-like patterns
+                test_type = 'renaissance'  # More common pattern
+
+        print(f"🔍 Detected test type: {test_type}")
+        print(f"📊 Data contains {len(df)} records")
+
+        # Create progress visualizations (same as regular but with different filenames)
+        if test_type == 'native':
+            self.plot_native_results(df, progress_mode=True)
+        else:
+            self.plot_renaissance_results(df, progress_mode=True)
+
+        print(f"📊 Progress visualizations saved to {PLOTS_DIR} with '_progress' suffix")
+
+    def plot_native_results(self, df: pd.DataFrame, progress_mode: bool = False):
         """Create native test visualizations"""
-        # Filter successful tests
-        df_success = df[df['success'] == True].copy()
+        # Filter successful tests if 'success' column exists
+        if 'success' in df.columns:
+            df_success = df[df['success'] == True].copy()
+        else:
+            df_success = df.copy()  # Use all data if no success column
 
         if df_success.empty:
             print("No successful native tests to visualize")
+            return
+
+        # Check if we have the required columns for native plotting
+        required_cols = ['native_duration', 'stack_depth', 'interval']
+        missing_cols = [col for col in required_cols if col not in df_success.columns]
+
+        if missing_cols:
+            print(f"⚠️ Missing required columns for native plotting: {missing_cols}")
+            print("   This might be Renaissance data. Use --visualize instead.")
             return
 
         # Convert interval to numeric for sorting
@@ -1833,6 +2331,9 @@ class BenchmarkRunner:
                 axes[i].set_title(f'Duration: {native_dur}s, Stack: {stack_depth}')
                 axes[i].set_xlabel('Sampling Interval')
                 axes[i].set_ylabel('Queue Size')
+
+                # Prevent scientific notation on heatmap axes
+                axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{int(y):,}' if y % 1 == 0 else f'{y:,.1f}'))
             else:
                 axes[i].set_title(f'Duration: {native_dur}s, Stack: {stack_depth} (No Data)')
                 axes[i].axis('off')
@@ -1842,7 +2343,7 @@ class BenchmarkRunner:
             axes[j].axis('off')
 
         plt.tight_layout()
-        plt.savefig(PLOTS_DIR / 'native_heatmaps_by_duration_stack.png', dpi=300, bbox_inches='tight')
+        plt.savefig(PLOTS_DIR / self._get_plot_filename('native_heatmaps_by_duration_stack.png', progress_mode), dpi=600, bbox_inches='tight')
         plt.close()
 
         # 2. Line plots: Loss Rate vs Queue Size for each Interval, showing all duration/stack combinations
@@ -1864,7 +2365,7 @@ class BenchmarkRunner:
 
                 if not df_combo.empty:
                     axes[i].plot(df_combo['queue_size'], df_combo['loss_percentage'],
-                               marker='o', label=f'{native_dur}s/S{stack_depth}', linewidth=2)
+                               marker='o', label=f'{native_dur}s/S{stack_depth}', linestyle='None')
 
             axes[i].set_title(f'Interval: {interval}')
             axes[i].set_xlabel('Queue Size')
@@ -1878,8 +2379,19 @@ class BenchmarkRunner:
             axes[i].grid(True, alpha=0.3)
             axes[i].set_xscale('log')
 
+            # Add minor ticks for log scale with finer subdivisions
+            axes[i].xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.1, 1.0, 0.1)))
+            # Show selective minor tick labels to prevent scientific notation
+            axes[i].xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}' if x in [20, 50, 200, 500, 2000, 5000] else ''))
+            axes[i].grid(True, which='minor', alpha=0.25)
+            axes[i].grid(True, which='major', alpha=0.5)
+
+            # Prevent scientific notation on axes
+            axes[i].xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+            axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
+
         plt.tight_layout()
-        plt.savefig(PLOTS_DIR / 'native_loss_vs_queue_size_all_combinations.png', dpi=300, bbox_inches='tight')
+        plt.savefig(PLOTS_DIR / self._get_plot_filename('native_loss_vs_queue_size_all_combinations.png', progress_mode), dpi=600, bbox_inches='tight')
         plt.close()
 
         # 3. Separate plots for each stack depth showing native duration effects
@@ -1897,7 +2409,7 @@ class BenchmarkRunner:
                     df_dur = df_int[df_int['native_duration'] == native_dur]
                     if not df_dur.empty:
                         axes[i].plot(df_dur['queue_size'], df_dur['loss_percentage'],
-                                   marker='o', label=f'{native_dur}s native', linewidth=2)
+                                   marker='o', label=f'{native_dur}s native', linestyle='None')
 
                 axes[i].set_title(f'Interval: {interval}')
                 axes[i].set_xlabel('Queue Size')
@@ -1911,8 +2423,19 @@ class BenchmarkRunner:
                 axes[i].grid(True, alpha=0.3)
                 axes[i].set_xscale('log')
 
+                # Add minor ticks for log scale with finer subdivisions
+                axes[i].xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.1, 1.0, 0.1)))
+                # Show selective minor tick labels to prevent scientific notation
+                axes[i].xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}' if x in [20, 50, 200, 500, 2000, 5000] else ''))
+                axes[i].grid(True, which='minor', alpha=0.25)
+                axes[i].grid(True, which='major', alpha=0.5)
+
+                # Prevent scientific notation on axes
+                axes[i].xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+                axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
+
             plt.tight_layout()
-            plt.savefig(PLOTS_DIR / f'native_loss_vs_queue_size_stack{stack_depth}.png', dpi=300, bbox_inches='tight')
+            plt.savefig(PLOTS_DIR / self._get_plot_filename(f'native_loss_vs_queue_size_stack{stack_depth}.png', progress_mode), dpi=600, bbox_inches='tight')
             plt.close()
 
         # 4. 3D surface plot for most interesting interval (1ms) with one stack depth
@@ -1938,13 +2461,21 @@ class BenchmarkRunner:
             ax.set_title(f'Native Test: 3D Loss Rate Surface (1ms interval, Stack: {first_stack})')
             plt.colorbar(scatter)
 
-        plt.savefig(PLOTS_DIR / 'native_3d_surface.png', dpi=300, bbox_inches='tight')
+            # Prevent scientific notation on 3D plot axes
+            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{int(y):,}' if y % 1 == 0 else f'{y:,.1f}'))
+            ax.zaxis.set_major_formatter(plt.FuncFormatter(lambda z, _: f'{z:,.2f}'))
+
+        plt.savefig(PLOTS_DIR / self._get_plot_filename('native_3d_surface.png', progress_mode), dpi=600, bbox_inches='tight')
         plt.close()
 
-    def plot_renaissance_results(self, df: pd.DataFrame):
+    def plot_renaissance_results(self, df: pd.DataFrame, progress_mode: bool = False):
         """Create Renaissance test visualizations"""
-        # Filter successful tests
-        df_success = df[df['success'] == True].copy()
+        # Filter successful tests if 'success' column exists
+        if 'success' in df.columns:
+            df_success = df[df['success'] == True].copy()
+        else:
+            df_success = df.copy()  # Use all data if no success column
 
         if df_success.empty:
             print("No successful Renaissance tests to visualize")
@@ -1971,8 +2502,11 @@ class BenchmarkRunner:
             ax.set_xlabel('Sampling Interval')
             ax.set_ylabel('Queue Size')
 
+            # Prevent scientific notation on heatmap axes
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{int(y):,}' if y % 1 == 0 else f'{y:,.1f}'))
+
             plt.tight_layout()
-            plt.savefig(PLOTS_DIR / f'renaissance_heatmap_stack{stack_depth}.png', dpi=300, bbox_inches='tight')
+            plt.savefig(PLOTS_DIR / self._get_plot_filename(f'renaissance_heatmap_stack{stack_depth}.png', progress_mode), dpi=600, bbox_inches='tight')
             plt.close()
 
         # 2. Line plots: Loss Rate vs Queue Size for each Interval, showing all stack depths
@@ -1987,7 +2521,7 @@ class BenchmarkRunner:
                 df_stack = df_int[df_int['stack_depth'] == stack_depth]
                 if not df_stack.empty:
                     axes[i].plot(df_stack['queue_size'], df_stack['loss_percentage'],
-                               marker='o', linewidth=2, markersize=8, label=f'Stack {stack_depth}')
+                               marker='o', linestyle='None', markersize=8, label=f'Stack {stack_depth}')
 
             axes[i].set_title(f'Interval: {interval}')
             axes[i].set_xlabel('Queue Size')
@@ -2001,8 +2535,19 @@ class BenchmarkRunner:
             axes[i].grid(True, alpha=0.3)
             axes[i].set_xscale('log')
 
+            # Add minor ticks for log scale with finer subdivisions
+            axes[i].xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.1, 1.0, 0.1)))
+            # Show selective minor tick labels to prevent scientific notation
+            axes[i].xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}' if x in [20, 50, 200, 500, 2000, 5000] else ''))
+            axes[i].grid(True, which='minor', alpha=0.25)
+            axes[i].grid(True, which='major', alpha=0.5)
+
+            # Prevent scientific notation on axes
+            axes[i].xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+            axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
+
         plt.tight_layout()
-        plt.savefig(PLOTS_DIR / 'renaissance_loss_vs_queue_size_all_stacks.png', dpi=300, bbox_inches='tight')
+        plt.savefig(PLOTS_DIR / self._get_plot_filename('renaissance_loss_vs_queue_size_all_stacks.png', progress_mode), dpi=600, bbox_inches='tight')
         plt.close()
 
     def plot_comparison(self, native_df: pd.DataFrame, renaissance_df: pd.DataFrame):
@@ -2060,8 +2605,12 @@ class BenchmarkRunner:
                 axes[i].set_ylabel('Loss Rate (%)')
                 axes[i].tick_params(axis='x', rotation=45)
 
+                # Prevent scientific notation on axes
+                axes[i].xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+                axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
+
         plt.tight_layout()
-        plt.savefig(PLOTS_DIR / 'comparison_native_vs_renaissance.png', dpi=300, bbox_inches='tight')
+        plt.savefig(PLOTS_DIR / 'comparison_native_vs_renaissance.png', dpi=600, bbox_inches='tight')
         plt.close()
 
 def main():
@@ -2074,6 +2623,10 @@ def main():
                        help='Run Renaissance benchmarks')
     parser.add_argument('--visualize', action='store_true',
                        help='Generate visualizations from existing data')
+    parser.add_argument('--visualize-progress', action='store_true',
+                       help='Generate in-progress visualizations from live CSV data (updates continuously)')
+    parser.add_argument('--csv-file', type=str,
+                       help='Specify custom CSV file for visualizations (used with --visualize-progress)')
     parser.add_argument('--all', action='store_true',
                        help='Run all benchmarks and generate visualizations')
     parser.add_argument('--estimate', action='store_true',
@@ -2086,19 +2639,21 @@ def main():
                        help=f'Number of threads to use (default: {os.cpu_count() or 4}, auto-detect CPU count)')
     parser.add_argument('--retries', type=int, default=2,
                        help='Number of retries for tests with JSON parsing failures (default: 2)')
+    parser.add_argument('--verbose', action='store_true',
+                       help='Enable verbose logging for debugging and detailed output')
 
     args = parser.parse_args()
 
     # If minimal flag is used without other flags, run only native (not renaissance)
-    if args.minimal and not any([args.run_native, args.run_renaissance, args.visualize, args.all, args.estimate, args.only_native, args.only_renaissance]):
+    if args.minimal and not any([args.run_native, args.run_renaissance, args.visualize, args.visualize_progress, args.all, args.estimate, args.only_native, args.only_renaissance]):
         args.run_native = True
 
-    if not any([args.run_native, args.run_renaissance, args.visualize, args.all, args.estimate, args.minimal, args.only_native, args.only_renaissance]):
+    if not any([args.run_native, args.run_renaissance, args.visualize, args.visualize_progress, args.all, args.estimate, args.minimal, args.only_native, args.only_renaissance]):
         parser.print_help()
         return
 
     # Create benchmark runner with minimal configuration if requested
-    runner = BenchmarkRunner(minimal=args.minimal, threads=args.threads, max_retries=args.retries)
+    runner = BenchmarkRunner(minimal=args.minimal, threads=args.threads, max_retries=args.retries, verbose=args.verbose)
 
     # Show configuration info
     print(f"JFR Queue Size Benchmark Suite")
@@ -2196,6 +2751,11 @@ def main():
         print("\n💡 Note: Estimates include test execution time plus setup/teardown overhead.")
         if not args.minimal and not args.only_native and not args.only_renaissance:
             print("💡 Renaissance estimate updated: 3:30 minutes per test + 30s overhead = 4 minutes total per test")
+        return
+
+    # Handle visualize-progress mode
+    if args.visualize_progress:
+        runner.create_progress_visualizations(args.csv_file)
         return
 
     try:

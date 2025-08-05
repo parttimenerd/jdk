@@ -20,7 +20,8 @@ def test_csv_generation():
         'queue_size': 100,
         'interval': '10ms',
         'stack_depth': 100,
-        'loss_percentage': 0.14,
+        'loss_percentage': 95.5,  # High loss percentage to test axis capping
+        'success': True,  # Add success flag
         'out_of_thread_details': {
             'requests': 5,
             'request_rate': 0.5,
@@ -84,7 +85,16 @@ def test_csv_generation():
     }
 
     # Generate CSV data
-    df = runner.flatten_for_csv([test_result])
+    test_results = [test_result]
+
+    # Add a few more test cases with varying loss percentages
+    for queue_size, loss_pct in [(50, 0.5), (200, 5.2), (500, 25.8), (1000, 78.9)]:
+        additional_result = test_result.copy()
+        additional_result['queue_size'] = queue_size
+        additional_result['loss_percentage'] = loss_pct
+        test_results.append(additional_result)
+
+    df = runner.flatten_for_csv(test_results)
 
     print(f"\n📊 Generated CSV with {len(df.columns)} columns")
 
