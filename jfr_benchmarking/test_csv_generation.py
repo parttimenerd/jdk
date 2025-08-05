@@ -131,6 +131,21 @@ def test_csv_generation():
     print(f"\n💾 Test CSV saved to: {test_csv_path}")
     print(f"   Columns: {len(df.columns)}, Rows: {len(df)}")
 
+    # Test the new maximum loss overlay plot
+    print(f"\n📊 Testing maximum loss overlay plot...")
+    try:
+        # Create some test data for both native and renaissance to test the overlay
+        native_test_data = df.copy()
+        native_test_data['native_duration'] = 250  # Add required column for native data
+
+        renaissance_test_data = df.copy()
+        # Renaissance doesn't need native_duration column
+
+        runner.plot_maximum_loss_overlay(native_test_data, renaissance_test_data)
+        print("✅ Maximum loss overlay plot test completed")
+    except Exception as e:
+        print(f"❌ Maximum loss overlay plot test failed: {e}")
+
     return df
 
 if __name__ == "__main__":

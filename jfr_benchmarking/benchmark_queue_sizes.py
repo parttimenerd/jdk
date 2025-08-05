@@ -153,8 +153,71 @@ LOGS_DIR = RESULTS_DIR / "logs"
 DATA_DIR = RESULTS_DIR / "data"
 PLOTS_DIR = RESULTS_DIR / "plots"
 
+def backup_progress_files(verbose=False):
+    """Backup all existing progress files to a timestamped backup folder"""
+    from datetime import datetime
+    import shutil
+
+    backup_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_dir = RESULTS_DIR / f"backup_{backup_timestamp}"
+
+    progress_files_found = False
+
+    # Check for progress files in plots directory
+    if PLOTS_DIR.exists():
+        progress_plots = list(PLOTS_DIR.glob("*_progress*"))
+        if progress_plots:
+            progress_files_found = True
+            backup_plots_dir = backup_dir / "plots"
+            backup_plots_dir.mkdir(parents=True, exist_ok=True)
+
+            for plot_file in progress_plots:
+                shutil.copy2(plot_file, backup_plots_dir / plot_file.name)
+                if verbose:
+                    print(f"    📋 Backed up plot: {plot_file.name}")
+
+    # Check for latest CSV files in data directory
+    if DATA_DIR.exists():
+        latest_files = list(DATA_DIR.glob("*_latest.*"))
+        if latest_files:
+            progress_files_found = True
+            backup_data_dir = backup_dir / "data"
+            backup_data_dir.mkdir(parents=True, exist_ok=True)
+
+            for data_file in latest_files:
+                shutil.copy2(data_file, backup_data_dir / data_file.name)
+                if verbose:
+                    print(f"    📋 Backed up data: {data_file.name}")
+
+    # Check for real-time plots
+    realtime_plots_dir = PLOTS_DIR / "realtime"
+    if realtime_plots_dir.exists():
+        realtime_files = list(realtime_plots_dir.glob("*"))
+        if realtime_files:
+            progress_files_found = True
+            backup_realtime_dir = backup_dir / "plots" / "realtime"
+            backup_realtime_dir.mkdir(parents=True, exist_ok=True)
+
+            for realtime_file in realtime_files:
+                if realtime_file.is_file():
+                    shutil.copy2(realtime_file, backup_realtime_dir / realtime_file.name)
+                    if verbose:
+                        print(f"    📋 Backed up realtime plot: {realtime_file.name}")
+                elif realtime_file.is_dir():
+                    shutil.copytree(realtime_file, backup_realtime_dir / realtime_file.name, dirs_exist_ok=True)
+                    if verbose:
+                        print(f"    📋 Backed up realtime directory: {realtime_file.name}")
+
+    if progress_files_found:
+        print(f"💾 Progress files backed up to: {backup_dir}")
+        print(f"   📂 Backup directory: {backup_dir.absolute()}")
+        return backup_dir
+    else:
+        print("ℹ️ No progress files found to backup")
+        return None
+
 class BenchmarkRunner:
-    def __init__(self, minimal=False, threads=None, max_retries=2, verbose=False):
+    def __init__(self, minimal=False, threads=None, max_retries=2, verbose=False, only_till=None, optimized=False):
         self.setup_directories()
         self.results = {
             'native': [],
@@ -163,6 +226,8 @@ class BenchmarkRunner:
         self.minimal = minimal
         self.max_retries = max_retries
         self.verbose = verbose
+        self.only_till = only_till
+        self.optimized = optimized
 
         # Always plot after every iteration for real-time feedback
         self.plot_frequency = 1  # Plot after every single test
@@ -186,6 +251,14 @@ class BenchmarkRunner:
             self.test_duration = TEST_DURATION
             self.renaissance_iterations = RENAISSANCE_ITERATIONS
 
+        # Apply optimized configuration if requested (overrides minimal/full settings)
+        if optimized:
+            self.vprint("🚀 Using optimized configuration: highest stack depth and longest duration only")
+            # Use only the highest stack depth
+            self.stack_depths = [max(self.stack_depths)]
+            # Use only the longest native duration
+            self.native_durations = [max(self.native_durations)] # Fixed stack depth optimized for Renaissance benchmarks
+
     def _get_plot_filename(self, base_name: str, progress_mode: bool = False) -> str:
         """Generate appropriate filename based on progress mode"""
         if progress_mode:
@@ -196,6 +269,57 @@ class BenchmarkRunner:
             else:
                 return f"{base_name}_progress"
         return base_name
+
+    def _should_stop_for_interval(self, test_type: str, interval: int, current_queue_size: int) -> bool:
+        """Check if we should stop testing larger queue sizes for this interval based on --only-till threshold."""
+        # If early termination is disabled, always continue testing all queue sizes
+        if self.only_till is None:
+            return False
+
+        # Get results for this specific interval and test type
+        results_key = test_type
+        if results_key not in self.results:
+            return False
+
+        # Find results for this specific interval
+        interval_results = []
+        for result in self.results[results_key]:
+            if result.get('sampling_interval') == interval:
+                interval_results.append(result)
+
+        if not interval_results:
+            return False
+
+        # Group results by queue size
+        queue_size_results = {}
+        for result in interval_results:
+            q_size = result.get('queue_size')
+            if q_size is not None:
+                if q_size not in queue_size_results:
+                    queue_size_results[q_size] = []
+                queue_size_results[q_size].append(result)
+
+        # We need at least one smaller queue size tested to compare against
+        tested_queue_sizes = sorted([q for q in queue_size_results.keys() if q < current_queue_size])
+        if not tested_queue_sizes:
+            return False
+
+        # Check if the most recent smaller queue size has all loss values below threshold
+        latest_smaller_queue = max(tested_queue_sizes)
+        latest_results = queue_size_results[latest_smaller_queue]
+
+        # For each configuration tested at this queue size, check if loss is below threshold
+        all_below_threshold = True
+        for result in latest_results:
+            loss_percentage = result.get('loss_percentage', 100.0)  # Default to 100% if missing
+            if loss_percentage >= self.only_till:
+                all_below_threshold = False
+                break
+
+        if all_below_threshold and self.verbose:
+            print(f"    🎯 Early termination: All loss values for interval {interval}ms at queue size {latest_smaller_queue} are below {self.only_till}% threshold")
+
+        return all_below_threshold
 
     def estimate_runtime(self, test_type: str) -> Tuple[int, str]:
         """Estimate total runtime for benchmark suite using real data from previous runs"""
@@ -218,7 +342,7 @@ class BenchmarkRunner:
                 actual_time_per_test = 210 + 30  # 4 minutes total per test
                 self.vprint(f"⚠️ No historical data found, using estimated {actual_time_per_test:.1f}s per test")
 
-            total_tests = len(self.queue_sizes) * len(self.sampling_intervals) * len(self.stack_depths)
+            total_tests = len(self.queue_sizes) * len(self.sampling_intervals)  # Renaissance has no stack depths
             total_seconds = total_tests * actual_time_per_test * self.renaissance_iterations
         else:
             return 0, "Unknown test type"
@@ -607,15 +731,15 @@ class BenchmarkRunner:
                 'error': str(e)
             }
 
-    def run_renaissance_test(self, queue_size: int, interval: str, stack_depth: int) -> Dict:
+    def run_renaissance_test(self, queue_size: int, interval: str) -> Dict:
         """Run a single Renaissance test with retry logic for JSON parsing failures"""
-        return self.run_test_with_retry(self._run_renaissance_test_internal, queue_size, interval, stack_depth)
+        return self.run_test_with_retry(self._run_renaissance_test_internal, queue_size, interval)
 
-    def _run_renaissance_test_internal(self, queue_size: int, interval: str, stack_depth: int) -> Dict:
+    def _run_renaissance_test_internal(self, queue_size: int, interval: str) -> Dict:
         """Run a single Renaissance test and extract loss percentage"""
-        print(f"  Running Renaissance: queue={queue_size}, interval={interval}, stack_depth={stack_depth}")
+        print(f"  Running Renaissance: queue={queue_size}, interval={interval}")
 
-        log_filename = f"renaissance_q{queue_size}_{interval}_s{stack_depth}_n{self.renaissance_iterations}.log"
+        log_filename = f"renaissance_q{queue_size}_{interval}_n{self.renaissance_iterations}.log"
         log_path = LOGS_DIR / log_filename
 
         # Build command
@@ -623,7 +747,6 @@ class BenchmarkRunner:
             "./run.sh",
             "--mode", "renaissance",
             "-n", str(self.renaissance_iterations),
-            "-s", str(stack_depth),
             "-t", str(self.threads),
             "-i", interval,
             "-q", str(queue_size),
@@ -672,7 +795,6 @@ class BenchmarkRunner:
             result_data = {
                 'queue_size': queue_size,
                 'interval': interval,
-                'stack_depth': stack_depth,
                 'iterations': self.renaissance_iterations,
                 'loss_percentage': loss_percentage,
                 'out_of_thread_events': out_of_thread_events,
@@ -691,7 +813,6 @@ class BenchmarkRunner:
             return {
                 'queue_size': queue_size,
                 'interval': interval,
-                'stack_depth': stack_depth,
                 'iterations': self.renaissance_iterations,
                 'loss_percentage': None,
                 'out_of_thread_events': None,
@@ -1379,12 +1500,20 @@ class BenchmarkRunner:
         print(f"  Durations: {self.native_durations}")
         print(f"  Stack depths: {self.stack_depths}")
         print(f"  Threads: {self.threads}")
+        print(f"  Early termination: {'Enabled' if self.only_till is not None else 'Disabled'} {'(' + str(self.only_till) + '% threshold)' if self.only_till is not None else '(testing all queue sizes)'}")
+        if self.optimized:
+            print(f"  🚀 Optimized mode: Using highest stack depth ({max(self.stack_depths)}) and longest duration ({max(self.native_durations)}s) only")
 
         current_test = 0
         start_time = time.time()
 
-        for queue_size in self.queue_sizes:
-            for interval in self.sampling_intervals:
+        for interval in self.sampling_intervals:
+            for queue_size in self.queue_sizes:
+                # Check if we should skip this and all larger queue sizes for this interval
+                if self._should_stop_for_interval('native', interval, queue_size):
+                    print(f"⏭️ Skipping queue size {queue_size} and larger for interval {interval}")
+                    break  # Break out of queue_size loop, continue with next interval
+
                 for duration in self.native_durations:
                     for stack_depth in self.stack_depths:
                         current_test += 1
@@ -1441,7 +1570,7 @@ class BenchmarkRunner:
 
         # Calculate and display runtime estimate
         total_seconds, time_str = self.estimate_runtime('renaissance')
-        total_tests = len(self.queue_sizes) * len(self.sampling_intervals) * len(self.stack_depths)
+        total_tests = len(self.queue_sizes) * len(self.sampling_intervals)
 
         print(f"📊 Benchmark Overview:")
         print(f"  Total tests: {total_tests}")
@@ -1451,52 +1580,56 @@ class BenchmarkRunner:
         print(f"\n⚙️ Configuration:")
         print(f"  Queue sizes: {self.queue_sizes}")
         print(f"  Intervals: {self.sampling_intervals}")
-        print(f"  Stack depths: {self.stack_depths}")
         print(f"  Iterations: {self.renaissance_iterations}")
         print(f"  Threads: {self.threads}")
+        print(f"  Early termination: {'Enabled' if self.only_till is not None else 'Disabled'} {'(' + str(self.only_till) + '% threshold)' if self.only_till is not None else '(testing all queue sizes)'}")
 
         current_test = 0
         start_time = time.time()
 
-        for queue_size in self.queue_sizes:
-            for interval in self.sampling_intervals:
-                for stack_depth in self.stack_depths:
-                    current_test += 1
+        for interval in self.sampling_intervals:
+            for queue_size in self.queue_sizes:
+                # Check if we should skip this and all larger queue sizes for this interval
+                if self._should_stop_for_interval('renaissance', interval, queue_size):
+                    print(f"⏭️ Skipping queue size {queue_size} and larger for interval {interval}")
+                    break  # Break out of queue_size loop, continue with next interval
 
-                    # Calculate progress and ETA
-                    elapsed = time.time() - start_time
-                    if current_test > 1:
-                        avg_time_per_test = elapsed / (current_test - 1)
-                        remaining_tests = total_tests - current_test + 1
-                        eta_seconds = remaining_tests * avg_time_per_test
-                        eta_time = datetime.fromtimestamp(time.time() + eta_seconds).strftime('%H:%M:%S')
-                        progress = (current_test - 1) / total_tests * 100
-                        print(f"\n[{current_test}/{total_tests}] Progress: {progress:.1f}% | ETA: {eta_time}")
+                current_test += 1
 
-                    print(f"🏛️ Test {current_test}: Queue={queue_size}, Interval={interval}, Stack={stack_depth}")
+                # Calculate progress and ETA
+                elapsed = time.time() - start_time
+                if current_test > 1:
+                    avg_time_per_test = elapsed / (current_test - 1)
+                    remaining_tests = total_tests - current_test + 1
+                    eta_seconds = remaining_tests * avg_time_per_test
+                    eta_time = datetime.fromtimestamp(time.time() + eta_seconds).strftime('%H:%M:%S')
+                    progress = (current_test - 1) / total_tests * 100
+                    print(f"\n[{current_test}/{total_tests}] Progress: {progress:.1f}% | ETA: {eta_time}")
 
-                    # Run test
-                    test_start = time.time()
-                    result = self.run_renaissance_test(queue_size, interval, stack_depth)
-                    test_time = time.time() - test_start
+                print(f"🏛️ Test {current_test}: Queue={queue_size}, Interval={interval}")
 
-                    if result and result.get('success', False) and result.get('loss_percentage') is not None:
-                        print(f"    ✅ Success: {result['loss_percentage']:.2f}% loss rate (took {test_time:.1f}s)")
+                # Run test
+                test_start = time.time()
+                result = self.run_renaissance_test(queue_size, interval)
+                test_time = time.time() - test_start
+
+                if result and result.get('success', False) and result.get('loss_percentage') is not None:
+                    print(f"    ✅ Success: {result['loss_percentage']:.2f}% loss rate (took {test_time:.1f}s)")
+                    result['test_number'] = current_test
+                    result['test_duration_actual'] = test_time
+                    self.update_csv_realtime('renaissance', result)
+
+                    # Generate real-time plots after every successful test
+                    self.plot_realtime_progress('renaissance')
+                else:
+                    print(f"    ❌ Failed or no data (took {test_time:.1f}s)")
+                    if result:
                         result['test_number'] = current_test
                         result['test_duration_actual'] = test_time
                         self.update_csv_realtime('renaissance', result)
 
-                        # Generate real-time plots after every successful test
-                        self.plot_realtime_progress('renaissance')
-                    else:
-                        print(f"    ❌ Failed or no data (took {test_time:.1f}s)")
-                        if result:
-                            result['test_number'] = current_test
-                            result['test_duration_actual'] = test_time
-                            self.update_csv_realtime('renaissance', result)
-
-                    # Small delay between tests
-                    time.sleep(2)
+                # Small delay between tests
+                time.sleep(2)
 
         total_time = time.time() - start_time
         print(f"\n✅ Renaissance benchmark complete!")
@@ -1681,21 +1814,20 @@ class BenchmarkRunner:
 
                 elif test_type == 'renaissance':
                     # Plot points for each stack depth (no native duration in Renaissance)
-                    for stack_depth in sorted(interval_data['stack_depth'].unique()):
-                        subset = interval_data[interval_data['stack_depth'] == stack_depth]
+                    subset = interval_data
 
-                        if len(subset) < 1:
-                            continue
+                    if len(subset) < 1:
+                        continue
 
-                        # Sort by queue size for proper plotting
-                        subset = subset.sort_values('queue_size')
+                    # Sort by queue size for proper plotting
+                    subset = subset.sort_values('queue_size')
 
-                        # Create label for this combination
-                        label = f"Stack {stack_depth}"
+                    # Create label for this combination
+                    label = f"Renaissance"
 
-                        # Plot the points
-                        ax.plot(subset['queue_size'], subset['loss_percentage'],
-                               marker='o', linestyle='None', markersize=4, label=label)
+                    # Plot the points
+                    ax.plot(subset['queue_size'], subset['loss_percentage'],
+                            marker='o', linestyle='None', markersize=4, label=label)
 
                 # Customize the subplot
                 ax.set_xlabel('Queue Size', fontsize=10)
@@ -1848,22 +1980,21 @@ class BenchmarkRunner:
                                    marker='o', linestyle='None', markersize=4, label=label)
 
                 elif test_type == 'renaissance':
-                    # Plot points for each stack depth (no native duration in Renaissance)
-                    for stack_depth in sorted(interval_data['stack_depth'].unique()):
-                        subset = interval_data[interval_data['stack_depth'] == stack_depth]
+                    # Renaissance has no stack depth variations, just plot all data for this interval
+                    subset = interval_data
 
-                        if len(subset) < 1:
-                            continue
+                    if len(subset) < 1:
+                        continue
 
-                        # Sort by queue size for proper plotting
-                        subset = subset.sort_values('queue_size')
+                    # Sort by queue size for proper plotting
+                    subset = subset.sort_values('queue_size')
 
-                        # Create label for this combination
-                        label = f"Stack {stack_depth}"
+                    # Create label for this combination
+                    label = f"Renaissance"
 
-                        # Plot the points
-                        ax.plot(subset['queue_size'], subset['loss_percentage'],
-                               marker='o', linestyle='None', markersize=4, label=label)
+                    # Plot the points
+                    ax.plot(subset['queue_size'], subset['loss_percentage'],
+                            marker='o', linestyle='None', markersize=4, label=label)
 
                 # Add the psychologically important 1% reference line
                 ax.axhline(y=1.0, color='red', linestyle=':', linewidth=1, alpha=0.7, label='1% threshold')
@@ -1883,21 +2014,23 @@ class BenchmarkRunner:
 
                 # Prevent scientific notation on axes even with log scale
                 ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
-                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.4f}' if y < 0.01 else f'{y:,.2f}'))
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.2f}'))  # Always 2 decimal places for loss %
 
                 # Set major tick locators first to ensure they're always visible
                 ax.xaxis.set_major_locator(ticker.LogLocator(base=10.0, numticks=8))
                 ax.yaxis.set_major_locator(ticker.LogLocator(base=10.0, numticks=8))
 
+                # Add x-axis ticks for all tested queue sizes
+                all_queue_sizes = [1, 2, 5, 10, 20, 50, 100, 200, 300, 400, 500, 750, 1000, 2000]
+                ax.set_xticks(all_queue_sizes, minor=True)
+                ax.xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x)}' if x in all_queue_sizes else ''))
+
                 # Add minor ticks with conservative subdivision to avoid overcrowding
-                ax.xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.2, 1.0, 0.2)))  # Less crowded subdivisions
                 ax.yaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.2, 1.0, 0.2)))  # Less crowded subdivisions
 
-                # Selective minor tick labeling - only show key values to avoid overcrowding
-                ax.xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}' if x in [20, 50, 200, 500, 2000] else ''))
-                # Reduce y-axis minor labels to prevent disappearing labels
+                # Y-axis minor labels with 2 decimal places
                 key_y_values = [0.002, 0.005, 0.02, 0.05, 0.2, 0.5, 2.0, 5.0, 20.0, 50.0]
-                ax.yaxis.set_minor_formatter(ticker.FuncFormatter(lambda y, pos: f'{y:.3f}' if y in key_y_values else ''))
+                ax.yaxis.set_minor_formatter(ticker.FuncFormatter(lambda y, pos: f'{y:.2f}' if y in key_y_values else ''))
 
                 ax.grid(True, which='minor', alpha=0.3)   # Make minor grid more visible
                 ax.grid(True, which='major', alpha=0.6)   # Ensure major grid is visible
@@ -1968,22 +2101,21 @@ class BenchmarkRunner:
                                    marker='o', linestyle='None', markersize=8, label=label)
 
                 elif test_type == 'renaissance':
-                    # Plot points for each stack depth (no native duration in Renaissance)
-                    for stack_depth in sorted(interval_data['stack_depth'].unique()):
-                        subset = interval_data[interval_data['stack_depth'] == stack_depth]
+                    # Renaissance has no stack depth variations, just plot all data for this interval
+                    subset = interval_data
 
-                        if len(subset) < 1:
-                            continue
+                    if len(subset) < 1:
+                        continue
 
-                        # Sort by queue size for proper plotting
-                        subset = subset.sort_values('queue_size')
+                    # Sort by queue size for proper plotting
+                    subset = subset.sort_values('queue_size')
 
-                        # Create label for this combination
-                        label = f"Stack Depth {stack_depth}"
+                    # Create label for this combination
+                    label = f"Renaissance"
 
-                        # Plot the points
-                        ax.plot(subset['queue_size'], subset['loss_percentage'],
-                               marker='o', linestyle='None', markersize=8, label=label)
+                    # Plot the points
+                    ax.plot(subset['queue_size'], subset['loss_percentage'],
+                            marker='o', linestyle='None', markersize=8, label=label)
 
                 # Customize the plot
                 ax.set_xlabel('Queue Size', fontsize=14)
@@ -2035,6 +2167,8 @@ class BenchmarkRunner:
             # Create additional Renaissance plots with all intervals combined
             if test_type == 'renaissance':
                 self._create_renaissance_combined_interval_plots(df, realtime_plots_dir)
+                # Also create a single combined progress plot for Renaissance
+                self._create_renaissance_combined_progress_plot(df, realtime_plots_dir)
 
         except Exception as e:
             print(f"    ⚠️ Error generating individual interval plots: {e}")
@@ -2050,6 +2184,116 @@ class BenchmarkRunner:
 
         except Exception as e:
             print(f"    ⚠️ Error generating Renaissance combined interval plots: {e}")
+
+    def _create_renaissance_combined_progress_plot(self, df, output_dir):
+        """Create a single Renaissance progress plot with all intervals combined in one plot"""
+        try:
+            print(f"    📊 Creating Renaissance combined progress plot...")
+
+            # Create figure
+            fig, ax = plt.subplots(figsize=(14, 10))
+
+            # Define colors and markers for different intervals
+            colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+            markers = ['o', 's', '^', 'D', 'x']
+
+            # Order intervals by numeric value
+            def interval_sort_key(interval):
+                return int(interval.replace('ms', ''))
+
+            intervals = sorted(df['interval'].unique(), key=interval_sort_key)
+
+            # Plot each interval as a separate line with progress tracking
+            for i, interval in enumerate(intervals):
+                interval_data = df[df['interval'] == interval]
+
+                if len(interval_data) < 1:
+                    continue
+
+                # Sort by queue size for proper plotting
+                interval_data = interval_data.sort_values('queue_size')
+
+                # Plot with distinct color and marker
+                color_idx = i % len(colors)
+                marker_idx = i % len(markers)
+
+                # Create a line plot connecting the points
+                ax.plot(interval_data['queue_size'], interval_data['loss_percentage'],
+                       marker=markers[marker_idx], linestyle='-', markersize=10, linewidth=3,
+                       color=colors[color_idx], label=f'{interval} ({len(interval_data)} tests)',
+                       alpha=0.8)
+
+                # Add text annotations for the latest points
+                if len(interval_data) > 0:
+                    latest_point = interval_data.iloc[-1]
+                    ax.annotate(f'{latest_point["loss_percentage"]:.2f}%',
+                               (latest_point['queue_size'], latest_point['loss_percentage']),
+                               xytext=(5, 5), textcoords='offset points',
+                               fontsize=9, alpha=0.8,
+                               bbox=dict(boxstyle='round,pad=0.3', facecolor=colors[color_idx], alpha=0.3))
+
+            # Set axes and labels
+            ax.set_xlabel('Queue Size', fontsize=14, fontweight='bold')
+            ax.set_ylabel('Loss Percentage (%)', fontsize=14, fontweight='bold')
+
+            # Set title with test count
+            total_tests = len(df)
+            ax.set_title(f'Renaissance Progress: All Intervals Combined ({total_tests} tests completed)',
+                        fontsize=16, fontweight='bold', pad=20)
+
+            # Set x-axis to log scale for better visualization
+            ax.set_xscale('log')
+
+            # Add 1% reference line
+            ax.axhline(y=1.0, color='red', linestyle='--', linewidth=2, alpha=0.7, label='1% Reference Line')
+
+            # Customize grid
+            ax.grid(True, alpha=0.4, which='major')
+            ax.grid(True, alpha=0.2, which='minor')
+
+            # Set y-axis range
+            all_loss_percentages = df['loss_percentage'].dropna()
+            if len(all_loss_percentages) > 0:
+                y_min = 0  # Always start from 0
+                y_max = min(100.0, max(5.0, all_loss_percentages.max() * 1.2))  # At least 5% visible, cap at 100%
+                ax.set_ylim(y_min, y_max)
+
+            # Prevent scientific notation on axes
+            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.2f}'))
+
+            # Add minor ticks for log scale
+            ax.xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.1, 1.0, 0.1)))
+            ax.yaxis.set_minor_locator(ticker.AutoMinorLocator(5))
+
+            # Legend with better positioning
+            ax.legend(fontsize=12, loc='upper right', frameon=True, fancybox=True, shadow=True,
+                     bbox_to_anchor=(1.0, 1.0))
+
+            # Add summary statistics text box
+            if len(all_loss_percentages) > 0:
+                stats_text = f'Stats:\n'
+                stats_text += f'Min: {all_loss_percentages.min():.2f}%\n'
+                stats_text += f'Max: {all_loss_percentages.max():.2f}%\n'
+                stats_text += f'Avg: {all_loss_percentages.mean():.2f}%\n'
+                stats_text += f'Median: {all_loss_percentages.median():.2f}%'
+
+                ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=10,
+                       verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
+            # Save the plot
+            plot_filename = f"renaissance_combined_progress.png"
+            plot_path = output_dir / plot_filename
+
+            plt.tight_layout()
+            plt.savefig(plot_path, dpi=600, bbox_inches='tight')
+            plt.close(fig)
+
+            print(f"    📊 Saved Renaissance combined progress plot: {plot_filename}")
+            print(f"    📍 Absolute path: {plot_path.absolute()}")
+
+        except Exception as e:
+            print(f"    ⚠️ Error generating Renaissance combined progress plot: {e}")
 
     def _create_renaissance_all_intervals_plot(self, df, output_dir, log_scale=False):
         """Create a Renaissance plot with all intervals in one plot"""
@@ -2107,21 +2351,23 @@ class BenchmarkRunner:
 
                 # Prevent scientific notation on axes even with log scale
                 ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
-                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.4f}' if y < 0.01 else f'{y:,.2f}'))
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.2f}'))  # Always 2 decimal places for loss %
 
                 # Set major tick locators first to ensure they're always visible
                 ax.xaxis.set_major_locator(ticker.LogLocator(base=10.0, numticks=8))
                 ax.yaxis.set_major_locator(ticker.LogLocator(base=10.0, numticks=8))
 
+                # Add x-axis ticks for all tested queue sizes
+                all_queue_sizes = [1, 2, 5, 10, 20, 50, 100, 200, 300, 400, 500, 750, 1000, 2000]
+                ax.set_xticks(all_queue_sizes, minor=True)
+                ax.xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x)}' if x in all_queue_sizes else ''))
+
                 # Add minor ticks with conservative subdivision to avoid overcrowding
-                ax.xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.2, 1.0, 0.2)))  # Less crowded subdivisions
                 ax.yaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.2, 1.0, 0.2)))  # Less crowded subdivisions
 
-                # Selective minor tick labeling - only show key values to avoid overcrowding
-                ax.xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}' if x in [20, 50, 200, 500, 2000] else ''))
-                # Reduce y-axis minor labels to prevent disappearing labels
+                # Y-axis minor labels with 2 decimal places
                 key_y_values = [0.002, 0.005, 0.02, 0.05, 0.2, 0.5, 2.0, 5.0, 20.0, 50.0]
-                ax.yaxis.set_minor_formatter(ticker.FuncFormatter(lambda y, pos: f'{y:.3f}' if y in key_y_values else ''))
+                ax.yaxis.set_minor_formatter(ticker.FuncFormatter(lambda y, pos: f'{y:.2f}' if y in key_y_values else ''))
 
                 # Add more minor ticks for log scale with finer subdivisions
                 ax.grid(True, which='minor', alpha=0.3)   # Make minor grid more visible
@@ -2196,6 +2442,10 @@ class BenchmarkRunner:
         if native_df is not None and renaissance_df is not None:
             self.plot_comparison(native_df, renaissance_df)
 
+        # Create maximum loss overlay plot if we have any data
+        if native_df is not None or renaissance_df is not None:
+            self.plot_maximum_loss_overlay(native_df, renaissance_df)
+
         print(f"📊 Visualizations saved to {PLOTS_DIR}")
 
     def create_progress_visualizations(self, csv_file: Optional[str] = None):
@@ -2240,7 +2490,7 @@ class BenchmarkRunner:
         else:
             # Try to determine from data - be more specific about column detection
             has_native_cols = 'native_duration' in df.columns
-            has_renaissance_cols = 'interval' in df.columns and 'stack_depth' in df.columns and 'native_duration' not in df.columns
+            has_renaissance_cols = 'interval' in df.columns and 'native_duration' not in df.columns
 
             if has_native_cols:
                 test_type = 'native'
@@ -2259,7 +2509,82 @@ class BenchmarkRunner:
         else:
             self.plot_renaissance_results(df, progress_mode=True)
 
+        # Try to create maximum loss overlay plot if we have data from both test types
+        native_df = None
+        renaissance_df = None
+
+        try:
+            # Try to load both types of data for the overlay plot
+            if test_type == 'native':
+                native_df = df
+                # Try to load renaissance data if it exists
+                renaissance_latest = DATA_DIR / "renaissance_results_latest.csv"
+                if renaissance_latest.exists():
+                    renaissance_df = pd.read_csv(renaissance_latest)
+            else:  # renaissance
+                renaissance_df = df
+                # Try to load native data if it exists
+                native_latest = DATA_DIR / "native_results_latest.csv"
+                if native_latest.exists():
+                    native_df = pd.read_csv(native_latest)
+
+            # Create overlay plot if we have data from at least one source
+            if native_df is not None or renaissance_df is not None:
+                self.plot_maximum_loss_overlay(native_df, renaissance_df, progress_mode=True)
+
+        except Exception as e:
+            print(f"⚠️ Could not create maximum loss overlay for progress mode: {e}")
+
         print(f"📊 Progress visualizations saved to {PLOTS_DIR} with '_progress' suffix")
+
+    def watch_progress_visualizations(self, csv_file: Optional[str] = None):
+        """Watch mode: continuously monitor and update progress visualizations"""
+        print("👁️ Starting watch mode for progress visualizations...")
+        print("Press Ctrl+C to stop watching")
+
+        import time
+
+        last_modified = 0
+        csv_path = None
+
+        try:
+            while True:
+                # Determine CSV file to monitor
+                if csv_file:
+                    csv_path = Path(csv_file)
+                    if not csv_path.exists():
+                        print(f"❌ Specified CSV file not found: {csv_file}")
+                        print("Waiting for file to be created...")
+                        time.sleep(5)
+                        continue
+                else:
+                    # Look for the most recent CSV file
+                    csv_files = list(DATA_DIR.glob("*_results_latest.csv"))
+                    if not csv_files:
+                        print("⏳ No CSV files found. Waiting for benchmark data...")
+                        time.sleep(10)
+                        continue
+                    csv_path = max(csv_files, key=lambda x: x.stat().st_mtime)
+
+                # Check if file has been modified
+                current_modified = csv_path.stat().st_mtime
+                if current_modified > last_modified:
+                    last_modified = current_modified
+                    print(f"\n🔄 CSV updated: {csv_path.name} - Regenerating plots...")
+
+                    try:
+                        self.create_progress_visualizations(str(csv_path))
+                        print(f"✅ Plots updated at {datetime.now().strftime('%H:%M:%S')}")
+                    except Exception as e:
+                        print(f"⚠️ Error updating plots: {e}")
+
+                # Wait before checking again
+                time.sleep(5)
+
+        except KeyboardInterrupt:
+            print("\n👋 Watch mode stopped by user")
+        except Exception as e:
+            print(f"\n❌ Watch mode error: {e}")
 
     def plot_native_results(self, df: pd.DataFrame, progress_mode: bool = False):
         """Create native test visualizations"""
@@ -2469,6 +2794,28 @@ class BenchmarkRunner:
         plt.savefig(PLOTS_DIR / self._get_plot_filename('native_3d_surface.png', progress_mode), dpi=600, bbox_inches='tight')
         plt.close()
 
+        # 5. Individual plots for each combination of interval, stack depth, and native duration
+        self._create_individual_native_plots(df_success, progress_mode)
+
+    def _create_individual_native_plots(self, df: pd.DataFrame, progress_mode: bool = False):
+        """Create individual plots for each native test combination"""
+        print("📊 Creating individual native plots...")
+
+        for interval in df['interval'].unique():
+            for stack_depth in df['stack_depth'].unique():
+                for native_duration in df['native_duration'].unique():
+                    subset = df[(df['interval'] == interval) &
+                               (df['stack_depth'] == stack_depth) &
+                               (df['native_duration'] == native_duration)]
+                    if subset.empty:
+                        continue
+
+                    # Create both normal and log scale versions
+                    self._create_individual_plot(subset,
+                                               f'native_{interval}_stack{stack_depth}_dur{native_duration}s',
+                                               f'Native - {interval}, Stack {stack_depth}, {native_duration}s',
+                                               progress_mode)
+
     def plot_renaissance_results(self, df: pd.DataFrame, progress_mode: bool = False):
         """Create Renaissance test visualizations"""
         # Filter successful tests if 'success' column exists
@@ -2487,41 +2834,36 @@ class BenchmarkRunner:
             "1ms": 1, "5ms": 5, "10ms": 10, "20ms": 20
         })
 
-        # 1. Create separate heatmaps for each stack depth
-        for stack_depth in df_success['stack_depth'].unique():
-            df_stack = df_success[df_success['stack_depth'] == stack_depth]
+        # 1. Create a single heatmap for Renaissance (no stack depth variations)
+        fig, ax = plt.subplots(figsize=(10, 8))
 
-            fig, ax = plt.subplots(figsize=(10, 8))
+        pivot = df_success.pivot(index='queue_size', columns='interval', values='loss_percentage')
+        pivot = pivot.reindex(columns=interval_order)
 
-            pivot = df_stack.pivot(index='queue_size', columns='interval', values='loss_percentage')
-            pivot = pivot.reindex(columns=interval_order)
+        sns.heatmap(pivot, annot=True, fmt='.2f', cmap='RdYlBu_r',
+                   ax=ax, cbar_kws={'label': 'Loss Rate (%)'})
+        ax.set_title(f'Renaissance Test: Loss Rate Heatmap', fontsize=14)
+        ax.set_xlabel('Sampling Interval')
+        ax.set_ylabel('Queue Size')
 
-            sns.heatmap(pivot, annot=True, fmt='.2f', cmap='RdYlBu_r',
-                       ax=ax, cbar_kws={'label': 'Loss Rate (%)'})
-            ax.set_title(f'Renaissance Test: Loss Rate Heatmap (Stack Depth: {stack_depth})', fontsize=14)
-            ax.set_xlabel('Sampling Interval')
-            ax.set_ylabel('Queue Size')
+        # Prevent scientific notation on heatmap axes
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{int(y):,}' if y % 1 == 0 else f'{y:,.1f}'))
 
-            # Prevent scientific notation on heatmap axes
-            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{int(y):,}' if y % 1 == 0 else f'{y:,.1f}'))
+        plt.tight_layout()
+        plt.savefig(PLOTS_DIR / self._get_plot_filename(f'renaissance_heatmap.png', progress_mode), dpi=600, bbox_inches='tight')
+        plt.close()
 
-            plt.tight_layout()
-            plt.savefig(PLOTS_DIR / self._get_plot_filename(f'renaissance_heatmap_stack{stack_depth}.png', progress_mode), dpi=600, bbox_inches='tight')
-            plt.close()
-
-        # 2. Line plots: Loss Rate vs Queue Size for each Interval, showing all stack depths
+        # 2. Line plots: Loss Rate vs Queue Size for each Interval
         fig, axes = plt.subplots(2, 2, figsize=(15, 12))
         axes = axes.flatten()
-        fig.suptitle('Renaissance Test: Loss Rate vs Queue Size by Interval (All Stack Depths)', fontsize=16)
+        fig.suptitle('Renaissance Test: Loss Rate vs Queue Size by Interval', fontsize=16)
 
         for i, interval in enumerate(interval_order):
             df_int = df_success[df_success['interval'] == interval]
 
-            for stack_depth in df_success['stack_depth'].unique():
-                df_stack = df_int[df_int['stack_depth'] == stack_depth]
-                if not df_stack.empty:
-                    axes[i].plot(df_stack['queue_size'], df_stack['loss_percentage'],
-                               marker='o', linestyle='None', markersize=8, label=f'Stack {stack_depth}')
+            if not df_int.empty:
+                axes[i].plot(df_int['queue_size'], df_int['loss_percentage'],
+                           marker='o', linestyle='None', markersize=8, label='Renaissance')
 
             axes[i].set_title(f'Interval: {interval}')
             axes[i].set_xlabel('Queue Size')
@@ -2547,7 +2889,97 @@ class BenchmarkRunner:
             axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
 
         plt.tight_layout()
-        plt.savefig(PLOTS_DIR / self._get_plot_filename('renaissance_loss_vs_queue_size_all_stacks.png', progress_mode), dpi=600, bbox_inches='tight')
+        plt.savefig(PLOTS_DIR / self._get_plot_filename('renaissance_loss_vs_queue_size.png', progress_mode), dpi=600, bbox_inches='tight')
+        plt.close()
+
+        # 3. Individual plots for each interval
+        self._create_individual_renaissance_plots(df_success, progress_mode)
+
+    def _create_individual_renaissance_plots(self, df: pd.DataFrame, progress_mode: bool = False):
+        """Create individual plots for each interval"""
+        print("📊 Creating individual Renaissance plots...")
+
+        for interval in df['interval'].unique():
+            subset = df[df['interval'] == interval]
+            if subset.empty:
+                continue
+
+            # Create both normal and log scale versions
+            self._create_individual_plot(subset, f'renaissance_{interval}',
+                                       f'Renaissance - {interval}', progress_mode)
+
+    def _create_individual_plot(self, df: pd.DataFrame, base_filename: str, title: str, progress_mode: bool = False):
+        """Create both normal and log scale individual plots"""
+
+        # 1. Normal scale with zero min y and 1% dotted line
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        ax.plot(df['queue_size'], df['loss_percentage'], 'o-', markersize=8, linewidth=2, label='Loss Rate')
+
+        # Set y-axis to start from 0 and cap at 100%
+        y_max = min(100.0, max(5.0, df['loss_percentage'].max() * 1.1))  # At least 5% visible, cap at 100%
+        ax.set_ylim(0, y_max)
+
+        # Add 1% reference line if it's within the visible range
+        if y_max >= 1.0:
+            ax.axhline(y=1.0, color='red', linestyle='--', alpha=0.7, linewidth=1, label='1% Reference')
+
+        ax.set_title(f'{title} (Normal Scale)', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Queue Size')
+        ax.set_ylabel('Loss Rate (%)')
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+        # Prevent scientific notation
+        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
+
+        plt.tight_layout()
+        plt.savefig(PLOTS_DIR / self._get_plot_filename(f'{base_filename}_normal.png', progress_mode), dpi=600, bbox_inches='tight')
+        plt.close()
+
+        # 2. Log scale version
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        ax.loglog(df['queue_size'], df['loss_percentage'], 'o-', markersize=8, linewidth=2, label='Loss Rate')
+
+        # Set y-axis limits for log scale
+        y_min = max(0.001, df['loss_percentage'].min() * 0.5)
+        y_max = min(100.0, max(1.0, df['loss_percentage'].max() * 2.0))
+        ax.set_ylim(y_min, y_max)
+
+        # Add 1% reference line
+        ax.axhline(y=1.0, color='red', linestyle='--', alpha=0.7, linewidth=1, label='1% Reference')
+
+        ax.set_title(f'{title} (Log Scale)', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Queue Size (log scale)')
+        ax.set_ylabel('Loss Rate (%) (log scale)')
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+        # Set up log scale formatting
+        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.4f}' if y < 0.01 else f'{y:,.2f}'))
+
+        # Set major tick locators to ensure labels are visible
+        ax.xaxis.set_major_locator(ticker.LogLocator(base=10.0, numticks=8))
+        ax.yaxis.set_major_locator(ticker.LogLocator(base=10.0, numticks=8))
+
+        # Add conservative minor ticks
+        ax.xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.2, 1.0, 0.2)))
+        ax.yaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.2, 1.0, 0.2)))
+
+        # Minor tick formatting
+        ax.xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}' if x in [20, 50, 200, 500, 2000] else ''))
+        key_y_values = [0.002, 0.005, 0.02, 0.05, 0.2, 0.5, 2.0, 5.0, 20.0, 50.0]
+        ax.yaxis.set_minor_formatter(ticker.FuncFormatter(lambda y, pos: f'{y:.3f}' if y in key_y_values else ''))
+
+        # Force tick label visibility
+        ax.tick_params(axis='both', which='major', labelsize=8, labelbottom=True, labelleft=True)
+        ax.tick_params(axis='both', which='minor', labelsize=6)
+
+        plt.tight_layout()
+        plt.savefig(PLOTS_DIR / self._get_plot_filename(f'{base_filename}_log.png', progress_mode), dpi=600, bbox_inches='tight')
         plt.close()
 
     def plot_comparison(self, native_df: pd.DataFrame, renaissance_df: pd.DataFrame):
@@ -2613,6 +3045,140 @@ class BenchmarkRunner:
         plt.savefig(PLOTS_DIR / 'comparison_native_vs_renaissance.png', dpi=600, bbox_inches='tight')
         plt.close()
 
+    def plot_maximum_loss_overlay(self, native_df: pd.DataFrame = None, renaissance_df: pd.DataFrame = None, progress_mode: bool = False):
+        """Create a single plot overlaying maximum loss across all configurations for every interval as lines"""
+        print("📊 Creating maximum loss overlay plot...")
+
+        # Create figure
+        fig, ax = plt.subplots(figsize=(12, 8))
+
+        # Define colors and markers for different intervals and test types
+        interval_colors = {'1ms': '#1f77b4', '5ms': '#ff7f0e', '10ms': '#2ca02c', '20ms': '#d62728'}
+        test_type_styles = {
+            'native': {'linestyle': '-', 'marker': 'o', 'markersize': 8, 'linewidth': 2},
+            'renaissance': {'linestyle': '--', 'marker': 's', 'markersize': 8, 'linewidth': 2}
+        }
+
+        # Order intervals by numeric value
+        def interval_sort_key(interval):
+            return int(interval.replace('ms', ''))
+
+        plot_data = []
+
+        # Process native data if available
+        if native_df is not None and not native_df.empty:
+            # Filter successful tests
+            if 'success' in native_df.columns:
+                native_success = native_df[native_df['success'] == True].copy()
+            else:
+                native_success = native_df.copy()
+
+            if not native_success.empty and 'loss_percentage' in native_success.columns:
+                # Group by interval and queue_size, then take the maximum loss across all configurations
+                # (different native_duration and stack_depth combinations)
+                native_max_loss = native_success.groupby(['interval', 'queue_size'])['loss_percentage'].max().reset_index()
+                native_max_loss['test_type'] = 'Native (Max)'
+                plot_data.append(native_max_loss)
+
+        # Process renaissance data if available
+        if renaissance_df is not None and not renaissance_df.empty:
+            # Filter successful tests
+            if 'success' in renaissance_df.columns:
+                renaissance_success = renaissance_df[renaissance_df['success'] == True].copy()
+            else:
+                renaissance_success = renaissance_df.copy()
+
+            if not renaissance_success.empty and 'loss_percentage' in renaissance_success.columns:
+                # Group by interval and queue_size, then take the maximum loss across all configurations
+                # (different stack_depth combinations)
+                renaissance_max_loss = renaissance_success.groupby(['interval', 'queue_size'])['loss_percentage'].max().reset_index()
+                renaissance_max_loss['test_type'] = 'Renaissance (Max)'
+                plot_data.append(renaissance_max_loss)
+
+        if not plot_data:
+            print("⚠️ No data available for maximum loss overlay plot")
+            plt.close(fig)
+            return
+
+        # Combine all data
+        combined_df = pd.concat(plot_data, ignore_index=True)
+
+        # Get all available intervals and sort them
+        intervals = sorted(combined_df['interval'].unique(), key=interval_sort_key)
+        test_types = combined_df['test_type'].unique()
+
+        print(f"📊 Plotting maximum loss for intervals: {intervals}")
+        print(f"📊 Test types: {list(test_types)}")
+
+        # Plot each combination of interval and test type
+        for test_type in test_types:
+            test_data = combined_df[combined_df['test_type'] == test_type]
+
+            # Determine style based on test type
+            if 'native' in test_type.lower():
+                style = test_type_styles['native']
+                test_label_prefix = 'Native'
+            else:
+                style = test_type_styles['renaissance']
+                test_label_prefix = 'Renaissance'
+
+            for interval in intervals:
+                interval_data = test_data[test_data['interval'] == interval]
+
+                if len(interval_data) == 0:
+                    continue
+
+                # Sort by queue size for proper line plotting
+                interval_data = interval_data.sort_values('queue_size')
+
+                # Create label and color
+                color = interval_colors.get(interval, '#9467bd')  # Default color if interval not in predefined colors
+                label = f'{test_label_prefix} {interval}'
+
+                # Plot the line
+                ax.plot(interval_data['queue_size'], interval_data['loss_percentage'],
+                       color=color, label=label,
+                       linestyle=style['linestyle'], marker=style['marker'],
+                       markersize=style['markersize'], linewidth=style['linewidth'])
+
+        # Customize the plot
+        ax.set_xlabel('Queue Size', fontsize=14)
+        ax.set_ylabel('Maximum Loss Percentage (%)', fontsize=14)
+        ax.set_title('Maximum Loss Rate Across All Configurations by Interval', fontsize=16, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+
+        # Set x-axis to log scale if we have a wide range of queue sizes
+        if len(combined_df) > 1:
+            queue_range = combined_df['queue_size'].max() / combined_df['queue_size'].min()
+            if queue_range > 10:
+                ax.set_xscale('log')
+                # Add minor ticks for log scale
+                ax.xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.1, 1.0, 0.1)))
+                ax.xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}' if x in [20, 50, 200, 500, 2000, 5000] else ''))
+                ax.grid(True, which='minor', alpha=0.15)
+
+        # Add more minor ticks for y-axis
+        ax.yaxis.set_minor_locator(ticker.AutoMinorLocator(5))
+        ax.grid(True, which='minor', alpha=0.15)
+
+        # Add legend with proper positioning
+        ax.legend(fontsize=11, loc='best', frameon=True, fancybox=True, shadow=True)
+
+        # Prevent scientific notation on axes
+        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
+
+        # Save the plot
+        plot_filename = self._get_plot_filename('maximum_loss_overlay.png', progress_mode)
+        plot_path = PLOTS_DIR / plot_filename
+
+        plt.tight_layout()
+        plt.savefig(plot_path, dpi=600, bbox_inches='tight')
+        plt.close(fig)
+
+        print(f"📊 Maximum loss overlay plot saved: {plot_filename}")
+        print(f"📍 Absolute path: {plot_path.absolute()}")
+
 def main():
     parser = argparse.ArgumentParser(description='JFR Queue Size Benchmark Suite')
     parser.add_argument('--minimal', action='store_true',
@@ -2625,6 +3191,8 @@ def main():
                        help='Generate visualizations from existing data')
     parser.add_argument('--visualize-progress', action='store_true',
                        help='Generate in-progress visualizations from live CSV data (updates continuously)')
+    parser.add_argument('--watch', action='store_true',
+                       help='Watch mode: continuously monitor and update progress visualizations')
     parser.add_argument('--csv-file', type=str,
                        help='Specify custom CSV file for visualizations (used with --visualize-progress)')
     parser.add_argument('--all', action='store_true',
@@ -2641,19 +3209,31 @@ def main():
                        help='Number of retries for tests with JSON parsing failures (default: 2)')
     parser.add_argument('--verbose', action='store_true',
                        help='Enable verbose logging for debugging and detailed output')
+    parser.add_argument('--only-till', type=float, default=None,
+                       help='Only benchmark queue sizes for each interval until all loss values are lower than the given percentage (disabled by default, e.g. 0.5 for 0.5%%)')
+    parser.add_argument('--optimized', action='store_true',
+                       help='Use only the highest stack depth and longest duration for faster benchmarking')
+    parser.add_argument('--backup-progress', action='store_true',
+                       help='Backup all existing progress files before starting new benchmarks')
 
     args = parser.parse_args()
 
     # If minimal flag is used without other flags, run only native (not renaissance)
-    if args.minimal and not any([args.run_native, args.run_renaissance, args.visualize, args.visualize_progress, args.all, args.estimate, args.only_native, args.only_renaissance]):
+    if args.minimal and not any([args.run_native, args.run_renaissance, args.visualize, args.visualize_progress, args.watch, args.all, args.estimate, args.only_native, args.only_renaissance]):
         args.run_native = True
 
-    if not any([args.run_native, args.run_renaissance, args.visualize, args.visualize_progress, args.all, args.estimate, args.minimal, args.only_native, args.only_renaissance]):
+    if not any([args.run_native, args.run_renaissance, args.visualize, args.visualize_progress, args.watch, args.all, args.estimate, args.minimal, args.only_native, args.only_renaissance]):
         parser.print_help()
         return
 
-    # Create benchmark runner with minimal configuration if requested
-    runner = BenchmarkRunner(minimal=args.minimal, threads=args.threads, max_retries=args.retries, verbose=args.verbose)
+    # Create benchmark runner with all requested configuration
+    runner = BenchmarkRunner(minimal=args.minimal, threads=args.threads, max_retries=args.retries,
+                            verbose=args.verbose, only_till=args.only_till, optimized=args.optimized)
+
+    # Backup progress files if requested
+    if args.backup_progress:
+        print("🗂️ Backing up existing progress files...")
+        backup_progress_files(verbose=args.verbose)
 
     # Show configuration info
     print(f"JFR Queue Size Benchmark Suite")
@@ -2680,7 +3260,7 @@ def main():
         # Special case: if only-renaissance, show only Renaissance estimates
         if args.only_renaissance:
             renaissance_seconds, renaissance_time = runner.estimate_runtime('renaissance')
-            renaissance_tests = len(runner.queue_sizes) * len(runner.sampling_intervals) * len(runner.stack_depths)
+            renaissance_tests = len(runner.queue_sizes) * len(runner.sampling_intervals)  # Renaissance has no stack depths
             print(f"🏛️ Renaissance Benchmark:")
             print(f"   Tests: {renaissance_tests}")
             print(f"   Estimated time: {renaissance_time}")
@@ -2703,7 +3283,7 @@ def main():
             # 3. --run-renaissance is specified
             if args.all or args.run_renaissance or (not args.minimal and not args.only_native):
                 renaissance_seconds, renaissance_time = runner.estimate_runtime('renaissance')
-                renaissance_tests = len(runner.queue_sizes) * len(runner.sampling_intervals) * len(runner.stack_depths)
+                renaissance_tests = len(runner.queue_sizes) * len(runner.sampling_intervals)  # Renaissance has no stack depths
                 print(f"🏛️ Renaissance Benchmark:")
                 print(f"   Tests: {renaissance_tests}")
                 print(f"   Estimated time: {renaissance_time}")
@@ -2754,8 +3334,11 @@ def main():
         return
 
     # Handle visualize-progress mode
-    if args.visualize_progress:
-        runner.create_progress_visualizations(args.csv_file)
+    if args.visualize_progress or args.watch:
+        if args.watch:
+            runner.watch_progress_visualizations(args.csv_file)
+        else:
+            runner.create_progress_visualizations(args.csv_file)
         return
 
     try:
