@@ -141,8 +141,8 @@ run_renaissance() {
     echo "JAR: $renaissance_jar"
 
     # Build Renaissance command
-    local renaissance_cmd="$JAVA_HOME/bin/java $JVM_OPTS -jar $renaissance_jar all"
-    #scrabble page-rank future-genetic akka-uct movie-lens scala-doku chi-square rx-scrabble db-shootout neo4j-analytics finagle-http reactors dec-tree scala-stm-bench7 naive-bayes als par-mnemonics scala-kmeans philosophers log-regression gauss-mix mnemonics dotty finagle-chirper"
+    # omit fj-means (it causes stalls for whatever reason)
+    local renaissance_cmd="$JAVA_HOME/bin/java $JVM_OPTS -jar $renaissance_jar scrabble page-rank future-genetic akka-uct movie-lens scala-doku chi-square rx-scrabble db-shootout neo4j-analytics finagle-http reactors dec-tree scala-stm-bench7 naive-bayes als par-mnemonics scala-kmeans philosophers log-regression gauss-mix mnemonics dotty finagle-chirper"
 
     # Add iterations if specified
     if [[ -n "$RENAISSANCE_ITERATIONS" ]]; then
