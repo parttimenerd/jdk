@@ -37,7 +37,6 @@
 #include "memory/resourceArea.hpp"
 #include "runtime/atomic.hpp"
 #include "runtime/javaThread.hpp"
-#include "runtime/os.hpp"
 #include "runtime/osThread.hpp"
 #include "runtime/safepointMechanism.inline.hpp"
 #include "runtime/threadSMR.hpp"
@@ -457,40 +456,11 @@ struct LostSampleReasons {
 
 LostSampleReasons lost_sample_reasons;
 
-// Static variables for throttling send_lost_event to once per second
-static volatile jlong last_lost_event_time = 0;
-static volatile int lost_event_lock = 0;
-static const jlong LOST_EVENT_INTERVAL_NS = 1000000000LL; // 1 second in nanoseconds
 
 void JfrCPUTimeThreadSampling::send_lost_event(const JfrTicks &time, traceid tid, s4 lost_samples) {
   if (!EventCPUTimeSamplesLost::is_enabled()) {
     return;
   }
-
-  // Throttle to once per second and ensure only one thread can send
-  jlong current_time = os::javaTimeNanos();
-  jlong last_time = last_lost_event_time;
-
-  // Check if enough time has passed (1 second)
-  if (current_time - last_time < LOST_EVENT_INTERVAL_NS) {
-    return;
-  }
-
-  // Try to acquire the lock atomically using compare-and-swap
-  if (Atomic::cmpxchg(&lost_event_lock, 0, 1) != 0) {
-    // Another thread is already sending the event
-    return;
-  }
-
-  // Double-check the time after acquiring the lock
-  if (current_time - last_lost_event_time < LOST_EVENT_INTERVAL_NS) {
-    // Release lock and return
-    Atomic::store(&lost_event_lock, 0);
-    return;
-  }
-
-  // Update the last event time
-  last_lost_event_time = current_time;
 
   // Build machine-readable lost sample stats in a single line using fixed buffer and snprintf
   char buffer[81920];  // Large buffer to handle all possible VM operations
@@ -528,9 +498,6 @@ void JfrCPUTimeThreadSampling::send_lost_event(const JfrTicks &time, traceid tid
   event.set_lostSamples(lost_samples);
   event.set_eventThread(tid);
   event.commit();
-
-  // Release the lock
-  Atomic::store(&lost_event_lock, 0);
 }
 
 void JfrCPUSamplerThread::post_run() {

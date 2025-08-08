@@ -1136,7 +1136,7 @@ struct SignalHandlerStats {
     long last_print = Atomic::load(&_last_print_time);
 
     // Print every 1 second (1,000,000,000 ns)
-    if (current_time - last_print >= 1000000000L) {
+    if (current_time - last_print >= 10000000000L) {
       // Try to update the last print time atomically
       if (Atomic::cmpxchg(&_last_print_time, last_print, current_time) == last_print) {
         return true; // We successfully updated the time, so we should print
