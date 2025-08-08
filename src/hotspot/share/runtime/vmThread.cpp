@@ -275,6 +275,7 @@ void VMThread::evaluate_operation(VM_Operation* op) {
 
   {
     PerfTraceTime vm_op_timer(perf_accumulated_vm_operation_time());
+    set_vm_ops(op->type());
     HOTSPOT_VMOPS_BEGIN(
                      (char*) op->name(), strlen(op->name()),
                      op->evaluate_at_safepoint() ? 0 : 1);
@@ -282,6 +283,7 @@ void VMThread::evaluate_operation(VM_Operation* op) {
     EventExecuteVMOperation event;
     VMThreadCPUTimeScope CPUTimeScope(this, op->is_gc_operation());
     op->evaluate();
+    clear_vm_ops();
     if (event.should_commit()) {
       post_vm_operation_event(&event, op);
     }

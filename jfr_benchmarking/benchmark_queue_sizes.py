@@ -47,6 +47,14 @@ try:
 except ImportError as e:
     ANALYSIS_AVAILABLE = False
 
+# Import direct log parsing functions
+try:
+    from parse_logs_directly import parse_all_logs, create_percentile_dataframe
+    DIRECT_PARSING_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ Direct log parsing not available: {e}")
+    DIRECT_PARSING_AVAILABLE = False
+
 # Process Management Utilities
 
 def kill_lingering_java_processes(force=False, verbose=False):
@@ -152,72 +160,10 @@ RESULTS_DIR = Path("benchmark_results")
 LOGS_DIR = RESULTS_DIR / "logs"
 DATA_DIR = RESULTS_DIR / "data"
 PLOTS_DIR = RESULTS_DIR / "plots"
-
-def backup_progress_files(verbose=False):
-    """Backup all existing progress files to a timestamped backup folder"""
-    from datetime import datetime
-    import shutil
-
-    backup_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_dir = RESULTS_DIR / f"backup_{backup_timestamp}"
-
-    progress_files_found = False
-
-    # Check for progress files in plots directory
-    if PLOTS_DIR.exists():
-        progress_plots = list(PLOTS_DIR.glob("*_progress*"))
-        if progress_plots:
-            progress_files_found = True
-            backup_plots_dir = backup_dir / "plots"
-            backup_plots_dir.mkdir(parents=True, exist_ok=True)
-
-            for plot_file in progress_plots:
-                shutil.copy2(plot_file, backup_plots_dir / plot_file.name)
-                if verbose:
-                    print(f"    📋 Backed up plot: {plot_file.name}")
-
-    # Check for latest CSV files in data directory
-    if DATA_DIR.exists():
-        latest_files = list(DATA_DIR.glob("*_latest.*"))
-        if latest_files:
-            progress_files_found = True
-            backup_data_dir = backup_dir / "data"
-            backup_data_dir.mkdir(parents=True, exist_ok=True)
-
-            for data_file in latest_files:
-                shutil.copy2(data_file, backup_data_dir / data_file.name)
-                if verbose:
-                    print(f"    📋 Backed up data: {data_file.name}")
-
-    # Check for real-time plots
-    realtime_plots_dir = PLOTS_DIR / "realtime"
-    if realtime_plots_dir.exists():
-        realtime_files = list(realtime_plots_dir.glob("*"))
-        if realtime_files:
-            progress_files_found = True
-            backup_realtime_dir = backup_dir / "plots" / "realtime"
-            backup_realtime_dir.mkdir(parents=True, exist_ok=True)
-
-            for realtime_file in realtime_files:
-                if realtime_file.is_file():
-                    shutil.copy2(realtime_file, backup_realtime_dir / realtime_file.name)
-                    if verbose:
-                        print(f"    📋 Backed up realtime plot: {realtime_file.name}")
-                elif realtime_file.is_dir():
-                    shutil.copytree(realtime_file, backup_realtime_dir / realtime_file.name, dirs_exist_ok=True)
-                    if verbose:
-                        print(f"    📋 Backed up realtime directory: {realtime_file.name}")
-
-    if progress_files_found:
-        print(f"💾 Progress files backed up to: {backup_dir}")
-        print(f"   📂 Backup directory: {backup_dir.absolute()}")
-        return backup_dir
-    else:
-        print("ℹ️ No progress files found to backup")
-        return None
+TABLES_DIR = RESULTS_DIR / "tables"
 
 class BenchmarkRunner:
-    def __init__(self, minimal=False, threads=None, max_retries=2, verbose=False, only_till=None, optimized=False):
+    def __init__(self, minimal=False, threads=None, max_retries=2, verbose=False):
         self.setup_directories()
         self.results = {
             'native': [],
@@ -226,8 +172,6 @@ class BenchmarkRunner:
         self.minimal = minimal
         self.max_retries = max_retries
         self.verbose = verbose
-        self.only_till = only_till
-        self.optimized = optimized
 
         # Always plot after every iteration for real-time feedback
         self.plot_frequency = 1  # Plot after every single test
@@ -251,14 +195,6 @@ class BenchmarkRunner:
             self.test_duration = TEST_DURATION
             self.renaissance_iterations = RENAISSANCE_ITERATIONS
 
-        # Apply optimized configuration if requested (overrides minimal/full settings)
-        if optimized:
-            self.vprint("🚀 Using optimized configuration: highest stack depth and longest duration only")
-            # Use only the highest stack depth
-            self.stack_depths = [max(self.stack_depths)]
-            # Use only the longest native duration
-            self.native_durations = [max(self.native_durations)] # Fixed stack depth optimized for Renaissance benchmarks
-
     def _get_plot_filename(self, base_name: str, progress_mode: bool = False) -> str:
         """Generate appropriate filename based on progress mode"""
         if progress_mode:
@@ -269,57 +205,6 @@ class BenchmarkRunner:
             else:
                 return f"{base_name}_progress"
         return base_name
-
-    def _should_stop_for_interval(self, test_type: str, interval: int, current_queue_size: int) -> bool:
-        """Check if we should stop testing larger queue sizes for this interval based on --only-till threshold."""
-        # If early termination is disabled, always continue testing all queue sizes
-        if self.only_till is None:
-            return False
-
-        # Get results for this specific interval and test type
-        results_key = test_type
-        if results_key not in self.results:
-            return False
-
-        # Find results for this specific interval
-        interval_results = []
-        for result in self.results[results_key]:
-            if result.get('sampling_interval') == interval:
-                interval_results.append(result)
-
-        if not interval_results:
-            return False
-
-        # Group results by queue size
-        queue_size_results = {}
-        for result in interval_results:
-            q_size = result.get('queue_size')
-            if q_size is not None:
-                if q_size not in queue_size_results:
-                    queue_size_results[q_size] = []
-                queue_size_results[q_size].append(result)
-
-        # We need at least one smaller queue size tested to compare against
-        tested_queue_sizes = sorted([q for q in queue_size_results.keys() if q < current_queue_size])
-        if not tested_queue_sizes:
-            return False
-
-        # Check if the most recent smaller queue size has all loss values below threshold
-        latest_smaller_queue = max(tested_queue_sizes)
-        latest_results = queue_size_results[latest_smaller_queue]
-
-        # For each configuration tested at this queue size, check if loss is below threshold
-        all_below_threshold = True
-        for result in latest_results:
-            loss_percentage = result.get('loss_percentage', 100.0)  # Default to 100% if missing
-            if loss_percentage >= self.only_till:
-                all_below_threshold = False
-                break
-
-        if all_below_threshold and self.verbose:
-            print(f"    🎯 Early termination: All loss values for interval {interval}ms at queue size {latest_smaller_queue} are below {self.only_till}% threshold")
-
-        return all_below_threshold
 
     def estimate_runtime(self, test_type: str) -> Tuple[int, str]:
         """Estimate total runtime for benchmark suite using real data from previous runs"""
@@ -342,7 +227,7 @@ class BenchmarkRunner:
                 actual_time_per_test = 210 + 30  # 4 minutes total per test
                 self.vprint(f"⚠️ No historical data found, using estimated {actual_time_per_test:.1f}s per test")
 
-            total_tests = len(self.queue_sizes) * len(self.sampling_intervals)  # Renaissance has no stack depths
+            total_tests = len(self.queue_sizes) * len(self.sampling_intervals) * len(self.stack_depths)
             total_seconds = total_tests * actual_time_per_test * self.renaissance_iterations
         else:
             return 0, "Unknown test type"
@@ -424,13 +309,235 @@ class BenchmarkRunner:
 
     def setup_directories(self):
         """Create necessary directories for results"""
-        for dir_path in [RESULTS_DIR, LOGS_DIR, DATA_DIR, PLOTS_DIR]:
+        for dir_path in [RESULTS_DIR, LOGS_DIR, DATA_DIR, PLOTS_DIR, TABLES_DIR]:
             dir_path.mkdir(exist_ok=True)
 
     def vprint(self, *args, **kwargs):
         """Print only if verbose mode is enabled"""
         if self.verbose:
             print(*args, **kwargs)
+
+    def save_ascii_table(self, df: pd.DataFrame, base_filename: str, title: str, progress_mode: bool = False):
+        """Save an ASCII table representation of the plot data"""
+        try:
+            # Create tables subdirectory if needed
+            tables_subdir = TABLES_DIR
+            if progress_mode:
+                tables_subdir = TABLES_DIR / "progress"
+            tables_subdir.mkdir(exist_ok=True)
+
+            # Generate filename
+            table_filename = base_filename.replace('.png', '.txt')
+            table_path = tables_subdir / table_filename
+
+            # Create ASCII table content
+            with open(table_path, 'w') as f:
+                f.write(f"{title}\n")
+                f.write("=" * len(title) + "\n\n")
+
+                # Sort data by queue_size for consistent ordering
+                df_sorted = df.sort_values(['queue_size'])
+
+                # Format the table
+                if 'interval' in df.columns:
+                    # Group by interval for multi-interval data
+                    intervals = sorted(df_sorted['interval'].unique())
+
+                    for interval in intervals:
+                        interval_data = df_sorted[df_sorted['interval'] == interval]
+                        f.write(f"Sampling Interval: {interval}ms\n")
+                        f.write("-" * 30 + "\n")
+
+                        # Create table headers
+                        headers = ["Queue Size", "Loss %"]
+                        if 'out_of_thread_percentage' in interval_data.columns:
+                            headers.append("Out-of-Thread %")
+
+                        # Calculate column widths
+                        col_widths = [max(len(str(h)), 12) for h in headers]
+
+                        # Write headers
+                        header_line = " | ".join(h.ljust(w) for h, w in zip(headers, col_widths))
+                        f.write(header_line + "\n")
+                        f.write("-" * len(header_line) + "\n")
+
+                        # Write data rows
+                        for _, row in interval_data.iterrows():
+                            values = [f"{int(row['queue_size']):,}", f"{row['loss_percentage']:.3f}"]
+                            if 'out_of_thread_percentage' in row and pd.notna(row['out_of_thread_percentage']):
+                                values.append(f"{row['out_of_thread_percentage']:.3f}")
+                            elif len(headers) > 2:
+                                values.append("N/A")
+
+                            data_line = " | ".join(v.ljust(w) for v, w in zip(values, col_widths))
+                            f.write(data_line + "\n")
+
+                        f.write("\n")
+                else:
+                    # Single table for data without intervals
+                    headers = ["Queue Size", "Loss %"]
+                    if 'out_of_thread_percentage' in df_sorted.columns:
+                        headers.append("Out-of-Thread %")
+
+                    # Calculate column widths
+                    col_widths = [max(len(str(h)), 12) for h in headers]
+
+                    # Write headers
+                    header_line = " | ".join(h.ljust(w) for h, w in zip(headers, col_widths))
+                    f.write(header_line + "\n")
+                    f.write("-" * len(header_line) + "\n")
+
+                    # Write data rows
+                    for _, row in df_sorted.iterrows():
+                        values = [f"{int(row['queue_size']):,}", f"{row['loss_percentage']:.3f}"]
+                        if 'out_of_thread_percentage' in row and pd.notna(row['out_of_thread_percentage']):
+                            values.append(f"{row['out_of_thread_percentage']:.3f}")
+                        elif len(headers) > 2:
+                            values.append("N/A")
+
+                        data_line = " | ".join(v.ljust(w) for v, w in zip(values, col_widths))
+                        f.write(data_line + "\n")
+
+                # Add summary statistics
+                f.write("\nSummary Statistics:\n")
+                f.write("-" * 20 + "\n")
+                f.write(f"Min Loss Rate: {df['loss_percentage'].min():.3f}%\n")
+                f.write(f"Max Loss Rate: {df['loss_percentage'].max():.3f}%\n")
+                f.write(f"Mean Loss Rate: {df['loss_percentage'].mean():.3f}%\n")
+                f.write(f"Median Loss Rate: {df['loss_percentage'].median():.3f}%\n")
+                f.write(f"Total Configurations: {len(df)}\n")
+
+                if 'out_of_thread_percentage' in df.columns:
+                    out_of_thread_data = df.dropna(subset=['out_of_thread_percentage'])
+                    if len(out_of_thread_data) > 0:
+                        f.write(f"Mean Out-of-Thread: {out_of_thread_data['out_of_thread_percentage'].mean():.3f}%\n")
+
+            self.vprint(f"    📋 Saved ASCII table: {table_path}")
+
+        except Exception as e:
+            self.vprint(f"    ⚠️ Error saving ASCII table {base_filename}: {e}")
+
+    def save_loss_kinds_ascii_table(self, df: pd.DataFrame, base_filename: str, title: str, progress_mode: bool = False):
+        """Save an ASCII table for loss kinds breakdown"""
+        try:
+            # Create tables subdirectory if needed
+            tables_subdir = TABLES_DIR / "loss_kinds"
+            if progress_mode:
+                tables_subdir = TABLES_DIR / "progress" / "loss_kinds"
+            tables_subdir.mkdir(parents=True, exist_ok=True)
+
+            # Generate filename
+            table_filename = base_filename.replace('.png', '.txt')
+            table_path = tables_subdir / table_filename
+
+            # Loss categories as defined in the plotting function
+            loss_categories = ['stw_gc', 'invalid_state', 'could_not_acquire_lock', 'enqueue_failed']
+
+            # Process data to get loss kinds breakdown
+            loss_data = []
+            for _, row in df.iterrows():
+                queue_size = row['queue_size']
+                interval = row['interval']
+
+                # Get loss kinds data (handle both raw dict and flattened CSV format)
+                loss_kinds = {}
+                total_lost_samples = 0
+
+                # Try to get from raw dict format first
+                if 'loss_kinds' in row and isinstance(row['loss_kinds'], dict):
+                    loss_kinds = row['loss_kinds']
+                    total_lost_samples = row.get('total_lost_samples', 0)
+                else:
+                    # Try to get from flattened CSV format
+                    for category in loss_categories:
+                        csv_col = f'loss_kind_{category}'
+                        if csv_col in row:
+                            loss_kinds[category] = row[csv_col] if pd.notna(row[csv_col]) else 0
+                            total_lost_samples += loss_kinds[category]
+
+                if loss_kinds and total_lost_samples > 0:
+                    overall_loss_pct = row['loss_percentage']
+                    for category in loss_categories:
+                        category_count = loss_kinds.get(category, 0)
+                        category_loss_pct = (category_count / total_lost_samples) * overall_loss_pct if total_lost_samples > 0 else 0.0
+
+                        loss_data.append({
+                            'queue_size': queue_size,
+                            'interval': interval,
+                            'loss_category': category,
+                            'loss_percentage': category_loss_pct,
+                            'count': category_count,
+                            'total_lost': total_lost_samples
+                        })
+
+            if not loss_data:
+                self.vprint(f"    ⚠️ No loss kinds data available for table {base_filename}")
+                return
+
+            loss_df = pd.DataFrame(loss_data)
+
+            # Create ASCII table content
+            with open(table_path, 'w') as f:
+                f.write(f"{title}\n")
+                f.write("=" * len(title) + "\n\n")
+
+                # Group by interval
+                intervals = sorted(loss_df['interval'].unique())
+
+                for interval in intervals:
+                    interval_data = loss_df[loss_df['interval'] == interval]
+                    f.write(f"Sampling Interval: {interval}ms\n")
+                    f.write("-" * 40 + "\n")
+
+                    # Get unique queue sizes for this interval
+                    queue_sizes = sorted(interval_data['queue_size'].unique())
+
+                    for queue_size in queue_sizes:
+                        queue_data = interval_data[interval_data['queue_size'] == queue_size]
+                        f.write(f"\nQueue Size: {int(queue_size):,}\n")
+
+                        # Create table headers
+                        headers = ["Loss Category", "Count", "Loss %", "% of Total Loss"]
+                        col_widths = [20, 10, 10, 16]
+
+                        # Write headers
+                        header_line = " | ".join(h.ljust(w) for h, w in zip(headers, col_widths))
+                        f.write(header_line + "\n")
+                        f.write("-" * len(header_line) + "\n")
+
+                        # Write data rows
+                        total_lost = queue_data.iloc[0]['total_lost'] if len(queue_data) > 0 else 0
+                        for _, row in queue_data.iterrows():
+                            category = row['loss_category'].replace('_', ' ').title()
+                            count = int(row['count'])
+                            loss_pct = row['loss_percentage']
+                            pct_of_total = (row['count'] / total_lost * 100) if total_lost > 0 else 0
+
+                            values = [category, f"{count:,}", f"{loss_pct:.3f}%", f"{pct_of_total:.1f}%"]
+                            data_line = " | ".join(v.ljust(w) for v, w in zip(values, col_widths))
+                            f.write(data_line + "\n")
+
+                        f.write(f"\nTotal Lost Samples: {total_lost:,}\n")
+
+                    f.write("\n" + "=" * 60 + "\n\n")
+
+                # Add overall summary
+                f.write("Overall Summary:\n")
+                f.write("-" * 16 + "\n")
+
+                category_totals = loss_df.groupby('loss_category').agg({
+                    'count': 'sum',
+                    'loss_percentage': 'mean'
+                }).round(3)
+
+                for category, data in category_totals.iterrows():
+                    category_name = category.replace('_', ' ').title()
+                    f.write(f"{category_name}: {data['count']:,} samples (avg {data['loss_percentage']:.3f}% loss)\n")
+
+            self.vprint(f"    📋 Saved loss kinds ASCII table: {table_path}")
+
+        except Exception as e:
+            self.vprint(f"    ⚠️ Error saving loss kinds ASCII table {base_filename}: {e}")
 
     def flatten_for_csv(self, results: List[Dict]) -> pd.DataFrame:
         """Flatten complex nested fields for CSV export"""
@@ -562,10 +669,63 @@ class BenchmarkRunner:
                 flattened['total_drain_requests'] = total_drain_requests
                 flattened['drain_categories_count'] = len(drain_cats)
 
+            # Flatten loss_kinds data for CSV
+            if result.get('loss_kinds'):
+                loss_kinds = result['loss_kinds']
+                for loss_type, count in loss_kinds.items():
+                    flattened[f'loss_kind_{loss_type}'] = count
+
+            # Flatten loss_kind_percentages data for CSV
+            if result.get('loss_kind_percentages'):
+                loss_percentages = result['loss_kind_percentages']
+                for loss_type, percentage in loss_percentages.items():
+                    flattened[f'loss_kind_pct_{loss_type}'] = percentage
+
+            # Flatten vm_operations data for CSV
+            if result.get('vm_operations'):
+                vm_ops = result['vm_operations']
+                for vm_op_type, count in vm_ops.items():
+                    flattened[f'vm_op_{vm_op_type}'] = count
+
+            # Flatten vm_op_percentages data for CSV
+            if result.get('vm_op_percentages'):
+                vm_op_percentages = result['vm_op_percentages']
+                for vm_op_type, percentage in vm_op_percentages.items():
+                    flattened[f'vm_op_pct_{vm_op_type}'] = percentage
+
+            # Flatten signal_handler_stats data for CSV
+            if result.get('signal_handler_stats'):
+                signal_handler_stats = result['signal_handler_stats']
+                for signal_name, signal_data in signal_handler_stats.items():
+                    # Clean signal name for CSV columns
+                    clean_name = re.sub(r'[^a-zA-Z0-9]', '_', signal_name.lower()).strip('_')
+
+                    # Basic signal handler statistics
+                    flattened[f'signal_{clean_name}_signals_processed'] = signal_data.get('signals_processed', 0)
+                    flattened[f'signal_{clean_name}_runtime_seconds'] = signal_data.get('runtime_seconds', 0.0)
+
+                    # Handler time statistics with all percentiles
+                    if signal_data.get('handler_time'):
+                        handler_time = signal_data['handler_time']
+                        flattened[f'signal_{clean_name}_time_sum_ns'] = handler_time.get('sum', 0)
+                        flattened[f'signal_{clean_name}_time_avg_ns'] = handler_time.get('avg', 0)
+                        flattened[f'signal_{clean_name}_time_min_ns'] = handler_time.get('min', 0)
+                        flattened[f'signal_{clean_name}_time_max_ns'] = handler_time.get('max', 0)
+                        flattened[f'signal_{clean_name}_time_median_ns'] = handler_time.get('median', 0)
+                        flattened[f'signal_{clean_name}_time_p90_ns'] = handler_time.get('p90', 0)
+                        flattened[f'signal_{clean_name}_time_p95_ns'] = handler_time.get('p95', 0)
+                        flattened[f'signal_{clean_name}_time_p99_ns'] = handler_time.get('p99', 0)
+                        flattened[f'signal_{clean_name}_time_p99_9_ns'] = handler_time.get('p99_9', 0)
+
             # Remove the complex nested fields from CSV output
             flattened.pop('out_of_thread_details', None)
             flattened.pop('all_without_locks_details', None)
             flattened.pop('drain_categories', None)
+            flattened.pop('loss_kinds', None)
+            flattened.pop('loss_kind_percentages', None)
+            flattened.pop('vm_operations', None)
+            flattened.pop('vm_op_percentages', None)
+            flattened.pop('signal_handler_stats', None)
 
             flattened_results.append(flattened)
 
@@ -693,6 +853,12 @@ class BenchmarkRunner:
                 all_without_locks_details = None
                 print(f"    Loss: {loss_percentage}%")
 
+            # Extract additional loss kind data if available
+            loss_kinds = extracted_data.get('loss_kinds', {})
+            loss_kind_percentages = extracted_data.get('loss_kind_percentages', {})
+            total_lost_samples = extracted_data.get('total_lost_samples', 0)
+            main_loss_percentage = extracted_data.get('main_loss_percentage', 0)
+
             result_data = {
                 'queue_size': queue_size,
                 'interval': interval,
@@ -700,6 +866,10 @@ class BenchmarkRunner:
                 'native_duration': native_duration,
                 'test_duration': self.test_duration,
                 'loss_percentage': loss_percentage,
+                'loss_kinds': loss_kinds,
+                'loss_kind_percentages': loss_kind_percentages,
+                'total_lost_samples': total_lost_samples,
+                'main_loss_percentage': main_loss_percentage,
                 'out_of_thread_events': out_of_thread_events,
                 'out_of_thread_percentage': out_of_thread_percentage,
                 'out_of_thread_details': out_of_thread_details,
@@ -742,7 +912,9 @@ class BenchmarkRunner:
         log_filename = f"renaissance_q{queue_size}_{interval}_n{self.renaissance_iterations}.log"
         log_path = LOGS_DIR / log_filename
 
-        # Build command
+        print(f"    📝 Log file: {log_path}")
+
+        # Build command (no stack depth for Renaissance)
         cmd = [
             "./run.sh",
             "--mode", "renaissance",
@@ -792,11 +964,27 @@ class BenchmarkRunner:
                 all_without_locks_details = None
                 print(f"    Loss: {loss_percentage}%")
 
+            # Extract additional loss kind data if available (for Renaissance tests too)
+            if isinstance(extracted_data, dict):
+                loss_kinds = extracted_data.get('loss_kinds', {})
+                loss_kind_percentages = extracted_data.get('loss_kind_percentages', {})
+                total_lost_samples = extracted_data.get('total_lost_samples', 0)
+                main_loss_percentage = extracted_data.get('main_loss_percentage', 0)
+            else:
+                loss_kinds = {}
+                loss_kind_percentages = {}
+                total_lost_samples = 0
+                main_loss_percentage = 0
+
             result_data = {
                 'queue_size': queue_size,
                 'interval': interval,
                 'iterations': self.renaissance_iterations,
                 'loss_percentage': loss_percentage,
+                'loss_kinds': loss_kinds,
+                'loss_kind_percentages': loss_kind_percentages,
+                'total_lost_samples': total_lost_samples,
+                'main_loss_percentage': main_loss_percentage,
                 'out_of_thread_events': out_of_thread_events,
                 'out_of_thread_percentage': out_of_thread_percentage,
                 'out_of_thread_details': out_of_thread_details,
@@ -896,13 +1084,60 @@ class BenchmarkRunner:
         """Parse drain statistics using the analysis script's parsing logic"""
         if not ANALYSIS_AVAILABLE:
             self.vprint("    ⚠️ Analysis script functions not available, falling back to basic parsing")
-            return {'loss_percentage': None, 'out_of_thread_events': None, 'out_of_thread_percentage': None}
+            # Still parse signal handler stats even without the analysis script
+            signal_handler_stats = []
+            try:
+                with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    for line in f:
+                        if 'SIGNAL_HANDLER_STATS_JSON:' in line:
+                            match = re.search(r'SIGNAL_HANDLER_STATS_JSON:\s*(\{.*\})', line)
+                            if match:
+                                try:
+                                    data = json.loads(match.group(1))
+                                    signal_handler_stats.append(data)
+                                except json.JSONDecodeError as e:
+                                    self.vprint(f"    ⚠️ Error parsing SIGNAL_HANDLER_STATS_JSON: {e}")
+
+                result = {'loss_percentage': None, 'out_of_thread_events': None, 'out_of_thread_percentage': None, 'signal_handler_stats': {}}
+
+                # Process signal handler statistics
+                for signal_stats in signal_handler_stats:
+                    signal_name = signal_stats.get('name', 'unknown')
+                    signals_processed = signal_stats.get('signals_processed', 0)
+                    handler_time = signal_stats.get('handler_time', {})
+
+                    signal_data = {
+                        'signals_processed': signals_processed,
+                        'runtime_ns': signal_stats.get('runtime_ns', 0),
+                        'runtime_seconds': signal_stats.get('runtime_seconds', 0.0),
+                        'handler_time': {
+                            'sum': handler_time.get('sum', 0),
+                            'avg': handler_time.get('avg', 0),
+                            'min': handler_time.get('min', 0),
+                            'max': handler_time.get('max', 0),
+                            'median': handler_time.get('median', 0),
+                            'p90': handler_time.get('p90', 0),
+                            'p95': handler_time.get('p95', 0),
+                            'p99': handler_time.get('p99', 0),
+                            'p99_9': handler_time.get('p99_9', 0)
+                        },
+                        'handler_time_histogram': signal_stats.get('handler_time_histogram', [])
+                    }
+
+                    result['signal_handler_stats'][signal_name] = signal_data
+                    self.vprint(f"    🎯 Signal Handler [{signal_name}]: {signals_processed:,} signals, avg={handler_time.get('avg', 0)}ns, p99={handler_time.get('p99', 0)}ns")
+
+                return result
+            except Exception as e:
+                self.vprint(f"    ⚠️ Error in fallback parsing: {e}")
+                return {'loss_percentage': None, 'out_of_thread_events': None, 'out_of_thread_percentage': None}
 
         try:
             self.vprint(f"    🔍 Using analysis script to parse: {log_file_path}")
 
-            # Read all DRAIN_STATS_JSON lines from the log file
+            # Read all DRAIN_STATS_JSON and SIGNAL_HANDLER_STATS_JSON lines from the log file
             all_stats = []
+            signal_handler_stats = []
             with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 for line in f:
                     if 'DRAIN_STATS_JSON:' in line:
@@ -912,7 +1147,16 @@ class BenchmarkRunner:
                                 data = json.loads(match.group(1))
                                 all_stats.append(data)
                             except json.JSONDecodeError as e:
-                                self.vprint(f"    ⚠️ Error parsing JSON: {e}")
+                                self.vprint(f"    ⚠️ Error parsing DRAIN_STATS_JSON: {e}")
+                                continue
+                    elif 'SIGNAL_HANDLER_STATS_JSON:' in line:
+                        match = re.search(r'SIGNAL_HANDLER_STATS_JSON:\s*(\{.*\})', line)
+                        if match:
+                            try:
+                                data = json.loads(match.group(1))
+                                signal_handler_stats.append(data)
+                            except json.JSONDecodeError as e:
+                                self.vprint(f"    ⚠️ Error parsing SIGNAL_HANDLER_STATS_JSON: {e}")
                                 continue
 
             if not all_stats:
@@ -920,6 +1164,8 @@ class BenchmarkRunner:
                 return {'loss_percentage': None, 'out_of_thread_events': None, 'out_of_thread_percentage': None}
 
             self.vprint(f"    📊 Found {len(all_stats)} drain statistics entries")
+            if signal_handler_stats:
+                self.vprint(f"    🎯 Found {len(signal_handler_stats)} signal handler statistics entries")
 
             # Extract drain categories and calculate event counts
             result = {
@@ -929,7 +1175,8 @@ class BenchmarkRunner:
                 'out_of_thread_details': None,
                 'all_without_locks_events': None,
                 'all_without_locks_details': None,
-                'drain_categories': {}
+                'drain_categories': {},
+                'signal_handler_stats': {}
             }
 
             total_events_without_locks = 0
@@ -937,29 +1184,29 @@ class BenchmarkRunner:
             out_of_thread_events = 0
             all_without_locks_events = 0
 
-            # Process each drain category
+            # Process each drain category from the JSON data
             for category_name in DRAIN_CATEGORIES:
-                category_stats = extract_drain_stats_by_label(all_stats, category_name)
-                if category_stats:
-                    stats = category_stats[0]  # Get the last (and only) instance
+                # Find matching entry in all_stats
+                category_stats = None
+                for stats in all_stats:
+                    if stats.get('name') == category_name:
+                        category_stats = stats
+                        break
 
+                if category_stats:
                     # Extract event information
-                    events_data = stats.get('events', {})
+                    events_data = category_stats.get('events', {})
                     events_sum = events_data.get('sum', 0)
 
                     # Extract time information
-                    time_data = stats.get('time', {})
+                    time_data = category_stats.get('time', {})
 
-                    # Build category data structure
-                    # Calculate event-weighted queue size percentiles
-                    event_histogram = stats.get('event_histogram', [])
-                    queue_percentiles = calculate_event_weighted_percentiles(event_histogram)
-
+                    # Build category data structure - use time percentiles directly from JSON
                     category_data = {
-                        'requests': stats.get('drains', 0),
-                        'runtime_seconds': stats.get('runtime_ns', 0) / 1000000000.0 if 'runtime_ns' in stats else 0.0,  # Convert ns to seconds
-                        'runtime_minutes': (stats.get('runtime_ns', 0) / 1000000000.0) / 60.0 if 'runtime_ns' in stats else 0.0,
-                        'request_rate': stats.get('drains', 0) / (stats.get('runtime_ns', 1) / 1000000000.0) if stats.get('runtime_ns', 0) > 0 else 0.0,
+                        'requests': category_stats.get('drains', 0),
+                        'runtime_seconds': category_stats.get('runtime_ns', 0) / 1000000000.0 if 'runtime_ns' in category_stats else 0.0,  # Convert ns to seconds
+                        'runtime_minutes': (category_stats.get('runtime_ns', 0) / 1000000000.0) / 60.0 if 'runtime_ns' in category_stats else 0.0,
+                        'request_rate': category_stats.get('drains', 0) / (category_stats.get('runtime_ns', 1) / 1000000000.0) if category_stats.get('runtime_ns', 0) > 0 else 0.0,
                         'events': {
                             'sum': events_sum,
                             'avg': events_data.get('average', events_data.get('avg', 0)),
@@ -981,12 +1228,13 @@ class BenchmarkRunner:
                             'p99_9': time_data.get('p99_9', time_data.get('99.9th', time_data.get('p99.9', 0)))
                         },
                         'queue_size_percentiles': {
-                            'median': queue_percentiles.get('median', 0),
-                            'p95': queue_percentiles.get('p95', 0),
-                            'p99': queue_percentiles.get('p99', 0),
-                            'p99_9': queue_percentiles.get('p999', 0),
-                            'p99_99': queue_percentiles.get('p9999', 0),
-                            'p99_999': queue_percentiles.get('p99999', 0)
+                            'median': time_data.get('median', 0),
+                            'p90': time_data.get('p90', 0),
+                            'p95': time_data.get('p95', 0),
+                            'p99': time_data.get('p99', 0),
+                            'p99_9': time_data.get('p99_9', 0),
+                            'p99_99': time_data.get('p99_99', 0),
+                            'p99_999': time_data.get('p99_999', 0)
                         }
                     }
 
@@ -1039,6 +1287,34 @@ class BenchmarkRunner:
                     loss_percentage = (lost / (total + lost)) * 100
                     result['loss_percentage'] = loss_percentage
                     self.vprint(f"    📊 JFR Loss: {lost:,}/{total + lost:,} = {loss_percentage:.2f}%")
+
+            # Process signal handler statistics
+            for signal_stats in signal_handler_stats:
+                signal_name = signal_stats.get('name', 'unknown')
+                signals_processed = signal_stats.get('signals_processed', 0)
+                handler_time = signal_stats.get('handler_time', {})
+
+                # Build signal handler data structure
+                signal_data = {
+                    'signals_processed': signals_processed,
+                    'runtime_ns': signal_stats.get('runtime_ns', 0),
+                    'runtime_seconds': signal_stats.get('runtime_seconds', 0.0),
+                    'handler_time': {
+                        'sum': handler_time.get('sum', 0),
+                        'avg': handler_time.get('avg', 0),
+                        'min': handler_time.get('min', 0),
+                        'max': handler_time.get('max', 0),
+                        'median': handler_time.get('median', 0),
+                        'p90': handler_time.get('p90', 0),
+                        'p95': handler_time.get('p95', 0),
+                        'p99': handler_time.get('p99', 0),
+                        'p99_9': handler_time.get('p99_9', 0)
+                    },
+                    'handler_time_histogram': signal_stats.get('handler_time_histogram', [])
+                }
+
+                result['signal_handler_stats'][signal_name] = signal_data
+                self.vprint(f"    🎯 Signal Handler [{signal_name}]: {signals_processed:,} signals, avg={handler_time.get('avg', 0)}ns, p99={handler_time.get('p99', 0)}ns")
 
             return result
 
@@ -1176,7 +1452,20 @@ class BenchmarkRunner:
     def extract_loss_percentage(self, log_path: Path):
         """Extract loss percentage, out-of-thread statistics, and queue size statistics from log file"""
         try:
-            # First try to read the corresponding .raw file for more detailed drain statistics
+            # Initialize result to store all data we find
+            result = {
+                'loss_percentage': None,
+                'out_of_thread_events': None,
+                'out_of_thread_percentage': None,
+                'out_of_thread_details': None,
+                'all_without_locks_details': None,
+                'drain_categories': {},
+                'total_events_all': None,
+                'total_events_without_locks': None,
+                'loss_kinds': {}
+            }
+
+            # First try to get drain statistics from .raw file if it exists
             raw_file_path = Path(str(log_path) + ".raw")
             if raw_file_path.exists():
                 self.vprint(f"    🔍 Found .raw file: {raw_file_path}")
@@ -1184,22 +1473,28 @@ class BenchmarkRunner:
                 # Prioritize using the analysis script on the .raw file since it contains DRAIN_STATS_JSON
                 if ANALYSIS_AVAILABLE:
                     self.vprint(f"    🔍 Using analysis script on .raw file: {raw_file_path}")
-                    result = self.parse_drain_stats_with_analysis_script(raw_file_path)
-                    if result.get('out_of_thread_events') is not None or result.get('loss_percentage') is not None:
-                        return result
-                    self.vprint(f"    ⚠️ Analysis script didn't find data in .raw file, falling back to raw parsing...")
+                    raw_result = self.parse_drain_stats_with_analysis_script(raw_file_path)
+                    if raw_result.get('out_of_thread_events') is not None or raw_result.get('loss_percentage') is not None:
+                        # Update result with raw file data
+                        result.update(raw_result)
+                    else:
+                        self.vprint(f"    ⚠️ Analysis script didn't find data in .raw file, falling back to raw parsing...")
+                        raw_result = self.parse_raw_drain_stats(raw_file_path)
+                        result.update(raw_result)
+                else:
+                    raw_result = self.parse_raw_drain_stats(raw_file_path)
+                    result.update(raw_result)
 
-                return self.parse_raw_drain_stats(raw_file_path)
-
-            # If no .raw file, try using the analysis script on the main log file
-            if ANALYSIS_AVAILABLE:
+            # If no .raw file, try using the analysis script on the main log file for drain stats
+            elif ANALYSIS_AVAILABLE:
                 self.vprint(f"    🔍 No .raw file found, trying analysis script on main log: {log_path}")
-                result = self.parse_drain_stats_with_analysis_script(log_path)
-                if result.get('out_of_thread_events') is not None or result.get('loss_percentage') is not None:
-                    return result
-                self.vprint(f"    ⚠️ Analysis script didn't find data in main log, falling back to basic parsing...")
+                analysis_result = self.parse_drain_stats_with_analysis_script(log_path)
+                if analysis_result.get('out_of_thread_events') is not None or analysis_result.get('loss_percentage') is not None:
+                    result.update(analysis_result)
+                else:
+                    self.vprint(f"    ⚠️ Analysis script didn't find data in main log, will continue with basic parsing...")
 
-            # Fallback to parsing the main log file
+            # Now ALWAYS parse the main log file for LOST_SAMPLE_STATS and other data
             # Try different encodings to handle special characters
             content = None
             encodings = ['utf-8', 'utf-8-sig', 'latin1', 'cp1252']
@@ -1208,7 +1503,7 @@ class BenchmarkRunner:
                 try:
                     with open(log_path, 'r', encoding=encoding, errors='replace') as f:
                         content = f.read()
-                    self.vprint(f"    📝 Successfully read log with {encoding} encoding: {log_path}")
+                    self.vprint(f"    📝 Successfully read main log with {encoding} encoding: {log_path}")
                     break
                 except UnicodeDecodeError:
                     continue
@@ -1218,18 +1513,9 @@ class BenchmarkRunner:
                 with open(log_path, 'rb') as f:
                     raw_content = f.read()
                 content = raw_content.decode('utf-8', errors='replace')
-                self.vprint(f"    📝 Read log with fallback binary mode: {log_path}")
+                self.vprint(f"    📝 Read main log with fallback binary mode: {log_path}")
 
-            self.vprint(f"    📏 Log size: {len(content):,} characters")
-
-            result = {
-                'loss_percentage': None,
-                'out_of_thread_events': None,
-                'out_of_thread_percentage': None,
-                'out_of_thread_details': None,
-                'all_without_locks_events': None,
-                'all_without_locks_details': None
-            }
+            self.vprint(f"    📏 Main log size: {len(content):,} characters")
 
             # Extract comprehensive "out of thread" statistics from Drain Statistics sections
             # Look for the complete "=== out of thread Drain Statistics ===" section
@@ -1370,7 +1656,108 @@ class BenchmarkRunner:
                 elif total_events == 0:
                     self.vprint(f"    ⚠️ Total events is 0, cannot calculate percentage")
             else:
-                self.vprint(f"    ⚠️ Could not find any drain statistics sections with events")            # First try direct search for all statistics in entire content
+                self.vprint(f"    ⚠️ Could not find any drain statistics sections with events")
+
+            # Parse LOST_SAMPLE_STATS for detailed loss kind breakdown
+            print(f"    🔍 Searching for LOST_SAMPLE_STATS lines...")
+            lost_sample_stats_pattern = r'LOST_SAMPLE_STATS:\s*(.+)'
+            lost_stats_matches = re.findall(lost_sample_stats_pattern, content)
+
+            if lost_stats_matches:
+                print(f"    📊 Found {len(lost_stats_matches)} LOST_SAMPLE_STATS entries")
+
+                # Parse the last entry (most recent/complete statistics)
+                last_stats_line = lost_stats_matches[-1]
+
+                # Initialize loss kind statistics
+                loss_kinds = {
+                    'stw_gc': 0,
+                    'invalid_state': 0,
+                    'could_not_acquire_lock': 0,
+                    'enqueue_failed': 0,
+                    'other': 0  # sum of all other loss types (excluding VM ops)
+                }
+
+                # Initialize VM operations tracking
+                vm_operations = {
+                    'no_vm_ops': 0,
+                    'in_jfr_safepoint': 0,
+                    'vm_op_handshakeallthreads': 0,
+                    'vm_op_g1collectforfullgc': 0,
+                    'vm_op_g1incremental': 0,
+                    'vm_op_cleanup': 0,
+                    'vm_op_other': 0  # sum of all other VM operations
+                }
+
+                # Parse each key=value pair
+                pairs = last_stats_line.split()
+                total_lost_samples = 0
+
+                for pair in pairs:
+                    if '=' in pair:
+                        key, value = pair.split('=', 1)
+                        try:
+                            value = int(value)
+                            total_lost_samples += value
+
+                            if key in loss_kinds:
+                                loss_kinds[key] = value
+                            elif key in ['no_vm_ops', 'in_jfr_safepoint']:
+                                vm_operations[key] = value
+                            elif key.startswith('vm_op_'):
+                                # Convert to lowercase for matching
+                                key_lower = key.lower()
+                                if key_lower in vm_operations:
+                                    vm_operations[key_lower] = value
+                                else:
+                                    vm_operations['vm_op_other'] += value
+                            elif key in ['state_thread_uninitialized', 'state_thread_new',
+                                        'state_thread_new_trans', 'state_thread_in_native_trans',
+                                        'state_thread_in_vm', 'state_thread_in_vm_trans',
+                                        'state_thread_in_java_trans', 'state_thread_blocked',
+                                        'state_thread_blocked_trans']:
+                                loss_kinds['other'] += value
+                        except ValueError:
+                            continue
+
+                if total_lost_samples > 0:
+                    self.vprint(f"    📊 Loss breakdown: STW_GC={loss_kinds['stw_gc']}, Invalid_State={loss_kinds['invalid_state']}, "
+                              f"Lock={loss_kinds['could_not_acquire_lock']}, Enqueue={loss_kinds['enqueue_failed']}, Other={loss_kinds['other']}")
+                    self.vprint(f"    📊 VM operations: no_vm_ops={vm_operations['no_vm_ops']}, in_jfr_safepoint={vm_operations['in_jfr_safepoint']}, "
+                              f"handshake={vm_operations['vm_op_handshakeallthreads']}, other_vm_ops={vm_operations['vm_op_other']}")
+
+                    # Calculate percentages for loss kinds
+                    loss_kind_percentages = {}
+                    for kind, count in loss_kinds.items():
+                        if total_lost_samples > 0:
+                            loss_kind_percentages[kind] = (count / total_lost_samples) * 100
+                        else:
+                            loss_kind_percentages[kind] = 0.0
+
+                    # Calculate percentages for VM operations
+                    vm_op_percentages = {}
+                    for kind, count in vm_operations.items():
+                        if total_lost_samples > 0:
+                            vm_op_percentages[kind] = (count / total_lost_samples) * 100
+                        else:
+                            vm_op_percentages[kind] = 0.0
+
+                    result['loss_kinds'] = loss_kinds
+                    result['loss_kind_percentages'] = loss_kind_percentages
+                    result['vm_operations'] = vm_operations
+                    result['vm_op_percentages'] = vm_op_percentages
+                    result['total_lost_samples'] = total_lost_samples
+
+                    # Calculate the main loss categories as requested (stw_gc + invalid_state + could_not_acquire_lock + enqueue_failed)
+                    main_loss_categories = loss_kinds['stw_gc'] + loss_kinds['invalid_state'] + loss_kinds['could_not_acquire_lock'] + loss_kinds['enqueue_failed']
+                    if total_lost_samples > 0:
+                        main_loss_percentage = (main_loss_categories / total_lost_samples) * 100
+                        result['main_loss_percentage'] = main_loss_percentage
+                        self.vprint(f"    📊 Main loss categories: {main_loss_percentage:.2f}% ({main_loss_categories}/{total_lost_samples})")
+            else:
+                print(f"    ⚠️ No LOST_SAMPLE_STATS found in log file")
+
+            # First try direct search for all statistics in entire content
             self.vprint(f"    🔍 Searching entire log for JFR statistics...")
             successful_match = re.search(r'Successful Samples:\s*([\d,]+)', content)
             total_match = re.search(r'Total Samples:\s*([\d,]+)', content)
@@ -1468,6 +1855,7 @@ class BenchmarkRunner:
                     print(f"       {repr(stats_text[:500])}")
             else:
                 print(f"    ⚠️ Could not find 'CPU Time Sample Statistics' section in log")
+
             # Show last few lines of log for debugging
             lines = content.split('\n')
             print(f"    Last 5 lines of log:")
@@ -1500,20 +1888,12 @@ class BenchmarkRunner:
         print(f"  Durations: {self.native_durations}")
         print(f"  Stack depths: {self.stack_depths}")
         print(f"  Threads: {self.threads}")
-        print(f"  Early termination: {'Enabled' if self.only_till is not None else 'Disabled'} {'(' + str(self.only_till) + '% threshold)' if self.only_till is not None else '(testing all queue sizes)'}")
-        if self.optimized:
-            print(f"  🚀 Optimized mode: Using highest stack depth ({max(self.stack_depths)}) and longest duration ({max(self.native_durations)}s) only")
 
         current_test = 0
         start_time = time.time()
 
-        for interval in self.sampling_intervals:
-            for queue_size in self.queue_sizes:
-                # Check if we should skip this and all larger queue sizes for this interval
-                if self._should_stop_for_interval('native', interval, queue_size):
-                    print(f"⏭️ Skipping queue size {queue_size} and larger for interval {interval}")
-                    break  # Break out of queue_size loop, continue with next interval
-
+        for queue_size in self.queue_sizes:
+            for interval in self.sampling_intervals:
                 for duration in self.native_durations:
                     for stack_depth in self.stack_depths:
                         current_test += 1
@@ -1543,6 +1923,18 @@ class BenchmarkRunner:
 
                             # Generate real-time plots after every successful test
                             self.plot_realtime_progress('native')
+
+                            # Generate Native-specific loss plots after every successful test
+                            native_df = self.load_results('native')
+                            if native_df is not None and len(native_df) >= 2:
+                                print(f"    📊 Generating Native loss plots...")
+                                self.plot_native_results(native_df, progress_mode=True)
+                                self.plot_loss_kinds(native_df, progress_mode=True)
+                                self.plot_queue_size_percentiles(native_df, 'native', progress_mode=True)
+                                # New grid plots for progress monitoring
+                                self.plot_signal_handler_duration_grid(native_df, progress_mode=True)
+                                self.plot_drainage_duration_grid(native_df, progress_mode=True)
+                                self.plot_vm_ops_loss_grid(native_df, progress_mode=True)
                         else:
                             print(f"    ❌ Failed or no data (took {test_time:.1f}s)")
                             if result:
@@ -1562,6 +1954,18 @@ class BenchmarkRunner:
         print(f"   📊 Generating final real-time plots...")
         self.plot_realtime_progress('native')
 
+        # Load and generate specific Native plots
+        native_df = self.load_results('native')
+        if native_df is not None:
+            print(f"   📊 Generating Native-specific plots...")
+            self.plot_native_results(native_df)
+            self.plot_loss_kinds(native_df)
+            self.plot_queue_size_percentiles(native_df, 'native')
+            # New grid plots for signal handler and drainage duration
+            self.plot_signal_handler_duration_grid(native_df)
+            self.plot_drainage_duration_grid(native_df)
+            self.plot_vm_ops_loss_grid(native_df)
+
         self.save_results('native')
 
     def run_renaissance_benchmark(self):
@@ -1570,7 +1974,7 @@ class BenchmarkRunner:
 
         # Calculate and display runtime estimate
         total_seconds, time_str = self.estimate_runtime('renaissance')
-        total_tests = len(self.queue_sizes) * len(self.sampling_intervals)
+        total_tests = len(self.queue_sizes) * len(self.sampling_intervals)  # No stack depths for Renaissance
 
         print(f"📊 Benchmark Overview:")
         print(f"  Total tests: {total_tests}")
@@ -1582,18 +1986,12 @@ class BenchmarkRunner:
         print(f"  Intervals: {self.sampling_intervals}")
         print(f"  Iterations: {self.renaissance_iterations}")
         print(f"  Threads: {self.threads}")
-        print(f"  Early termination: {'Enabled' if self.only_till is not None else 'Disabled'} {'(' + str(self.only_till) + '% threshold)' if self.only_till is not None else '(testing all queue sizes)'}")
 
         current_test = 0
         start_time = time.time()
 
-        for interval in self.sampling_intervals:
-            for queue_size in self.queue_sizes:
-                # Check if we should skip this and all larger queue sizes for this interval
-                if self._should_stop_for_interval('renaissance', interval, queue_size):
-                    print(f"⏭️ Skipping queue size {queue_size} and larger for interval {interval}")
-                    break  # Break out of queue_size loop, continue with next interval
-
+        for queue_size in self.queue_sizes:
+            for interval in self.sampling_intervals:
                 current_test += 1
 
                 # Calculate progress and ETA
@@ -1608,7 +2006,7 @@ class BenchmarkRunner:
 
                 print(f"🏛️ Test {current_test}: Queue={queue_size}, Interval={interval}")
 
-                # Run test
+                # Run test (no stack_depth for Renaissance)
                 test_start = time.time()
                 result = self.run_renaissance_test(queue_size, interval)
                 test_time = time.time() - test_start
@@ -1621,6 +2019,19 @@ class BenchmarkRunner:
 
                     # Generate real-time plots after every successful test
                     self.plot_realtime_progress('renaissance')
+
+                    # Generate Renaissance-specific loss plots after every successful test
+                    renaissance_df = self.load_results('renaissance')
+                    if renaissance_df is not None and len(renaissance_df) >= 2:
+                        print(f"    📊 Generating Renaissance loss plots...")
+                        self.plot_renaissance_results(renaissance_df, progress_mode=True)
+                        self.plot_loss_kinds(renaissance_df, progress_mode=True)
+                        self.plot_vm_operations(renaissance_df, progress_mode=True)
+                        self.plot_queue_size_percentiles(renaissance_df, 'renaissance', progress_mode=True)
+                        # New grid plots for progress monitoring
+                        self.plot_signal_handler_duration_grid(renaissance_df, progress_mode=True)
+                        self.plot_drainage_duration_grid(renaissance_df, progress_mode=True)
+                        self.plot_vm_ops_loss_grid(renaissance_df, progress_mode=True)
                 else:
                     print(f"    ❌ Failed or no data (took {test_time:.1f}s)")
                     if result:
@@ -1639,6 +2050,19 @@ class BenchmarkRunner:
         # Generate final comprehensive real-time plots
         print(f"   📊 Generating final real-time plots...")
         self.plot_realtime_progress('renaissance')
+
+        # Load and generate specific Renaissance plots
+        renaissance_df = self.load_results('renaissance')
+        if renaissance_df is not None:
+            print(f"   📊 Generating Renaissance-specific plots...")
+            self.plot_renaissance_results(renaissance_df)
+            self.plot_loss_kinds(renaissance_df)
+            self.plot_vm_operations(renaissance_df)
+            self.plot_queue_size_percentiles(renaissance_df, 'renaissance')
+            # New grid plots for signal handler and drainage duration
+            self.plot_signal_handler_duration_grid(renaissance_df)
+            self.plot_drainage_duration_grid(renaissance_df)
+            self.plot_vm_ops_loss_grid(renaissance_df)
 
         self.save_results('renaissance')
 
@@ -1704,6 +2128,34 @@ class BenchmarkRunner:
             return pd.read_csv(csv_file)
         else:
             print(f"No results found for {test_type}. Run benchmark first.")
+            return None
+
+    def load_drain_statistics(self) -> Optional[pd.DataFrame]:
+        """Load drain statistics using direct log parsing"""
+        if not DIRECT_PARSING_AVAILABLE:
+            print("⚠️ Direct log parsing not available")
+            return None
+
+        try:
+            print("📊 Loading drain statistics from log files...")
+            logs_dir = Path("benchmark_results/logs")
+            if not logs_dir.exists():
+                print(f"❌ Logs directory not found: {logs_dir}")
+                return None
+
+            # Parse all logs using direct parsing
+            results = parse_all_logs(logs_dir)
+            if not results:
+                print("❌ No drain statistics found in log files")
+                return None
+
+            # Create DataFrame
+            drain_df = create_percentile_dataframe(results)
+            print(f"✅ Loaded drain statistics: {len(drain_df)} records across {len(drain_df['drain_category'].unique())} categories")
+            return drain_df
+
+        except Exception as e:
+            print(f"❌ Error loading drain statistics: {e}")
             return None
 
     def plot_realtime_progress(self, test_type: str = 'native'):
@@ -1808,26 +2260,23 @@ class BenchmarkRunner:
                             # Create label for this combination
                             label = f"S{stack_depth}, D{native_duration}s"
 
-                            # Plot the points
-                            ax.plot(subset['queue_size'], subset['loss_percentage'],
-                                   marker='o', linestyle='None', markersize=4, label=label)
+                            # Use scatter plot for realtime progress
+                            ax.scatter(subset['queue_size'], subset['loss_percentage'],
+                                      s=30, alpha=0.7, label=label)
 
                 elif test_type == 'renaissance':
-                    # Plot points for each stack depth (no native duration in Renaissance)
-                    subset = interval_data
+                    # Renaissance tests don't have stack_depth, just plot all points
+                    subset = interval_data.sort_values('queue_size')
 
                     if len(subset) < 1:
                         continue
 
-                    # Sort by queue size for proper plotting
-                    subset = subset.sort_values('queue_size')
+                    # Create single line for all Renaissance data
+                    label = "Renaissance"
 
-                    # Create label for this combination
-                    label = f"Renaissance"
-
-                    # Plot the points
-                    ax.plot(subset['queue_size'], subset['loss_percentage'],
-                            marker='o', linestyle='None', markersize=4, label=label)
+                    # Use scatter plot for realtime progress
+                    ax.scatter(subset['queue_size'], subset['loss_percentage'],
+                              s=30, alpha=0.7, label=label)
 
                 # Customize the subplot
                 ax.set_xlabel('Queue Size', fontsize=10)
@@ -1881,8 +2330,8 @@ class BenchmarkRunner:
             plot_path = realtime_plots_dir / plot_filename
 
             plt.tight_layout()
-            plt.subplots_adjust(top=0.92)  # Move title higher to avoid overlap
-            plt.savefig(plot_path, dpi=600, bbox_inches='tight')
+            plt.subplots_adjust(top=0.92, right=0.95)  # Move title higher and add right margin for x-labels
+            plt.savefig(plot_path, dpi=600, bbox_inches='tight', pad_inches=0.1)
             plt.close(fig)
 
             print(f"    📊 Saved combined real-time plot: {plot_filename}")
@@ -1975,26 +2424,23 @@ class BenchmarkRunner:
                             # Create label for this combination
                             label = f"S{stack_depth}, D{native_duration}s"
 
-                            # Plot the points
-                            ax.plot(subset['queue_size'], subset['loss_percentage'],
-                                   marker='o', linestyle='None', markersize=4, label=label)
+                            # Use scatter plot for log-scale realtime progress
+                            ax.scatter(subset['queue_size'], subset['loss_percentage'],
+                                      s=30, alpha=0.7, label=label)
 
                 elif test_type == 'renaissance':
-                    # Renaissance has no stack depth variations, just plot all data for this interval
-                    subset = interval_data
+                    # Renaissance tests don't have stack_depth, just plot all points
+                    subset = interval_data.sort_values('queue_size')
 
                     if len(subset) < 1:
                         continue
 
-                    # Sort by queue size for proper plotting
-                    subset = subset.sort_values('queue_size')
+                    # Create single line for all Renaissance data
+                    label = "Renaissance"
 
-                    # Create label for this combination
-                    label = f"Renaissance"
-
-                    # Plot the points
-                    ax.plot(subset['queue_size'], subset['loss_percentage'],
-                            marker='o', linestyle='None', markersize=4, label=label)
+                    # Use scatter plot for log-scale realtime progress
+                    ax.scatter(subset['queue_size'], subset['loss_percentage'],
+                              s=30, alpha=0.7, label=label)
 
                 # Add the psychologically important 1% reference line
                 ax.axhline(y=1.0, color='red', linestyle=':', linewidth=1, alpha=0.7, label='1% threshold')
@@ -2006,7 +2452,7 @@ class BenchmarkRunner:
                 ax.grid(True, alpha=0.3)
 
                 # Set unified y-range and log scale
-                ax.set_ylim(y_min, y_max)
+                ax.set_ylim(ymax=y_max)
                 ax.set_yscale('log')
 
                 # Always set x-axis to log scale for the log-scaled plot
@@ -2014,23 +2460,21 @@ class BenchmarkRunner:
 
                 # Prevent scientific notation on axes even with log scale
                 ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
-                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.2f}'))  # Always 2 decimal places for loss %
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.4f}' if y < 0.01 else f'{y:,.2f}'))
 
                 # Set major tick locators first to ensure they're always visible
                 ax.xaxis.set_major_locator(ticker.LogLocator(base=10.0, numticks=8))
                 ax.yaxis.set_major_locator(ticker.LogLocator(base=10.0, numticks=8))
 
-                # Add x-axis ticks for all tested queue sizes
-                all_queue_sizes = [1, 2, 5, 10, 20, 50, 100, 200, 300, 400, 500, 750, 1000, 2000]
-                ax.set_xticks(all_queue_sizes, minor=True)
-                ax.xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x)}' if x in all_queue_sizes else ''))
-
                 # Add minor ticks with conservative subdivision to avoid overcrowding
+                ax.xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.2, 1.0, 0.2)))  # Less crowded subdivisions
                 ax.yaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.2, 1.0, 0.2)))  # Less crowded subdivisions
 
-                # Y-axis minor labels with 2 decimal places
+                # Selective minor tick labeling - only show key values to avoid overcrowding
+                ax.xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}' if x in [20, 50, 200, 500, 2000] else ''))
+                # Reduce y-axis minor labels to prevent disappearing labels
                 key_y_values = [0.002, 0.005, 0.02, 0.05, 0.2, 0.5, 2.0, 5.0, 20.0, 50.0]
-                ax.yaxis.set_minor_formatter(ticker.FuncFormatter(lambda y, pos: f'{y:.2f}' if y in key_y_values else ''))
+                ax.yaxis.set_minor_formatter(ticker.FuncFormatter(lambda y, pos: f'{y:.3f}' if y in key_y_values else ''))
 
                 ax.grid(True, which='minor', alpha=0.3)   # Make minor grid more visible
                 ax.grid(True, which='major', alpha=0.6)   # Ensure major grid is visible
@@ -2053,8 +2497,8 @@ class BenchmarkRunner:
             log_plot_path = realtime_plots_dir / log_plot_filename
 
             plt.tight_layout()
-            plt.subplots_adjust(top=0.92)  # Move title higher to avoid overlap
-            plt.savefig(log_plot_path, dpi=600, bbox_inches='tight')
+            plt.subplots_adjust(top=0.92, right=0.95)  # Move title higher and add right margin for x-labels
+            plt.savefig(log_plot_path, dpi=600, bbox_inches='tight', pad_inches=0.1)
             plt.close(fig)
 
             print(f"    📊 Saved log-scale combined plot: {log_plot_filename}")
@@ -2096,26 +2540,23 @@ class BenchmarkRunner:
                             # Create label for this combination
                             label = f"Stack {stack_depth}, Duration {native_duration}s"
 
-                            # Plot the points
-                            ax.plot(subset['queue_size'], subset['loss_percentage'],
-                                   marker='o', linestyle='None', markersize=8, label=label)
+                            # Use scatter plot for individual interval plots
+                            ax.scatter(subset['queue_size'], subset['loss_percentage'],
+                                      s=50, alpha=0.7, label=label)
 
                 elif test_type == 'renaissance':
-                    # Renaissance has no stack depth variations, just plot all data for this interval
-                    subset = interval_data
+                    # Renaissance tests don't have stack_depth, just plot all points
+                    subset = interval_data.sort_values('queue_size')
 
                     if len(subset) < 1:
                         continue
 
-                    # Sort by queue size for proper plotting
-                    subset = subset.sort_values('queue_size')
+                    # Create single line for all Renaissance data
+                    label = "Renaissance"
 
-                    # Create label for this combination
-                    label = f"Renaissance"
-
-                    # Plot the points
-                    ax.plot(subset['queue_size'], subset['loss_percentage'],
-                            marker='o', linestyle='None', markersize=8, label=label)
+                    # Use scatter plot for individual interval plots
+                    ax.scatter(subset['queue_size'], subset['loss_percentage'],
+                              s=50, alpha=0.7, label=label)
 
                 # Customize the plot
                 ax.set_xlabel('Queue Size', fontsize=14)
@@ -2156,7 +2597,7 @@ class BenchmarkRunner:
                 plot_path = individual_plots_dir / plot_filename
 
                 plt.tight_layout()
-                plt.savefig(plot_path, dpi=600, bbox_inches='tight')
+                plt.savefig(plot_path, dpi=600, bbox_inches='tight', pad_inches=0.1)
                 plt.close(fig)
 
                 self.vprint(f"    📊 Saved individual plot: {plot_filename}")
@@ -2167,8 +2608,6 @@ class BenchmarkRunner:
             # Create additional Renaissance plots with all intervals combined
             if test_type == 'renaissance':
                 self._create_renaissance_combined_interval_plots(df, realtime_plots_dir)
-                # Also create a single combined progress plot for Renaissance
-                self._create_renaissance_combined_progress_plot(df, realtime_plots_dir)
 
         except Exception as e:
             print(f"    ⚠️ Error generating individual interval plots: {e}")
@@ -2185,125 +2624,11 @@ class BenchmarkRunner:
         except Exception as e:
             print(f"    ⚠️ Error generating Renaissance combined interval plots: {e}")
 
-    def _create_renaissance_combined_progress_plot(self, df, output_dir):
-        """Create a single Renaissance progress plot with all intervals combined in one plot"""
-        try:
-            print(f"    📊 Creating Renaissance combined progress plot...")
-
-            # Create figure
-            fig, ax = plt.subplots(figsize=(14, 10))
-
-            # Define colors and markers for different intervals
-            colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
-            markers = ['o', 's', '^', 'D', 'x']
-
-            # Order intervals by numeric value
-            def interval_sort_key(interval):
-                return int(interval.replace('ms', ''))
-
-            intervals = sorted(df['interval'].unique(), key=interval_sort_key)
-
-            # Plot each interval as a separate line with progress tracking
-            for i, interval in enumerate(intervals):
-                interval_data = df[df['interval'] == interval]
-
-                if len(interval_data) < 1:
-                    continue
-
-                # Sort by queue size for proper plotting
-                interval_data = interval_data.sort_values('queue_size')
-
-                # Plot with distinct color and marker
-                color_idx = i % len(colors)
-                marker_idx = i % len(markers)
-
-                # Create a line plot connecting the points
-                ax.plot(interval_data['queue_size'], interval_data['loss_percentage'],
-                       marker=markers[marker_idx], linestyle='-', markersize=10, linewidth=3,
-                       color=colors[color_idx], label=f'{interval} ({len(interval_data)} tests)',
-                       alpha=0.8)
-
-                # Add text annotations for the latest points
-                if len(interval_data) > 0:
-                    latest_point = interval_data.iloc[-1]
-                    ax.annotate(f'{latest_point["loss_percentage"]:.2f}%',
-                               (latest_point['queue_size'], latest_point['loss_percentage']),
-                               xytext=(5, 5), textcoords='offset points',
-                               fontsize=9, alpha=0.8,
-                               bbox=dict(boxstyle='round,pad=0.3', facecolor=colors[color_idx], alpha=0.3))
-
-            # Set axes and labels
-            ax.set_xlabel('Queue Size', fontsize=14, fontweight='bold')
-            ax.set_ylabel('Loss Percentage (%)', fontsize=14, fontweight='bold')
-
-            # Set title with test count
-            total_tests = len(df)
-            ax.set_title(f'Renaissance Progress: All Intervals Combined ({total_tests} tests completed)',
-                        fontsize=16, fontweight='bold', pad=20)
-
-            # Set x-axis to log scale for better visualization
-            ax.set_xscale('log')
-
-            # Add 1% reference line
-            ax.axhline(y=1.0, color='red', linestyle='--', linewidth=2, alpha=0.7, label='1% Reference Line')
-
-            # Customize grid
-            ax.grid(True, alpha=0.4, which='major')
-            ax.grid(True, alpha=0.2, which='minor')
-
-            # Set y-axis range
-            all_loss_percentages = df['loss_percentage'].dropna()
-            if len(all_loss_percentages) > 0:
-                y_min = 0  # Always start from 0
-                y_max = min(100.0, max(5.0, all_loss_percentages.max() * 1.2))  # At least 5% visible, cap at 100%
-                ax.set_ylim(y_min, y_max)
-
-            # Prevent scientific notation on axes
-            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
-            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.2f}'))
-
-            # Add minor ticks for log scale
-            ax.xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.1, 1.0, 0.1)))
-            ax.yaxis.set_minor_locator(ticker.AutoMinorLocator(5))
-
-            # Legend with better positioning
-            ax.legend(fontsize=12, loc='upper right', frameon=True, fancybox=True, shadow=True,
-                     bbox_to_anchor=(1.0, 1.0))
-
-            # Add summary statistics text box
-            if len(all_loss_percentages) > 0:
-                stats_text = f'Stats:\n'
-                stats_text += f'Min: {all_loss_percentages.min():.2f}%\n'
-                stats_text += f'Max: {all_loss_percentages.max():.2f}%\n'
-                stats_text += f'Avg: {all_loss_percentages.mean():.2f}%\n'
-                stats_text += f'Median: {all_loss_percentages.median():.2f}%'
-
-                ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=10,
-                       verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-
-            # Save the plot
-            plot_filename = f"renaissance_combined_progress.png"
-            plot_path = output_dir / plot_filename
-
-            plt.tight_layout()
-            plt.savefig(plot_path, dpi=600, bbox_inches='tight')
-            plt.close(fig)
-
-            print(f"    📊 Saved Renaissance combined progress plot: {plot_filename}")
-            print(f"    📍 Absolute path: {plot_path.absolute()}")
-
-        except Exception as e:
-            print(f"    ⚠️ Error generating Renaissance combined progress plot: {e}")
-
     def _create_renaissance_all_intervals_plot(self, df, output_dir, log_scale=False):
         """Create a Renaissance plot with all intervals in one plot"""
         try:
             # Create figure
             fig, ax = plt.subplots(figsize=(12, 9))
-
-            # Define colors and markers for different intervals
-            colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
-            markers = ['o', 's', '^', 'D', 'x']
 
             # Order intervals by numeric value
             def interval_sort_key(interval):
@@ -2321,13 +2646,9 @@ class BenchmarkRunner:
                 # Sort by queue size for proper plotting
                 interval_data = interval_data.sort_values('queue_size')
 
-                # Plot with distinct color and marker
-                color_idx = i % len(colors)
-                marker_idx = i % len(markers)
-
+                # Plot with default round dots
                 ax.plot(interval_data['queue_size'], interval_data['loss_percentage'],
-                       marker=markers[marker_idx], linestyle='None', markersize=10,
-                       color=colors[color_idx], label=f'{interval}')
+                       'o', markersize=10, label=f'{interval}')
 
             # Set axes
             ax.set_xlabel('Queue Size', fontsize=14)
@@ -2347,27 +2668,25 @@ class BenchmarkRunner:
                 if len(all_loss_percentages) > 0:
                     y_min = max(0.001, all_loss_percentages.min() * 0.5)
                     y_max = min(100.0, max(1.0, all_loss_percentages.max() * 2.0))
-                    ax.set_ylim(y_min, y_max)
+                    ax.set_ylim(ymax=y_max)
 
                 # Prevent scientific notation on axes even with log scale
                 ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
-                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.2f}'))  # Always 2 decimal places for loss %
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.4f}' if y < 0.01 else f'{y:,.2f}'))
 
                 # Set major tick locators first to ensure they're always visible
                 ax.xaxis.set_major_locator(ticker.LogLocator(base=10.0, numticks=8))
                 ax.yaxis.set_major_locator(ticker.LogLocator(base=10.0, numticks=8))
 
-                # Add x-axis ticks for all tested queue sizes
-                all_queue_sizes = [1, 2, 5, 10, 20, 50, 100, 200, 300, 400, 500, 750, 1000, 2000]
-                ax.set_xticks(all_queue_sizes, minor=True)
-                ax.xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x)}' if x in all_queue_sizes else ''))
-
                 # Add minor ticks with conservative subdivision to avoid overcrowding
+                ax.xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.2, 1.0, 0.2)))  # Less crowded subdivisions
                 ax.yaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.2, 1.0, 0.2)))  # Less crowded subdivisions
 
-                # Y-axis minor labels with 2 decimal places
+                # Selective minor tick labeling - only show key values to avoid overcrowding
+                ax.xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}' if x in [20, 50, 200, 500, 2000] else ''))
+                # Reduce y-axis minor labels to prevent disappearing labels
                 key_y_values = [0.002, 0.005, 0.02, 0.05, 0.2, 0.5, 2.0, 5.0, 20.0, 50.0]
-                ax.yaxis.set_minor_formatter(ticker.FuncFormatter(lambda y, pos: f'{y:.2f}' if y in key_y_values else ''))
+                ax.yaxis.set_minor_formatter(ticker.FuncFormatter(lambda y, pos: f'{y:.3f}' if y in key_y_values else ''))
 
                 # Add more minor ticks for log scale with finer subdivisions
                 ax.grid(True, which='minor', alpha=0.3)   # Make minor grid more visible
@@ -2412,7 +2731,7 @@ class BenchmarkRunner:
             plot_path = output_dir / plot_filename
 
             plt.tight_layout()
-            plt.savefig(plot_path, dpi=600, bbox_inches='tight')
+            plt.savefig(plot_path, dpi=600, bbox_inches='tight', pad_inches=0.1)
             plt.close(fig)
 
             print(f"    📊 Saved Renaissance combined intervals plot ({filename_suffix}): {plot_filename}")
@@ -2435,16 +2754,32 @@ class BenchmarkRunner:
 
         if native_df is not None:
             self.plot_native_results(native_df)
+            self.plot_loss_kinds(native_df)
+            self.plot_queue_size_percentiles(native_df, 'native')
+            self.plot_queue_size_distribution_percentiles(native_df, 'native')
+            # New grid plots for comprehensive visualization
+            self.plot_signal_handler_duration_grid(native_df)
+            self.plot_drainage_duration_grid(native_df)
+            self.plot_vm_ops_loss_grid(native_df)
 
         if renaissance_df is not None:
             self.plot_renaissance_results(renaissance_df)
+            self.plot_loss_kinds(renaissance_df)
+            self.plot_vm_operations(renaissance_df)
+            self.plot_queue_size_percentiles(renaissance_df, 'renaissance')
+            self.plot_queue_size_distribution_percentiles(renaissance_df, 'renaissance')
+            # New grid plots for comprehensive visualization
+            self.plot_signal_handler_duration_grid(renaissance_df)
+            self.plot_drainage_duration_grid(renaissance_df)
+            self.plot_vm_ops_loss_grid(renaissance_df)
+
+            # Load drain statistics and create Renaissance-specific plots
+            drain_df = self.load_drain_statistics()
+            if drain_df is not None:
+                self.plot_renaissance_out_of_thread_percentage(drain_df)
 
         if native_df is not None and renaissance_df is not None:
             self.plot_comparison(native_df, renaissance_df)
-
-        # Create maximum loss overlay plot if we have any data
-        if native_df is not None or renaissance_df is not None:
-            self.plot_maximum_loss_overlay(native_df, renaissance_df)
 
         print(f"📊 Visualizations saved to {PLOTS_DIR}")
 
@@ -2482,6 +2817,40 @@ class BenchmarkRunner:
             print("⚠️ CSV file is empty")
             return
 
+        # Check if we need drain statistics data and if CSV doesn't have it, try loading from JSON
+        needs_drain_stats = False
+        if 'drain_categories' not in df.columns:
+            # Try to load from corresponding JSON file for drain statistics
+            json_path = csv_path.with_suffix('.json')
+
+            if json_path.exists():
+                print(f"📂 CSV missing drain statistics, loading from JSON: {json_path}")
+                try:
+                    import json
+                    with open(json_path, 'r') as f:
+                        json_data = json.load(f)
+
+                    # Add drain_categories back to DataFrame if available
+                    for idx, row in df.iterrows():
+                        # Find matching entry in JSON data
+                        for json_entry in json_data:
+                            if (json_entry.get('queue_size') == row['queue_size'] and
+                                json_entry.get('interval') == row['interval'] and
+                                json_entry.get('stack_depth') == row.get('stack_depth')):
+                                # Store the drain_categories as an object in the DataFrame
+                                df.loc[idx, 'drain_categories'] = json_entry.get('drain_categories', {})
+                                break
+
+                    print(f"📊 Enhanced CSV data with drain statistics from JSON")
+                except Exception as e:
+                    print(f"⚠️ Could not load drain statistics from JSON: {e}")
+            else:
+                print(f"⚠️ No corresponding JSON file found: {json_path}")
+
+        if df.empty:
+            print("⚠️ CSV file is empty")
+            return
+
         # Determine test type from filename or data
         if 'native' in csv_path.name:
             test_type = 'native'
@@ -2490,7 +2859,7 @@ class BenchmarkRunner:
         else:
             # Try to determine from data - be more specific about column detection
             has_native_cols = 'native_duration' in df.columns
-            has_renaissance_cols = 'interval' in df.columns and 'native_duration' not in df.columns
+            has_renaissance_cols = 'interval' in df.columns and 'stack_depth' in df.columns and 'native_duration' not in df.columns
 
             if has_native_cols:
                 test_type = 'native'
@@ -2506,34 +2875,19 @@ class BenchmarkRunner:
         # Create progress visualizations (same as regular but with different filenames)
         if test_type == 'native':
             self.plot_native_results(df, progress_mode=True)
+            self.plot_queue_size_percentiles(df, 'native', progress_mode=True)
+            # New grid plots for progress monitoring
+            self.plot_signal_handler_duration_grid(df, progress_mode=True)
+            self.plot_drainage_duration_grid(df, progress_mode=True)
+            self.plot_vm_ops_loss_grid(df, progress_mode=True)
         else:
             self.plot_renaissance_results(df, progress_mode=True)
-
-        # Try to create maximum loss overlay plot if we have data from both test types
-        native_df = None
-        renaissance_df = None
-
-        try:
-            # Try to load both types of data for the overlay plot
-            if test_type == 'native':
-                native_df = df
-                # Try to load renaissance data if it exists
-                renaissance_latest = DATA_DIR / "renaissance_results_latest.csv"
-                if renaissance_latest.exists():
-                    renaissance_df = pd.read_csv(renaissance_latest)
-            else:  # renaissance
-                renaissance_df = df
-                # Try to load native data if it exists
-                native_latest = DATA_DIR / "native_results_latest.csv"
-                if native_latest.exists():
-                    native_df = pd.read_csv(native_latest)
-
-            # Create overlay plot if we have data from at least one source
-            if native_df is not None or renaissance_df is not None:
-                self.plot_maximum_loss_overlay(native_df, renaissance_df, progress_mode=True)
-
-        except Exception as e:
-            print(f"⚠️ Could not create maximum loss overlay for progress mode: {e}")
+            self.plot_vm_operations(df, progress_mode=True)
+            self.plot_queue_size_percentiles(df, 'renaissance', progress_mode=True)
+            # New grid plots for progress monitoring
+            self.plot_signal_handler_duration_grid(df, progress_mode=True)
+            self.plot_drainage_duration_grid(df, progress_mode=True)
+            self.plot_vm_ops_loss_grid(df, progress_mode=True)
 
         print(f"📊 Progress visualizations saved to {PLOTS_DIR} with '_progress' suffix")
 
@@ -2668,7 +3022,7 @@ class BenchmarkRunner:
             axes[j].axis('off')
 
         plt.tight_layout()
-        plt.savefig(PLOTS_DIR / self._get_plot_filename('native_heatmaps_by_duration_stack.png', progress_mode), dpi=600, bbox_inches='tight')
+        plt.savefig(PLOTS_DIR / self._get_plot_filename('native_heatmaps_by_duration_stack.png', progress_mode), dpi=600, bbox_inches='tight', pad_inches=0.1)
         plt.close()
 
         # 2. Line plots: Loss Rate vs Queue Size for each Interval, showing all duration/stack combinations
@@ -2716,7 +3070,110 @@ class BenchmarkRunner:
             axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
 
         plt.tight_layout()
-        plt.savefig(PLOTS_DIR / self._get_plot_filename('native_loss_vs_queue_size_all_combinations.png', progress_mode), dpi=600, bbox_inches='tight')
+        plt.savefig(PLOTS_DIR / self._get_plot_filename('native_loss_vs_queue_size_all_combinations.png', progress_mode), dpi=600, bbox_inches='tight', pad_inches=0.1)
+        plt.close()
+
+        # 2b. Same plot but with log scale for y-axis
+        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        axes = axes.flatten()
+        fig.suptitle('Native Test: Loss Rate vs Queue Size by Interval (All Duration/Stack Combinations, Log Y-Scale)', fontsize=16)
+
+        for i, interval in enumerate(interval_order):
+            df_int = df_success[df_success['interval'] == interval]
+
+            for _, row in duration_stack_combinations.iterrows():
+                native_dur = row['native_duration']
+                stack_depth = row['stack_depth']
+
+                df_combo = df_int[
+                    (df_int['native_duration'] == native_dur) &
+                    (df_int['stack_depth'] == stack_depth)
+                ]
+
+                if not df_combo.empty:
+                    axes[i].plot(df_combo['queue_size'], df_combo['loss_percentage'],
+                               marker='o', label=f'{native_dur}s/S{stack_depth}', linestyle='None')
+
+            axes[i].set_title(f'Interval: {interval}')
+            axes[i].set_xlabel('Queue Size')
+            axes[i].set_ylabel('Loss Rate (%)')
+
+            # Set log scale for y-axis
+            axes[i].set_yscale('log')
+
+            # Only add legend if there are actually lines plotted
+            lines, labels = axes[i].get_legend_handles_labels()
+            if lines:
+                axes[i].legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+
+            axes[i].grid(True, alpha=0.3)
+            axes[i].set_xscale('log')
+
+            # Add minor ticks for log scale with finer subdivisions
+            axes[i].xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.1, 1.0, 0.1)))
+            axes[i].yaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.1, 1.0, 0.1)))
+            # Show selective minor tick labels to prevent scientific notation
+            axes[i].xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}' if x in [20, 50, 200, 500, 2000, 5000] else ''))
+            axes[i].grid(True, which='minor', alpha=0.25)
+            axes[i].grid(True, which='major', alpha=0.5)
+
+            # Prevent scientific notation on axes
+            axes[i].xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+            axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
+
+        plt.tight_layout()
+        plt.savefig(PLOTS_DIR / self._get_plot_filename('native_loss_vs_queue_size_all_combinations_log.png', progress_mode), dpi=600, bbox_inches='tight', pad_inches=0.1)
+        plt.close()
+
+        # 2c. Same plot but with y-axis starting from 0
+        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        axes = axes.flatten()
+        fig.suptitle('Native Test: Loss Rate vs Queue Size by Interval (All Duration/Stack Combinations, Y-Min=0)', fontsize=16)
+
+        for i, interval in enumerate(interval_order):
+            df_int = df_success[df_success['interval'] == interval]
+
+            for _, row in duration_stack_combinations.iterrows():
+                native_dur = row['native_duration']
+                stack_depth = row['stack_depth']
+
+                df_combo = df_int[
+                    (df_int['native_duration'] == native_dur) &
+                    (df_int['stack_depth'] == stack_depth)
+                ]
+
+                if not df_combo.empty:
+                    axes[i].plot(df_combo['queue_size'], df_combo['loss_percentage'],
+                               marker='o', label=f'{native_dur}s/S{stack_depth}', linestyle='None')
+
+            axes[i].set_title(f'Interval: {interval}')
+            axes[i].set_xlabel('Queue Size')
+            axes[i].set_ylabel('Loss Rate (%)')
+
+            # Set y-axis to start from 0
+            axes[i].set_ylim(bottom=0)
+
+            # Only add legend if there are actually lines plotted
+            lines, labels = axes[i].get_legend_handles_labels()
+            if lines:
+                axes[i].legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+
+            axes[i].grid(True, alpha=0.3)
+            axes[i].set_xscale('log')
+
+            # Add minor ticks for log scale with finer subdivisions
+            axes[i].xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.1, 1.0, 0.1)))
+            # Show selective minor tick labels to prevent scientific notation
+            axes[i].xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}' if x in [20, 50, 200, 500, 2000, 5000] else ''))
+            axes[i].grid(True, which='minor', alpha=0.25)
+            axes[i].grid(True, which='major', alpha=0.5)
+
+            # Prevent scientific notation on axes
+            axes[i].xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+            axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
+
+        plt.tight_layout()
+        plt.savefig(PLOTS_DIR / self._get_plot_filename('native_loss_vs_queue_size_all_combinations_y0.png', progress_mode), dpi=600, bbox_inches='tight', pad_inches=0.1)
         plt.close()
 
         # 3. Separate plots for each stack depth showing native duration effects
@@ -2760,7 +3217,7 @@ class BenchmarkRunner:
                 axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
 
             plt.tight_layout()
-            plt.savefig(PLOTS_DIR / self._get_plot_filename(f'native_loss_vs_queue_size_stack{stack_depth}.png', progress_mode), dpi=600, bbox_inches='tight')
+            plt.savefig(PLOTS_DIR / self._get_plot_filename(f'native_loss_vs_queue_size_stack{stack_depth}.png', progress_mode), dpi=600, bbox_inches='tight', pad_inches=0.1)
             plt.close()
 
         # 4. 3D surface plot for most interesting interval (1ms) with one stack depth
@@ -2834,7 +3291,7 @@ class BenchmarkRunner:
             "1ms": 1, "5ms": 5, "10ms": 10, "20ms": 20
         })
 
-        # 1. Create a single heatmap for Renaissance (no stack depth variations)
+        # 1. Create single heatmap (Renaissance doesn't have stack depth)
         fig, ax = plt.subplots(figsize=(10, 8))
 
         pivot = df_success.pivot(index='queue_size', columns='interval', values='loss_percentage')
@@ -2850,7 +3307,7 @@ class BenchmarkRunner:
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{int(y):,}' if y % 1 == 0 else f'{y:,.1f}'))
 
         plt.tight_layout()
-        plt.savefig(PLOTS_DIR / self._get_plot_filename(f'renaissance_heatmap.png', progress_mode), dpi=600, bbox_inches='tight')
+        plt.savefig(PLOTS_DIR / self._get_plot_filename(f'renaissance_heatmap.png', progress_mode), dpi=600, bbox_inches='tight', pad_inches=0.1)
         plt.close()
 
         # 2. Line plots: Loss Rate vs Queue Size for each Interval
@@ -2863,7 +3320,7 @@ class BenchmarkRunner:
 
             if not df_int.empty:
                 axes[i].plot(df_int['queue_size'], df_int['loss_percentage'],
-                           marker='o', linestyle='None', markersize=8, label='Renaissance')
+                           marker='o', linestyle='-', markersize=8, label='Renaissance')
 
             axes[i].set_title(f'Interval: {interval}')
             axes[i].set_xlabel('Queue Size')
@@ -2889,7 +3346,92 @@ class BenchmarkRunner:
             axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
 
         plt.tight_layout()
-        plt.savefig(PLOTS_DIR / self._get_plot_filename('renaissance_loss_vs_queue_size.png', progress_mode), dpi=600, bbox_inches='tight')
+        plt.savefig(PLOTS_DIR / self._get_plot_filename('renaissance_loss_vs_queue_size.png', progress_mode), dpi=600, bbox_inches='tight', pad_inches=0.1)
+        plt.close()
+
+        # 2b. Same plot but with log scale for y-axis
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        axes = axes.flatten()
+        fig.suptitle('Renaissance Test: Loss Rate vs Queue Size by Interval (Log Y-Scale)', fontsize=16)
+
+        for i, interval in enumerate(interval_order):
+            df_int = df_success[df_success['interval'] == interval]
+
+            if not df_int.empty:
+                axes[i].plot(df_int['queue_size'], df_int['loss_percentage'],
+                           marker='o', linestyle='-', markersize=8, label='Renaissance')
+
+            axes[i].set_title(f'Interval: {interval}')
+            axes[i].set_xlabel('Queue Size')
+            axes[i].set_ylabel('Loss Rate (%)')
+
+            # Set log scale for y-axis
+            axes[i].set_yscale('log')
+
+            # Only add legend if there are actually lines plotted
+            lines, labels = axes[i].get_legend_handles_labels()
+            if lines:
+                axes[i].legend()
+
+            axes[i].grid(True, alpha=0.3)
+            axes[i].set_xscale('log')
+
+            # Add minor ticks for log scale with finer subdivisions
+            axes[i].xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.1, 1.0, 0.1)))
+            axes[i].yaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.1, 1.0, 0.1)))
+            # Show selective minor tick labels to prevent scientific notation
+            axes[i].xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}' if x in [20, 50, 200, 500, 2000, 5000] else ''))
+            axes[i].grid(True, which='minor', alpha=0.25)
+            axes[i].grid(True, which='major', alpha=0.5)
+
+            # Prevent scientific notation on axes
+            axes[i].xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+            axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
+
+        plt.tight_layout()
+        plt.savefig(PLOTS_DIR / self._get_plot_filename('renaissance_loss_vs_queue_size_log.png', progress_mode), dpi=600, bbox_inches='tight')
+        plt.close()
+
+        # 2c. Same plot but with y-axis starting from 0
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        axes = axes.flatten()
+        fig.suptitle('Renaissance Test: Loss Rate vs Queue Size by Interval (Y-Min=0)', fontsize=16)
+
+        for i, interval in enumerate(interval_order):
+            df_int = df_success[df_success['interval'] == interval]
+
+            if not df_int.empty:
+                axes[i].plot(df_int['queue_size'], df_int['loss_percentage'],
+                           marker='o', linestyle='-', markersize=8, label='Renaissance')
+
+            axes[i].set_title(f'Interval: {interval}')
+            axes[i].set_xlabel('Queue Size')
+            axes[i].set_ylabel('Loss Rate (%)')
+
+            # Set y-axis to start from 0
+            axes[i].set_ylim(bottom=0)
+
+            # Only add legend if there are actually lines plotted
+            lines, labels = axes[i].get_legend_handles_labels()
+            if lines:
+                axes[i].legend()
+
+            axes[i].grid(True, alpha=0.3)
+            axes[i].set_xscale('log')
+
+            # Add minor ticks for log scale with finer subdivisions
+            axes[i].xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.1, 1.0, 0.1)))
+            # Show selective minor tick labels to prevent scientific notation
+            axes[i].xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}' if x in [20, 50, 200, 500, 2000, 5000] else ''))
+            axes[i].grid(True, which='minor', alpha=0.25)
+            axes[i].grid(True, which='major', alpha=0.5)
+
+            # Prevent scientific notation on axes
+            axes[i].xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+            axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
+
+        plt.tight_layout()
+        plt.savefig(PLOTS_DIR / self._get_plot_filename('renaissance_loss_vs_queue_size_y0.png', progress_mode), dpi=600, bbox_inches='tight')
         plt.close()
 
         # 3. Individual plots for each interval
@@ -2914,7 +3456,7 @@ class BenchmarkRunner:
         # 1. Normal scale with zero min y and 1% dotted line
         fig, ax = plt.subplots(figsize=(10, 6))
 
-        ax.plot(df['queue_size'], df['loss_percentage'], 'o-', markersize=8, linewidth=2, label='Loss Rate')
+        ax.scatter(df['queue_size'], df['loss_percentage'], s=80, marker='o', label='Loss Rate', alpha=0.8)
 
         # Set y-axis to start from 0 and cap at 100%
         y_max = min(100.0, max(5.0, df['loss_percentage'].max() * 1.1))  # At least 5% visible, cap at 100%
@@ -2941,7 +3483,9 @@ class BenchmarkRunner:
         # 2. Log scale version
         fig, ax = plt.subplots(figsize=(10, 6))
 
-        ax.loglog(df['queue_size'], df['loss_percentage'], 'o-', markersize=8, linewidth=2, label='Loss Rate')
+        ax.scatter(df['queue_size'], df['loss_percentage'], s=80, marker='o', label='Loss Rate', alpha=0.8)
+        ax.set_xscale('log')
+        ax.set_yscale('log')
 
         # Set y-axis limits for log scale
         y_min = max(0.001, df['loss_percentage'].min() * 0.5)
@@ -3042,142 +3586,1712 @@ class BenchmarkRunner:
                 axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
 
         plt.tight_layout()
-        plt.savefig(PLOTS_DIR / 'comparison_native_vs_renaissance.png', dpi=600, bbox_inches='tight')
+        plt.savefig(PLOTS_DIR / 'comparison_native_vs_renaissance.png', dpi=600, bbox_inches='tight', pad_inches=0.1)
         plt.close()
 
-    def plot_maximum_loss_overlay(self, native_df: pd.DataFrame = None, renaissance_df: pd.DataFrame = None, progress_mode: bool = False):
-        """Create a single plot overlaying maximum loss across all configurations for every interval as lines"""
-        print("📊 Creating maximum loss overlay plot...")
+    def plot_loss_kinds(self, df: pd.DataFrame, progress_mode: bool = False):
+        """Create scatter plots for loss kinds breakdown by queue size and interval"""
+        print("📊 Creating loss kinds plots...")
 
-        # Create figure
-        fig, ax = plt.subplots(figsize=(12, 8))
+        # Filter out rows where we don't have loss kind data
+        df_with_loss_kinds = df.dropna(subset=['loss_percentage'])
 
-        # Define colors and markers for different intervals and test types
-        interval_colors = {'1ms': '#1f77b4', '5ms': '#ff7f0e', '10ms': '#2ca02c', '20ms': '#d62728'}
-        test_type_styles = {
-            'native': {'linestyle': '-', 'marker': 'o', 'markersize': 8, 'linewidth': 2},
-            'renaissance': {'linestyle': '--', 'marker': 's', 'markersize': 8, 'linewidth': 2}
-        }
-
-        # Order intervals by numeric value
-        def interval_sort_key(interval):
-            return int(interval.replace('ms', ''))
-
-        plot_data = []
-
-        # Process native data if available
-        if native_df is not None and not native_df.empty:
-            # Filter successful tests
-            if 'success' in native_df.columns:
-                native_success = native_df[native_df['success'] == True].copy()
-            else:
-                native_success = native_df.copy()
-
-            if not native_success.empty and 'loss_percentage' in native_success.columns:
-                # Group by interval and queue_size, then take the maximum loss across all configurations
-                # (different native_duration and stack_depth combinations)
-                native_max_loss = native_success.groupby(['interval', 'queue_size'])['loss_percentage'].max().reset_index()
-                native_max_loss['test_type'] = 'Native (Max)'
-                plot_data.append(native_max_loss)
-
-        # Process renaissance data if available
-        if renaissance_df is not None and not renaissance_df.empty:
-            # Filter successful tests
-            if 'success' in renaissance_df.columns:
-                renaissance_success = renaissance_df[renaissance_df['success'] == True].copy()
-            else:
-                renaissance_success = renaissance_df.copy()
-
-            if not renaissance_success.empty and 'loss_percentage' in renaissance_success.columns:
-                # Group by interval and queue_size, then take the maximum loss across all configurations
-                # (different stack_depth combinations)
-                renaissance_max_loss = renaissance_success.groupby(['interval', 'queue_size'])['loss_percentage'].max().reset_index()
-                renaissance_max_loss['test_type'] = 'Renaissance (Max)'
-                plot_data.append(renaissance_max_loss)
-
-        if not plot_data:
-            print("⚠️ No data available for maximum loss overlay plot")
-            plt.close(fig)
+        if df_with_loss_kinds.empty:
+            print("⚠️ No data with loss kinds information found")
             return
 
-        # Combine all data
-        combined_df = pd.concat(plot_data, ignore_index=True)
+        # Use only the latest entry for each unique configuration to avoid duplicates
+        print(f"    📊 Deduplicating data: {len(df_with_loss_kinds)} rows before deduplication")
 
-        # Get all available intervals and sort them
-        intervals = sorted(combined_df['interval'].unique(), key=interval_sort_key)
-        test_types = combined_df['test_type'].unique()
+        # Group by configuration columns and take the last entry (most recent) for each group
+        config_columns = ['queue_size', 'interval']
+        if 'stack_depth' in df_with_loss_kinds.columns:
+            config_columns.append('stack_depth')
+        if 'native_duration' in df_with_loss_kinds.columns:
+            config_columns.append('native_duration')
 
-        print(f"📊 Plotting maximum loss for intervals: {intervals}")
-        print(f"📊 Test types: {list(test_types)}")
+        df_deduplicated = df_with_loss_kinds.groupby(config_columns).last().reset_index()
+        print(f"    📊 After deduplication: {len(df_deduplicated)} rows")
 
-        # Plot each combination of interval and test type
-        for test_type in test_types:
-            test_data = combined_df[combined_df['test_type'] == test_type]
+        # Create the output directory for loss kind plots
+        loss_plots_dir = PLOTS_DIR / "loss_kinds"
+        loss_plots_dir.mkdir(exist_ok=True)
 
-            # Determine style based on test type
-            if 'native' in test_type.lower():
-                style = test_type_styles['native']
-                test_label_prefix = 'Native'
+        # Get unique intervals
+        intervals = sorted(df_deduplicated['interval'].unique())
+
+        print(f"📊 Found {len(intervals)} intervals: {intervals}")
+
+        # Define loss categories
+        loss_categories = ['stw_gc', 'invalid_state', 'could_not_acquire_lock', 'enqueue_failed']
+
+        # Calculate loss percentages for each category
+        loss_data = []
+
+        for _, row in df_deduplicated.iterrows():
+            queue_size = row['queue_size']
+            interval = row['interval']
+
+            # Get loss kinds data from the results (could be raw dict or flattened CSV format)
+            loss_kinds = {}
+            total_lost_samples = 0
+
+            # Try to get from raw dict format first
+            if 'loss_kinds' in row and isinstance(row['loss_kinds'], dict):
+                loss_kinds = row['loss_kinds']
+                total_lost_samples = row.get('total_lost_samples', 0)
             else:
-                style = test_type_styles['renaissance']
-                test_label_prefix = 'Renaissance'
+                # Try to get from flattened CSV format
+                for category in loss_categories:
+                    csv_col = f'loss_kind_{category}'
+                    if csv_col in row:
+                        loss_kinds[category] = row[csv_col] if pd.notna(row[csv_col]) else 0
+                        total_lost_samples += loss_kinds[category]
 
-            for interval in intervals:
-                interval_data = test_data[test_data['interval'] == interval]
+            if not loss_kinds or total_lost_samples == 0:
+                # If no loss kinds data, skip this row
+                continue
 
-                if len(interval_data) == 0:
-                    continue
+            # Calculate absolute loss percentages for each category
+            # Loss percentage = (category_count / total_lost_samples) * overall_loss_percentage
+            overall_loss_pct = row['loss_percentage']
 
-                # Sort by queue size for proper line plotting
-                interval_data = interval_data.sort_values('queue_size')
+            for category in loss_categories:
+                category_count = loss_kinds.get(category, 0)
+                if total_lost_samples > 0:
+                    # This gives the percentage of total samples lost to this specific category
+                    category_loss_pct = (category_count / total_lost_samples) * overall_loss_pct
+                else:
+                    category_loss_pct = 0.0
 
-                # Create label and color
-                color = interval_colors.get(interval, '#9467bd')  # Default color if interval not in predefined colors
-                label = f'{test_label_prefix} {interval}'
+                loss_data.append({
+                    'queue_size': queue_size,
+                    'interval': interval,
+                    'loss_category': category,
+                    'loss_percentage': category_loss_pct
+                })
 
-                # Plot the line
-                ax.plot(interval_data['queue_size'], interval_data['loss_percentage'],
-                       color=color, label=label,
-                       linestyle=style['linestyle'], marker=style['marker'],
-                       markersize=style['markersize'], linewidth=style['linewidth'])
 
-        # Customize the plot
-        ax.set_xlabel('Queue Size', fontsize=14)
-        ax.set_ylabel('Maximum Loss Percentage (%)', fontsize=14)
-        ax.set_title('Maximum Loss Rate Across All Configurations by Interval', fontsize=16, fontweight='bold')
+        loss_df = pd.DataFrame(loss_data)
+
+        if loss_df.empty:
+            print("⚠️ No loss kinds data found - plots will be skipped")
+            return        # Create individual plots for each interval
+        for interval in intervals:
+            interval_data = loss_df[loss_df['interval'] == interval]
+
+            if interval_data.empty:
+                continue
+
+            fig, ax = plt.subplots(figsize=(12, 8))
+
+            # Create scatter plot for each loss category
+            for category in loss_categories:
+                cat_data = interval_data[interval_data['loss_category'] == category]
+                if not cat_data.empty:
+                    ax.scatter(cat_data['queue_size'], cat_data['loss_percentage'],
+                             label=category, alpha=0.7, s=60)
+
+            ax.set_title(f'Loss Kinds by Queue Size - {interval}ms Interval', fontsize=14, fontweight='bold')
+            ax.set_xlabel('Queue Size', fontsize=12)
+            ax.set_ylabel('Loss Percentage (%)', fontsize=12)
+            ax.grid(True, alpha=0.3)
+            ax.legend(title='Loss Category')
+
+            # Prevent scientific notation
+            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.2f}'))
+
+            plt.tight_layout()
+            plt.savefig(loss_plots_dir / f'loss_kinds_{interval}ms.png', dpi=600, bbox_inches='tight', pad_inches=0.1)
+            plt.close()
+
+        # Create combined plot with all intervals in a grid
+        if len(intervals) > 1:
+            # Calculate grid dimensions
+            n_intervals = len(intervals)
+            cols = min(3, n_intervals)  # Max 3 columns
+            rows = (n_intervals + cols - 1) // cols
+
+            fig, axes = plt.subplots(rows, cols, figsize=(5*cols, 4*rows))
+            if rows == 1 and cols == 1:
+                axes = [axes]
+            elif rows == 1 or cols == 1:
+                axes = axes.flatten()
+            else:
+                axes = axes.flatten()
+
+            # Find global y-axis limits for consistent scaling
+            all_y_values = loss_df['loss_percentage'].values
+            y_min = 0
+            y_max = max(all_y_values) * 1.1 if len(all_y_values) > 0 else 1.0
+
+            for idx, interval in enumerate(intervals):
+                if idx >= len(axes):
+                    break
+
+                ax = axes[idx]
+                interval_data = loss_df[loss_df['interval'] == interval]
+
+                # Create scatter plot for each loss category
+                for category in loss_categories:
+                    cat_data = interval_data[interval_data['loss_category'] == category]
+                    if not cat_data.empty:
+                        ax.scatter(cat_data['queue_size'], cat_data['loss_percentage'],
+                                 label=category, alpha=0.7, s=40)
+
+                ax.set_title(f'{interval}ms Interval', fontsize=12, fontweight='bold')
+                ax.set_xlabel('Queue Size', fontsize=10)
+                ax.set_ylabel('Loss %', fontsize=10)
+                ax.grid(True, alpha=0.3)
+                ax.set_ylim(y_min, y_max)
+
+                # Prevent scientific notation
+                ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.1f}'))
+
+                # Add legend only to first subplot
+                if idx == 0:
+                    ax.legend(title='Loss Category', fontsize=8, title_fontsize=9)
+
+            # Hide unused subplots
+            for idx in range(len(intervals), len(axes)):
+                axes[idx].set_visible(False)
+
+            plt.suptitle('Loss Kinds by Queue Size - All Intervals', fontsize=16, fontweight='bold')
+            plt.tight_layout()
+            plt.savefig(loss_plots_dir / 'loss_kinds_all_intervals.png', dpi=600, bbox_inches='tight', pad_inches=0.1)
+            plt.close()
+
+        print(f"📊 Loss kinds plots saved to {loss_plots_dir}")
+
+    def plot_vm_operations(self, df: pd.DataFrame, progress_mode: bool = False):
+        """Create plots for VM operations breakdown by queue size and interval"""
+        print("📊 Creating VM operations plots...")
+
+        # Filter out rows where we don't have loss kind data
+        df_with_loss_kinds = df.dropna(subset=['loss_percentage'])
+
+        if df_with_loss_kinds.empty:
+            print("⚠️ No data with loss kinds information found")
+            return
+
+        # Use only the latest entry for each unique configuration to avoid duplicates
+        print(f"    📊 Deduplicating VM operations data: {len(df_with_loss_kinds)} rows before deduplication")
+
+        # Group by configuration columns and take the last entry (most recent) for each group
+        config_columns = ['queue_size', 'interval']
+        if 'stack_depth' in df_with_loss_kinds.columns:
+            config_columns.append('stack_depth')
+        if 'native_duration' in df_with_loss_kinds.columns:
+            config_columns.append('native_duration')
+
+        df_deduplicated = df_with_loss_kinds.groupby(config_columns).last().reset_index()
+        print(f"    📊 After deduplication: {len(df_deduplicated)} rows")
+
+        # Create the output directory for VM operations plots
+        vm_ops_plots_dir = PLOTS_DIR / "vm_operations"
+        vm_ops_plots_dir.mkdir(exist_ok=True)
+
+        # Get unique intervals
+        intervals = sorted(df_deduplicated['interval'].unique())
+
+        print(f"📊 Found {len(intervals)} intervals: {intervals}")
+
+        # Define VM operation categories to track (these should match what we parse in LOST_SAMPLE_STATS)
+        vm_op_categories = [
+            'no_vm_ops',                    # When no VM operations are causing loss
+            'in_jfr_safepoint',            # JFR safepoint operations
+            'vm_op_handshakeallthreads',   # Most common VM operation
+            'vm_op_g1collectforfullgc',    # GC-related VM operations
+            'vm_op_g1incremental',
+            'vm_op_cleanup',
+            'vm_op_other'                  # Sum of all other VM operations
+        ]
+
+        # Calculate VM operation percentages for each category
+        vm_ops_data = []
+
+        for _, row in df_deduplicated.iterrows():
+            queue_size = row['queue_size']
+            interval = row['interval']
+
+            # Get VM operations data from the results (could be raw dict or flattened CSV format)
+            vm_operations = {}
+            total_lost_samples = 0
+
+            # Try to get from raw dict format first
+            if 'vm_operations' in row and isinstance(row['vm_operations'], dict):
+                vm_operations = row['vm_operations']
+                total_lost_samples = row.get('total_lost_samples', 0)
+            else:
+                # Try to get from flattened CSV format
+                for category in vm_op_categories:
+                    csv_col = f'vm_op_{category}'
+                    if csv_col in row:
+                        vm_operations[category] = row[csv_col] if pd.notna(row[csv_col]) else 0
+                        total_lost_samples += vm_operations[category]
+
+                # If we didn't find VM operations in CSV format, try to get total from loss data
+                if total_lost_samples == 0:
+                    total_lost_samples = row.get('total_lost_samples', 0)
+
+            if not vm_operations or total_lost_samples == 0:
+                # If no VM operations data, skip this row
+                continue
+
+            # Calculate absolute loss percentages for each VM operation category
+            # Loss percentage = (category_count / total_lost_samples) * overall_loss_percentage
+            overall_loss_pct = row['loss_percentage']
+
+            for category in vm_op_categories:
+                category_count = vm_operations.get(category, 0)
+                if total_lost_samples > 0:
+                    # This gives the percentage of total samples lost to this specific VM operation
+                    category_loss_pct = (category_count / total_lost_samples) * overall_loss_pct
+                else:
+                    category_loss_pct = 0.0
+
+                vm_ops_data.append({
+                    'queue_size': queue_size,
+                    'interval': interval,
+                    'vm_op_category': category,
+                    'loss_percentage': category_loss_pct
+                })
+
+        vm_ops_df = pd.DataFrame(vm_ops_data)
+
+        if vm_ops_df.empty:
+            print("⚠️ No VM operations data found - plots will be skipped")
+            return
+
+        # Create individual plots for each interval
+        for interval in intervals:
+            interval_data = vm_ops_df[vm_ops_df['interval'] == interval]
+
+            if interval_data.empty:
+                continue
+
+            fig, ax = plt.subplots(figsize=(12, 8))
+
+            # Create scatter plot for each VM operation category
+            for category in vm_op_categories:
+                cat_data = interval_data[interval_data['vm_op_category'] == category]
+                if not cat_data.empty and cat_data['loss_percentage'].sum() > 0:  # Only plot if there's actual data
+                    # Create user-friendly labels
+                    label = category.replace('vm_op_', 'VM: ').replace('_', ' ').title()
+                    if category == 'no_vm_ops':
+                        label = 'No VM Ops'
+                    elif category == 'in_jfr_safepoint':
+                        label = 'JFR Safepoint'
+
+                    # Use round dots for all markers as requested
+                    ax.scatter(cat_data['queue_size'], cat_data['loss_percentage'],
+                             label=label, alpha=0.7, s=60, marker='o')
+
+            ax.set_title(f'VM Operations by Queue Size - {interval} Interval', fontsize=14, fontweight='bold')
+            ax.set_xlabel('Queue Size', fontsize=12)
+            ax.set_ylabel('Loss Percentage (%)', fontsize=12)
+            ax.grid(True, alpha=0.3)
+            ax.legend(title='VM Operation Category')
+
+            # Prevent scientific notation
+            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.2f}'))
+
+            plt.tight_layout()
+            plt.savefig(vm_ops_plots_dir / f'vm_operations_{interval}.png', dpi=600, bbox_inches='tight')
+            plt.close()
+
+        # Create combined plot with all intervals in a grid
+        if len(intervals) > 1:
+            # Calculate grid dimensions
+            if len(intervals) <= 2:
+                cols = len(intervals)
+                rows = 1
+            elif len(intervals) <= 4:
+                cols = 2
+                rows = 2
+            else:
+                cols = 3
+                rows = (len(intervals) + cols - 1) // cols
+
+            fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 5*rows))
+
+            # Handle single subplot case
+            if len(intervals) == 1:
+                axes = [axes]
+            elif rows == 1:
+                axes = axes if hasattr(axes, '__len__') else [axes]
+            else:
+                axes = axes.flatten()
+
+            for i, interval in enumerate(intervals):
+                if i >= len(axes):
+                    break
+
+                ax = axes[i]
+                interval_data = vm_ops_df[vm_ops_df['interval'] == interval]
+
+                # Create scatter plot for each VM operation category
+                for category in vm_op_categories:
+                    cat_data = interval_data[interval_data['vm_op_category'] == category]
+                    if not cat_data.empty and cat_data['loss_percentage'].sum() > 0:  # Only plot if there's actual data
+                        # Create user-friendly labels
+                        label = category.replace('vm_op_', 'VM: ').replace('_', ' ').title()
+                        if category == 'no_vm_ops':
+                            label = 'No VM Ops'
+                        elif category == 'in_jfr_safepoint':
+                            label = 'JFR Safepoint'
+
+                        # Use round dots for all markers
+                        ax.scatter(cat_data['queue_size'], cat_data['loss_percentage'],
+                                 label=label, alpha=0.7, s=60, marker='o')
+
+                ax.set_title(f'{interval} Interval', fontsize=12, fontweight='bold')
+                ax.set_xlabel('Queue Size', fontsize=10)
+                ax.set_ylabel('Loss Percentage (%)', fontsize=10)
+                ax.grid(True, alpha=0.3)
+
+                # Add legend only to first subplot
+                if i == 0:
+                    ax.legend(title='VM Operation', fontsize=8, title_fontsize=9)
+
+                # Prevent scientific notation
+                ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.2f}'))
+
+            # Hide unused subplots
+            for i in range(len(intervals), len(axes)):
+                axes[i].set_visible(False)
+
+            plt.suptitle('VM Operations by Queue Size and Interval', fontsize=16, fontweight='bold')
+            plt.tight_layout()
+
+        if progress_mode:
+            plt.savefig(vm_ops_plots_dir / f'vm_operations_combined_progress.png', dpi=600, bbox_inches='tight')
+        else:
+            plt.savefig(vm_ops_plots_dir / f'vm_operations_combined.png', dpi=600, bbox_inches='tight')
+        plt.close()
+
+        print(f"📊 VM operations plots saved to {vm_ops_plots_dir}")
+
+    def plot_renaissance_out_of_thread_percentage(self, drain_df: pd.DataFrame, progress_mode: bool = False):
+        """Create plots showing percentage of 'out of thread' drainages for Renaissance tests"""
+        print("📊 Creating Renaissance 'out of thread' percentage plots...")
+
+        if drain_df is None or drain_df.empty:
+            print("⚠️ No drain statistics data available")
+            return
+
+        # Filter for Renaissance tests only
+        renaissance_data = drain_df[drain_df['test_type'] == 'renaissance'].copy()
+        if renaissance_data.empty:
+            print("⚠️ No Renaissance drain statistics found")
+            return
+
+        # Create output directory
+        out_of_thread_plots_dir = PLOTS_DIR / "renaissance_out_of_thread"
+        out_of_thread_plots_dir.mkdir(exist_ok=True)
+
+        # Calculate total drains per test configuration
+        # Group by test configuration and sum all drains
+        total_drains = renaissance_data.groupby(['queue_size', 'interval'])['drains'].sum().reset_index()
+        total_drains.rename(columns={'drains': 'total_drains'}, inplace=True)
+
+        # Get 'out of thread' drains only
+        out_of_thread_data = renaissance_data[renaissance_data['drain_category'] == 'out of thread'].copy()
+
+        # Merge to get percentages
+        merged_data = out_of_thread_data.merge(total_drains, on=['queue_size', 'interval'], how='left')
+        merged_data['out_of_thread_percentage'] = (merged_data['drains'] / merged_data['total_drains']) * 100
+
+        # Get unique intervals for subplots
+        intervals = sorted(merged_data['interval'].unique())
+
+        # Create figure with subplots for each interval
+        n_intervals = len(intervals)
+        if n_intervals == 0:
+            print("⚠️ No interval data found")
+            return
+
+        cols = min(3, n_intervals)
+        rows = (n_intervals + cols - 1) // cols
+
+        fig, axes = plt.subplots(rows, cols, figsize=(5*cols, 4*rows))
+        if n_intervals == 1:
+            axes = [axes]
+        elif rows == 1:
+            axes = axes
+        else:
+            axes = axes.flatten()
+
+        # Color palette for different queue sizes
+        queue_sizes = sorted(merged_data['queue_size'].unique())
+        colors = plt.cm.viridis(np.linspace(0, 1, len(queue_sizes)))
+
+        for i, interval in enumerate(intervals):
+            if i >= len(axes):
+                break
+
+            ax = axes[i]
+            interval_data = merged_data[merged_data['interval'] == interval]
+
+            # Create scatter plot
+            for j, queue_size in enumerate(queue_sizes):
+                queue_data = interval_data[interval_data['queue_size'] == queue_size]
+                if not queue_data.empty:
+                    # Ensure we have consistent data sizes
+                    x_values = [queue_size] * len(queue_data)
+                    y_values = queue_data['out_of_thread_percentage'].tolist()
+                    ax.scatter(x_values, y_values,
+                             color=colors[j], s=80, alpha=0.7, edgecolors='black', linewidth=0.5)
+
+            ax.set_xlabel('Queue Size', fontweight='bold')
+            ax.set_ylabel('Out of Thread Drains (%)', fontweight='bold')
+            ax.set_title(f'Interval: {interval}', fontweight='bold')
+            ax.grid(True, alpha=0.3)
+            ax.set_xscale('log')
+
+            # Format x-axis to show actual queue sizes
+            ax.set_xticks(queue_sizes)
+            ax.set_xticklabels([f'{int(qs):,}' if qs % 1 == 0 else f'{qs:,.1f}' for qs in queue_sizes])
+
+            # Prevent scientific notation on axes
+            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.1f}%'))
+
+        # Remove empty subplots
+        for i in range(n_intervals, len(axes)):
+            fig.delaxes(axes[i])
+
+        plt.suptitle('Renaissance: Out of Thread Drainage Percentage by Queue Size and Interval',
+                    fontsize=16, fontweight='bold')
+        plt.tight_layout()
+
+        # Save plot
+        if progress_mode:
+            plt.savefig(out_of_thread_plots_dir / 'renaissance_out_of_thread_percentage_progress.png',
+                       dpi=600, bbox_inches='tight')
+        else:
+            plt.savefig(out_of_thread_plots_dir / 'renaissance_out_of_thread_percentage.png',
+                       dpi=600, bbox_inches='tight')
+        plt.close()
+
+        # Create combined plot with all intervals
+        fig, ax = plt.subplots(figsize=(12, 8))
+
+        # Different markers for different intervals
+        markers = ['o', 's', '^', 'D', 'v', '>', '<', 'p', '*', 'h']
+
+        for i, interval in enumerate(intervals):
+            interval_data = merged_data[merged_data['interval'] == interval]
+            marker = markers[i % len(markers)]
+
+            ax.scatter(interval_data['queue_size'], interval_data['out_of_thread_percentage'],
+                      label=f'{interval}', marker=marker, s=100, alpha=0.7,
+                      edgecolors='black', linewidth=0.5)
+
+        ax.set_xlabel('Queue Size', fontweight='bold', fontsize=12)
+        ax.set_ylabel('Out of Thread Drains (%)', fontweight='bold', fontsize=12)
+        ax.set_title('Renaissance: Out of Thread Drainage Percentage\nAcross All Intervals',
+                    fontweight='bold', fontsize=14)
         ax.grid(True, alpha=0.3)
+        ax.set_xscale('log')
+        ax.legend(title='Sampling Interval', bbox_to_anchor=(1.05, 1), loc='upper left')
 
-        # Set x-axis to log scale if we have a wide range of queue sizes
-        if len(combined_df) > 1:
-            queue_range = combined_df['queue_size'].max() / combined_df['queue_size'].min()
-            if queue_range > 10:
-                ax.set_xscale('log')
-                # Add minor ticks for log scale
-                ax.xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.1, 1.0, 0.1)))
-                ax.xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}' if x in [20, 50, 200, 500, 2000, 5000] else ''))
-                ax.grid(True, which='minor', alpha=0.15)
-
-        # Add more minor ticks for y-axis
-        ax.yaxis.set_minor_locator(ticker.AutoMinorLocator(5))
-        ax.grid(True, which='minor', alpha=0.15)
-
-        # Add legend with proper positioning
-        ax.legend(fontsize=11, loc='best', frameon=True, fancybox=True, shadow=True)
+        # Format x-axis
+        ax.set_xticks(queue_sizes)
+        ax.set_xticklabels([f'{int(qs):,}' if qs % 1 == 0 else f'{qs:,.1f}' for qs in queue_sizes])
 
         # Prevent scientific notation on axes
         ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
-        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
-
-        # Save the plot
-        plot_filename = self._get_plot_filename('maximum_loss_overlay.png', progress_mode)
-        plot_path = PLOTS_DIR / plot_filename
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.1f}%'))
 
         plt.tight_layout()
-        plt.savefig(plot_path, dpi=600, bbox_inches='tight')
-        plt.close(fig)
 
-        print(f"📊 Maximum loss overlay plot saved: {plot_filename}")
-        print(f"📍 Absolute path: {plot_path.absolute()}")
+        if progress_mode:
+            plt.savefig(out_of_thread_plots_dir / 'renaissance_out_of_thread_combined_progress.png',
+                       dpi=600, bbox_inches='tight')
+        else:
+            plt.savefig(out_of_thread_plots_dir / 'renaissance_out_of_thread_combined.png',
+                       dpi=600, bbox_inches='tight')
+        plt.close()
+
+        print(f"📊 Renaissance 'out of thread' percentage plots saved to {out_of_thread_plots_dir}")
+
+    def plot_queue_size_distribution_percentiles(self, df: pd.DataFrame, test_type: str, progress_mode: bool = False):
+        """Create plots showing queue size distribution percentiles (P95, P99, P99.9 of queue sizes used)"""
+        print(f"📊 Creating queue size distribution percentile plots for {test_type}...")
+
+        # Load drain statistics using direct parsing
+        drain_df = self.load_drain_statistics()
+        if drain_df is None or drain_df.empty:
+            print(f"⚠️ No drain statistics available for {test_type} queue size distribution plots")
+            return
+
+        # Filter for the specific test type
+        test_drain_data = drain_df[drain_df['test_type'] == test_type].copy()
+        if test_drain_data.empty:
+            print(f"⚠️ No drain statistics found for {test_type} tests")
+            return
+
+        # Create output directory
+        queue_dist_plots_dir = PLOTS_DIR / "queue_size_distributions"
+        queue_dist_plots_dir.mkdir(exist_ok=True)
+
+        # Group by drain category and interval to calculate queue size distributions
+        intervals = sorted(test_drain_data['interval'].unique())
+        drain_categories = sorted(test_drain_data['drain_category'].unique())
+
+        # Calculate percentiles of queue sizes for each category and interval
+        percentiles = [95, 99, 99.9]
+        percentile_labels = ['P95', 'P99', 'P99.9']
+
+        # Create plots for each drain category
+        for category in drain_categories:
+            category_data = test_drain_data[test_drain_data['drain_category'] == category]
+
+            if category_data.empty:
+                continue
+
+            fig, axes = plt.subplots(1, len(intervals), figsize=(5*len(intervals), 5))
+            if len(intervals) == 1:
+                axes = [axes]
+
+            for i, interval in enumerate(intervals):
+                ax = axes[i]
+                interval_data = category_data[category_data['interval'] == interval]
+
+                if interval_data.empty:
+                    ax.text(0.5, 0.5, 'No Data', transform=ax.transAxes,
+                           ha='center', va='center', fontsize=14, fontweight='bold')
+                    ax.set_title(f'{category} - {interval}', fontweight='bold')
+                    continue
+
+                # Calculate percentiles of queue sizes weighted by drain counts
+                queue_sizes = []
+                drain_counts = []
+                for _, row in interval_data.iterrows():
+                    queue_sizes.extend([row['queue_size']] * int(row['drains']))
+                    drain_counts.append(row['drains'])
+
+                if queue_sizes:
+                    queue_percentiles = np.percentile(queue_sizes, percentiles)
+                    colors = ['blue', 'red', 'green']
+
+                    # Create bar plot for the percentiles
+                    bars = ax.bar(percentile_labels, queue_percentiles, color=colors, alpha=0.7,
+                                 edgecolor='black', linewidth=1)
+
+                    # Add value labels on bars
+                    for bar, value in zip(bars, queue_percentiles):
+                        height = bar.get_height()
+                        ax.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
+                               f'{value:.0f}', ha='center', va='bottom', fontweight='bold')
+
+                ax.set_xlabel('Percentile', fontweight='bold')
+                ax.set_ylabel('Queue Size', fontweight='bold')
+                ax.set_title(f'{category} - {interval}', fontweight='bold')
+                ax.grid(True, alpha=0.3)
+
+                # Prevent scientific notation on y-axis
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{int(y):,}' if y % 1 == 0 else f'{y:,.1f}'))
+
+            plt.suptitle(f'{test_type.title()}: Queue Size Distribution Percentiles\n({category})',
+                        fontsize=14, fontweight='bold')
+            plt.tight_layout()
+
+            # Save plot
+            safe_category = category.replace(' ', '_').replace('/', '_')
+            if progress_mode:
+                plt.savefig(queue_dist_plots_dir / f'{test_type}_{safe_category}_queue_distribution_progress.png',
+                           dpi=600, bbox_inches='tight')
+            else:
+                plt.savefig(queue_dist_plots_dir / f'{test_type}_{safe_category}_queue_distribution.png',
+                           dpi=600, bbox_inches='tight')
+            plt.close()
+
+        # Create combined plot showing all categories
+        fig, ax = plt.subplots(figsize=(12, 8))
+
+        # Create grouped bar chart
+        width = 0.25
+        x_positions = np.arange(len(percentile_labels))
+
+        colors = plt.cm.Set1(np.linspace(0, 1, len(drain_categories)))
+
+        for i, category in enumerate(drain_categories):
+            category_data = test_drain_data[test_drain_data['drain_category'] == category]
+
+            if category_data.empty:
+                continue
+
+            # Aggregate all queue sizes across intervals for this category
+            all_queue_sizes = []
+            for _, row in category_data.iterrows():
+                all_queue_sizes.extend([row['queue_size']] * int(row['drains']))
+
+            if all_queue_sizes:
+                category_percentiles = np.percentile(all_queue_sizes, percentiles)
+
+                # Plot bars for this category
+                bars = ax.bar(x_positions + i * width, category_percentiles, width,
+                             label=category, color=colors[i], alpha=0.7,
+                             edgecolor='black', linewidth=0.5)
+
+        ax.set_xlabel('Percentile', fontweight='bold', fontsize=12)
+        ax.set_ylabel('Queue Size', fontweight='bold', fontsize=12)
+        ax.set_title(f'{test_type.title()}: Queue Size Distribution Percentiles\n(All Categories Combined)',
+                    fontweight='bold', fontsize=14)
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+        # Set x-axis labels
+        ax.set_xticks(x_positions + width * (len(drain_categories) - 1) / 2)
+        ax.set_xticklabels(percentile_labels)
+
+        # Prevent scientific notation on y-axis
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{int(y):,}' if y % 1 == 0 else f'{y:,.1f}'))
+
+        plt.tight_layout()
+
+        if progress_mode:
+            plt.savefig(queue_dist_plots_dir / f'{test_type}_queue_distribution_combined_progress.png',
+                       dpi=600, bbox_inches='tight')
+        else:
+            plt.savefig(queue_dist_plots_dir / f'{test_type}_queue_distribution_combined.png',
+                       dpi=600, bbox_inches='tight')
+        plt.close()
+
+        print(f"📊 Queue size distribution plots saved to {queue_dist_plots_dir}")
+
+    def plot_queue_size_percentiles(self, df: pd.DataFrame, test_type: str, progress_mode: bool = False):
+        """Create plots for queue size percentiles (p95, p99, p99.9) from direct drain statistics"""
+        print(f"📊 Creating queue size percentile plots for {test_type} using direct drain statistics...")
+
+        # Load drain statistics using direct parsing
+        drain_df = self.load_drain_statistics()
+        if drain_df is None or drain_df.empty:
+            print(f"⚠️ No drain statistics available for {test_type} percentile plots")
+            return
+
+        # Filter for the specific test type
+        test_drain_data = drain_df[drain_df['test_type'] == test_type].copy()
+        if test_drain_data.empty:
+            print(f"⚠️ No drain statistics found for {test_type} tests")
+            return
+
+        # Focus on 'all without locks' category for percentile data (as discussed)
+        percentile_data = test_drain_data[test_drain_data['drain_category'] == 'all without locks'].copy()
+
+        if percentile_data.empty:
+            print(f"⚠️ No 'all without locks' drain data found for {test_type}")
+            return
+
+        # Create output directory
+        percentile_plots_dir = PLOTS_DIR / "queue_size_percentiles"
+        percentile_plots_dir.mkdir(exist_ok=True)
+
+        # Get unique intervals
+        intervals = sorted(percentile_data['interval'].unique())
+
+        # Create separate plots for each percentile (P95, P99, P99.9)
+        percentiles = ['p95', 'p99', 'p99_9']
+        percentile_labels = ['P95', 'P99', 'P99.9']
+
+        for percentile, label in zip(percentiles, percentile_labels):
+            fig, axes = plt.subplots(1, len(intervals), figsize=(5*len(intervals), 5))
+            if len(intervals) == 1:
+                axes = [axes]
+
+            for i, interval in enumerate(intervals):
+                ax = axes[i]
+                interval_data = percentile_data[percentile_data['interval'] == interval]
+
+                # Filter out zero values (missing data)
+                valid_data = interval_data[interval_data[f'time_{percentile}'] > 0]
+
+                if not valid_data.empty:
+                    ax.scatter(valid_data['queue_size'], valid_data[f'time_{percentile}'],
+                             s=80, alpha=0.7, edgecolors='black', linewidth=0.5, color='darkblue')
+
+                ax.set_xlabel('Queue Size', fontweight='bold')
+                ax.set_ylabel(f'{label} Latency (ns)', fontweight='bold')
+                ax.set_title(f'{test_type.title()}: {label} - {interval}', fontweight='bold')
+                ax.grid(True, alpha=0.3)
+                ax.set_xscale('log')
+                ax.set_yscale('log')
+
+                # Format x-axis
+                queue_sizes = sorted(interval_data['queue_size'].unique())
+                ax.set_xticks(queue_sizes)
+                ax.set_xticklabels([f'{int(qs):,}' if qs % 1 == 0 else f'{qs:,.1f}' for qs in queue_sizes])
+
+                # Prevent scientific notation on axes
+                ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.0f}' if y >= 1 else f'{y:.2f}'))
+
+            plt.tight_layout()
+
+            if progress_mode:
+                plt.savefig(percentile_plots_dir / f'{test_type}_{percentile}_progress.png',
+                           dpi=600, bbox_inches='tight')
+            else:
+                plt.savefig(percentile_plots_dir / f'{test_type}_{percentile}.png',
+                           dpi=600, bbox_inches='tight')
+            plt.close()
+
+        # Create combined plot with all percentiles
+        fig, ax = plt.subplots(figsize=(12, 8))
+
+        colors = ['blue', 'red', 'green']
+        markers = ['o', 's', '^']
+
+        for i, (percentile, label, color, marker) in enumerate(zip(percentiles, percentile_labels, colors, markers)):
+            for interval in intervals:
+                interval_data = percentile_data[percentile_data['interval'] == interval]
+                valid_data = interval_data[interval_data[f'time_{percentile}'] > 0]
+
+                if not valid_data.empty:
+                    ax.scatter(valid_data['queue_size'], valid_data[f'time_{percentile}'],
+                             label=f'{label} - {interval}', marker=marker, color=color,
+                             s=100, alpha=0.7, edgecolors='black', linewidth=0.5)
+
+        ax.set_xlabel('Queue Size', fontweight='bold', fontsize=12)
+        ax.set_ylabel('Latency (ns)', fontweight='bold', fontsize=12)
+        ax.set_title(f'{test_type.title()}: Drain Latency Percentiles\n(All Without Locks Category)',
+                    fontweight='bold', fontsize=14)
+        ax.grid(True, alpha=0.3)
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+
+        # Prevent scientific notation on axes
+        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.0f}' if y >= 1 else f'{y:.2f}'))
+
+        plt.tight_layout()
+
+        if progress_mode:
+            plt.savefig(percentile_plots_dir / f'{test_type}_percentiles_combined_progress.png',
+                       dpi=600, bbox_inches='tight')
+        else:
+            plt.savefig(percentile_plots_dir / f'{test_type}_percentiles_combined.png',
+                       dpi=600, bbox_inches='tight')
+        plt.close()
+
+        print(f"📊 Queue size percentile plots saved to {percentile_plots_dir}")
+
+    def _create_native_percentile_combination_plots(self, drain_df, output_dir, progress_mode=False):
+        """Create native-specific plots for different interval/stack/duration combinations"""
+        print("📊 Creating native percentile combination plots...")
+
+        # Get unique combinations
+        combinations = drain_df[['interval', 'stack_depth', 'native_duration']].drop_duplicates()
+
+        percentiles = ['p95', 'p99', 'p99_9']
+        percentile_labels = ['P95', 'P99', 'P99.9']
+
+        # Create plots for each combination
+        for _, combo in combinations.iterrows():
+            interval = combo['interval']
+            stack_depth = combo['stack_depth']
+            native_duration = combo['native_duration']
+
+            combo_data = drain_df[
+                (drain_df['interval'] == interval) &
+                (drain_df['stack_depth'] == stack_depth) &
+                (drain_df['native_duration'] == native_duration)
+            ]
+
+            if combo_data.empty:
+                continue
+
+            # Create subplot for each percentile
+            fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+            for p_idx, (percentile, p_label) in enumerate(zip(percentiles, percentile_labels)):
+                ax = axes[p_idx]
+
+                # Plot each category on left axis
+                categories = combo_data['category'].unique()
+                for category in categories:
+                    cat_data = combo_data[combo_data['category'] == category]
+                    if not cat_data.empty:
+                        ax.scatter(cat_data['queue_size'], cat_data[percentile],
+                                 label=category, s=60, marker='o', alpha=0.8)
+
+                # Add right axis for loss percentage
+                if not combo_data.empty:
+                    # Get unique queue sizes and their corresponding loss percentages
+                    loss_data = combo_data.groupby('queue_size')['loss_percentage'].first().reset_index()
+                    ax2 = ax.twinx()
+                    ax2.plot(loss_data['queue_size'], loss_data['loss_percentage'], 'r--',
+                            label='Loss %', linewidth=2, alpha=0.7, marker='o', markersize=4)
+                    ax2.set_ylabel('Loss Percentage (%)', fontsize=9, color='red')
+                    ax2.tick_params(axis='y', labelcolor='red', labelsize=8)
+                    ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.2f}'))
+
+                ax.set_title(f'{p_label}', fontsize=12, fontweight='bold')
+                ax.set_xlabel('Queue Size', fontsize=10)
+                ax.set_ylabel(f'{p_label} Time (ns)', fontsize=10)
+                ax.grid(True, alpha=0.3)
+
+                if p_idx == 0 and len(categories) > 1:
+                    ax.legend(fontsize=8)
+
+                # Set log scale if wide range
+                if len(combo_data) > 1:
+                    queue_range = combo_data['queue_size'].max() / combo_data['queue_size'].min()
+                    if queue_range > 10:
+                        ax.set_xscale('log')
+
+                # Prevent scientific notation
+                ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{int(y):,}'))
+
+            plt.suptitle(f'Native Queue Percentiles - {interval}, Stack {stack_depth}, {native_duration}s',
+                        fontsize=16, fontweight='bold')
+            plt.tight_layout()
+
+            plot_filename = f"native_queue_percentiles_{interval}_stack{stack_depth}_dur{native_duration}s.png"
+            if progress_mode:
+                plot_filename = f"native_queue_percentiles_{interval}_stack{stack_depth}_dur{native_duration}s_progress.png"
+
+            plt.savefig(output_dir / plot_filename, dpi=600, bbox_inches='tight')
+            plt.close()
+
+    def plot_signal_handler_duration_grid(self, df: pd.DataFrame, progress_mode: bool = False):
+        """Create grid plots for signal handler duration percentiles by queue size and interval"""
+        print("📊 Creating signal handler duration grid plots...")
+
+        # Filter out rows where we don't have signal handler data
+        df_with_signals = df.dropna(subset=['loss_percentage'])
+
+        if df_with_signals.empty:
+            print("⚠️ No data with signal handler information found")
+            return
+
+        # Create the output directory for signal handler plots
+        signal_plots_dir = PLOTS_DIR / "signal_handler_duration_grids"
+        signal_plots_dir.mkdir(exist_ok=True)
+
+        # Get unique intervals
+        intervals = sorted(df_with_signals['interval'].unique())
+        print(f"📊 Found {len(intervals)} intervals: {intervals}")
+
+        # Define signal handler percentiles to track
+        signal_percentiles = ['p50', 'p90', 'p95', 'p99', 'p99_9']
+        signal_percentile_labels = {
+            'p50': 'P50', 'p90': 'P90', 'p95': 'P95', 'p99': 'P99', 'p99_9': 'P99.9'
+        }
+
+        # Colors for different percentiles
+        percentile_colors = {
+            'p50': '#1f77b4',   # Blue
+            'p90': '#ff7f0e',   # Orange
+            'p95': '#2ca02c',   # Green
+            'p99': '#d62728',   # Red
+            'p99_9': '#9467bd'  # Purple
+        }
+
+        # Common signal types we expect to find
+        signal_types = ['prof', 'quit', 'usr1', 'usr2']
+
+        # Create grid plot with one subplot per interval, showing ALL percentiles in each plot
+        if len(intervals) > 1:
+            # Calculate grid dimensions
+            if len(intervals) <= 3:
+                cols = len(intervals)
+                rows = 1
+            elif len(intervals) <= 6:
+                cols = 3
+                rows = 2
+            else:
+                cols = 3
+                rows = (len(intervals) + cols - 1) // cols
+
+            # Create both normal and log scale versions
+            for scale_type in ['normal', 'log']:
+                fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 5*rows))
+                if len(intervals) == 1:
+                    axes = [axes]
+                elif rows == 1:
+                    axes = axes if hasattr(axes, '__len__') else [axes]
+                else:
+                    axes = axes.flatten()
+
+                for i, interval in enumerate(intervals):
+                    if i >= len(axes):
+                        break
+
+                    ax = axes[i]
+                    interval_data = df_with_signals[df_with_signals['interval'] == interval]
+
+                    if interval_data.empty:
+                        continue
+
+                    # Extract signal handler data for this interval and plot ALL percentiles
+                    plotted_any = False
+
+                    # For each percentile, collect data across all signal types and plot
+                    for percentile in signal_percentiles:
+                        percentile_data = []
+
+                        for _, row in interval_data.iterrows():
+                            queue_size = row['queue_size']
+
+                            # Look for signal handler data in different possible formats
+                            for signal_type in signal_types:
+                                # Try flattened CSV format first
+                                signal_time_col = f'signal_{signal_type}_time_{percentile}_ns'
+                                if signal_time_col in row and pd.notna(row[signal_time_col]) and row[signal_time_col] > 0:
+                                    time_ns = row[signal_time_col]
+                                    time_us = time_ns / 1000.0  # Convert to microseconds for better readability
+                                    percentile_data.append((queue_size, time_us))
+
+                        # Plot this percentile's data if we have any
+                        if percentile_data:
+                            queue_sizes = [d[0] for d in percentile_data]
+                            times_us = [d[1] for d in percentile_data]
+
+                            ax.scatter(queue_sizes, times_us,
+                                     label=signal_percentile_labels[percentile],
+                                     alpha=0.7, s=60, marker='o',
+                                     color=percentile_colors[percentile])
+                            plotted_any = True
+
+                    if plotted_any:
+                        scale_title = f'{interval} Interval - All Percentiles'
+                        if scale_type == 'log':
+                            scale_title += ' (Log Scale)'
+                        ax.set_title(scale_title, fontsize=12, fontweight='bold')
+                        ax.set_xlabel('Queue Size', fontsize=10)
+                        ax.set_ylabel(f'Signal Handler Time (μs)', fontsize=10)
+                        ax.grid(True, alpha=0.3)
+
+                        # Add legend to each subplot for clarity
+                        ax.legend(fontsize=8, loc='upper left')
+
+                        # Prevent scientific notation
+                        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
+                        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.1f}'))
+
+                        # Set scales based on type
+                        if scale_type == 'log':
+                            ax.set_xscale('log')
+                            ax.set_yscale('log')
+                        elif len(interval_data) > 1:
+                            # For normal scale, only set log x-axis if wide range
+                            queue_range = interval_data['queue_size'].max() / interval_data['queue_size'].min()
+                            if queue_range > 10:
+                                ax.set_xscale('log')
+                    else:
+                        ax.text(0.5, 0.5, 'No Signal Data', transform=ax.transAxes,
+                               ha='center', va='center', fontsize=12, alpha=0.5)
+                        ax.set_title(f'{interval} Interval - No Data', fontsize=12)
+
+                # Hide unused subplots
+                for i in range(len(intervals), len(axes)):
+                    axes[i].set_visible(False)
+
+                title_suffix = ' (Log Scale)' if scale_type == 'log' else ''
+                plt.suptitle(f'Signal Handler Duration by Queue Size - All Percentiles{title_suffix}',
+                           fontsize=16, fontweight='bold')
+                plt.tight_layout()
+
+                filename = f'signal_handler_duration_all_percentiles_grid_{scale_type}'
+                if progress_mode:
+                    filename += '_progress'
+                filename += '.png'
+
+                plt.savefig(signal_plots_dir / filename, dpi=600, bbox_inches='tight')
+                plt.close()
+
+        # Also create individual plots for each signal type showing all percentiles
+        for signal_type in signal_types:
+            # Create both normal and log scale versions
+            for scale_type in ['normal', 'log']:
+                if len(intervals) > 1:
+                    fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 5*rows))
+                    if len(intervals) == 1:
+                        axes = [axes]
+                    elif rows == 1:
+                        axes = axes if hasattr(axes, '__len__') else [axes]
+                    else:
+                        axes = axes.flatten()
+
+                    signal_found = False
+
+                    for i, interval in enumerate(intervals):
+                        if i >= len(axes):
+                            break
+
+                        ax = axes[i]
+                        interval_data = df_with_signals[df_with_signals['interval'] == interval]
+
+                        if interval_data.empty:
+                            continue
+
+                        plotted_any = False
+
+                        # For each percentile, collect data for this specific signal type
+                        for percentile in signal_percentiles:
+                            percentile_data = []
+
+                            for _, row in interval_data.iterrows():
+                                queue_size = row['queue_size']
+
+                                # Look for signal handler data for this specific signal type
+                                signal_time_col = f'signal_{signal_type}_time_{percentile}_ns'
+                                if signal_time_col in row and pd.notna(row[signal_time_col]) and row[signal_time_col] > 0:
+                                    time_ns = row[signal_time_col]
+                                    time_us = time_ns / 1000.0  # Convert to microseconds
+                                    percentile_data.append((queue_size, time_us))
+
+                            # Plot this percentile's data if we have any
+                            if percentile_data:
+                                queue_sizes = [d[0] for d in percentile_data]
+                                times_us = [d[1] for d in percentile_data]
+
+                                ax.scatter(queue_sizes, times_us,
+                                         label=signal_percentile_labels[percentile],
+                                         alpha=0.7, s=60, marker='o',
+                                         color=percentile_colors[percentile])
+                                plotted_any = True
+                                signal_found = True
+
+                        if plotted_any:
+                            scale_title = f'{interval} Interval'
+                            if scale_type == 'log':
+                                scale_title += ' (Log Scale)'
+                            ax.set_title(scale_title, fontsize=12, fontweight='bold')
+                            ax.set_xlabel('Queue Size', fontsize=10)
+                            ax.set_ylabel(f'{signal_type.upper()} Signal Time (μs)', fontsize=10)
+                            ax.grid(True, alpha=0.3)
+
+                            # Add legend to first subplot
+                            if i == 0:
+                                ax.legend(fontsize=8, loc='upper left')
+
+                            # Prevent scientific notation
+                            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
+                            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.1f}'))
+
+                            # Set scales based on type
+                            if scale_type == 'log':
+                                ax.set_xscale('log')
+                                ax.set_yscale('log')
+                            elif len(interval_data) > 1:
+                                # For normal scale, only set log x-axis if wide range
+                                queue_range = interval_data['queue_size'].max() / interval_data['queue_size'].min()
+                                if queue_range > 10:
+                                    ax.set_xscale('log')
+                        else:
+                            ax.text(0.5, 0.5, f'No {signal_type.upper()} Data', transform=ax.transAxes,
+                                   ha='center', va='center', fontsize=12, alpha=0.5)
+                            ax.set_title(f'{interval} Interval - No Data', fontsize=12)
+
+                    # Hide unused subplots
+                    for i in range(len(intervals), len(axes)):
+                        axes[i].set_visible(False)
+
+                    if signal_found:
+                        title_suffix = ' (Log Scale)' if scale_type == 'log' else ''
+                        plt.suptitle(f'{signal_type.upper()} Signal Handler Duration - All Percentiles{title_suffix}',
+                                   fontsize=16, fontweight='bold')
+                        plt.tight_layout()
+
+                        filename = f'signal_handler_{signal_type}_all_percentiles_grid_{scale_type}'
+                        if progress_mode:
+                            filename += '_progress'
+                        filename += '.png'
+
+                        plt.savefig(signal_plots_dir / filename, dpi=600, bbox_inches='tight')
+                        plt.close()
+                    else:
+                        plt.close()  # Close the figure if no data was found
+
+        print(f"📊 Signal handler duration grid plots saved to {signal_plots_dir}")
+
+    def plot_drainage_duration_grid(self, df: pd.DataFrame, progress_mode: bool = False):
+        """Create grid plots for drainage duration percentiles by queue size and interval"""
+        print("📊 Creating drainage duration grid plots...")
+
+        # Load drain statistics using direct parsing
+        drain_df = self.load_drain_statistics()
+        if drain_df is None or drain_df.empty:
+            print("⚠️ No drain statistics available for drainage duration grid plots")
+            return
+
+        # Create the output directory for drainage plots
+        drainage_plots_dir = PLOTS_DIR / "drainage_duration_grids"
+        drainage_plots_dir.mkdir(exist_ok=True)
+
+        # Get unique intervals from the drain data
+        intervals = sorted(drain_df['interval'].unique())
+        print(f"📊 Found {len(intervals)} intervals: {intervals}")
+
+        # Define drainage percentiles to track
+        drainage_percentiles = ['p50', 'p90', 'p95', 'p99', 'p99_9']
+        drainage_percentile_labels = {
+            'p50': 'P50', 'p90': 'P90', 'p95': 'P95', 'p99': 'P99', 'p99_9': 'P99.9'
+        }
+
+        # Colors for different percentiles
+        percentile_colors = {
+            'p50': '#1f77b4',   # Blue
+            'p90': '#ff7f0e',   # Orange
+            'p95': '#2ca02c',   # Green
+            'p99': '#d62728',   # Red
+            'p99_9': '#9467bd'  # Purple
+        }
+
+        # Common drain categories we expect to find
+        drain_categories = ['all without locks', 'out of thread', 'with locks', 'total']
+
+        # Create grid plot with one subplot per interval, showing ALL percentiles in each plot
+        if len(intervals) > 1:
+            # Calculate grid dimensions
+            if len(intervals) <= 3:
+                cols = len(intervals)
+                rows = 1
+            elif len(intervals) <= 6:
+                cols = 3
+                rows = 2
+            else:
+                cols = 3
+                rows = (len(intervals) + cols - 1) // cols
+
+            # Create both normal and log scale versions
+            for scale_type in ['normal', 'log']:
+                fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 5*rows))
+                if len(intervals) == 1:
+                    axes = [axes]
+                elif rows == 1:
+                    axes = axes if hasattr(axes, '__len__') else [axes]
+                else:
+                    axes = axes.flatten()
+
+                for i, interval in enumerate(intervals):
+                    if i >= len(axes):
+                        break
+
+                    ax = axes[i]
+                    interval_data = drain_df[drain_df['interval'] == interval]
+
+                    if interval_data.empty:
+                        continue
+
+                    # Extract drainage data for this interval and plot ALL percentiles
+                    plotted_any = False
+
+                    # For each percentile, collect data across all drain categories and plot
+                    for percentile in drainage_percentiles:
+                        percentile_data = []
+
+                        for _, row in interval_data.iterrows():
+                            queue_size = row['queue_size']
+
+                            # Look for drainage time data in different possible formats
+                            # Try flattened CSV format first (time_p50_ns, time_p90_ns, etc.)
+                            time_col = f'time_{percentile}_ns'
+                            if time_col in row and pd.notna(row[time_col]) and row[time_col] > 0:
+                                time_ns = row[time_col]
+                                time_us = time_ns / 1000.0  # Convert to microseconds for better readability
+                                percentile_data.append((queue_size, time_us))
+
+                            # Also try drain_statistics dict format
+                            elif 'drain_statistics' in row and isinstance(row['drain_statistics'], dict):
+                                drain_stats = row['drain_statistics']
+                                if 'time' in drain_stats and isinstance(drain_stats['time'], dict):
+                                    time_stats = drain_stats['time']
+                                    if percentile in time_stats and time_stats[percentile] > 0:
+                                        time_ns = time_stats[percentile]
+                                        time_us = time_ns / 1000.0  # Convert to microseconds
+                                        percentile_data.append((queue_size, time_us))
+
+                        # Plot this percentile's data if we have any
+                        if percentile_data:
+                            queue_sizes = [d[0] for d in percentile_data]
+                            times_us = [d[1] for d in percentile_data]
+
+                            ax.scatter(queue_sizes, times_us,
+                                     label=drainage_percentile_labels[percentile],
+                                     alpha=0.7, s=60, marker='o',
+                                     color=percentile_colors[percentile])
+                            plotted_any = True
+
+                    if plotted_any:
+                        scale_title = f'{interval} Interval - All Percentiles'
+                        if scale_type == 'log':
+                            scale_title += ' (Log Scale)'
+                        ax.set_title(scale_title, fontsize=12, fontweight='bold')
+                        ax.set_xlabel('Queue Size', fontsize=10)
+                        ax.set_ylabel(f'Drainage Time (μs)', fontsize=10)
+                        ax.grid(True, alpha=0.3)
+
+                        # Add legend to each subplot for clarity
+                        ax.legend(fontsize=8, loc='upper left')
+
+                        # Prevent scientific notation
+                        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
+                        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.1f}'))
+
+                        # Set scales based on type
+                        if scale_type == 'log':
+                            ax.set_xscale('log')
+                            ax.set_yscale('log')
+                        elif len(interval_data) > 1:
+                            # For normal scale, only set log x-axis if wide range
+                            queue_range = interval_data['queue_size'].max() / interval_data['queue_size'].min()
+                            if queue_range > 10:
+                                ax.set_xscale('log')
+                    else:
+                        ax.text(0.5, 0.5, 'No Drainage Data', transform=ax.transAxes,
+                               ha='center', va='center', fontsize=12, alpha=0.5)
+                        ax.set_title(f'{interval} Interval - No Data', fontsize=12)
+
+                # Hide unused subplots
+                for i in range(len(intervals), len(axes)):
+                    axes[i].set_visible(False)
+
+                title_suffix = ' (Log Scale)' if scale_type == 'log' else ''
+                plt.suptitle(f'Drainage Duration by Queue Size - All Percentiles{title_suffix}',
+                           fontsize=16, fontweight='bold')
+                plt.tight_layout()
+
+                filename = f'drainage_duration_all_percentiles_grid_{scale_type}'
+                if progress_mode:
+                    filename += '_progress'
+                filename += '.png'
+
+                plt.savefig(drainage_plots_dir / filename, dpi=600, bbox_inches='tight')
+                plt.close()        # Also create individual plots for each drain category showing all percentiles
+        for category in drain_categories:
+            # Create both normal and log scale versions
+            for scale_type in ['normal', 'log']:
+                if len(intervals) > 1:
+                    fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 5*rows))
+                    if len(intervals) == 1:
+                        axes = [axes]
+                    elif rows == 1:
+                        axes = axes if hasattr(axes, '__len__') else [axes]
+                    else:
+                        axes = axes.flatten()
+
+                    category_found = False
+
+                    for i, interval in enumerate(intervals):
+                        if i >= len(axes):
+                            break
+
+                        ax = axes[i]
+                        interval_data = drain_df[
+                            (drain_df['interval'] == interval) &
+                            (drain_df['drain_category'] == category)
+                        ]
+
+                        if interval_data.empty:
+                            continue
+
+                        plotted_any = False
+
+                        # For each percentile, collect data for this specific category
+                        for percentile in drainage_percentiles:
+                            percentile_data = []
+
+                            for _, row in interval_data.iterrows():
+                                queue_size = row['queue_size']
+
+                                # Look for drainage time data
+                                time_col = f'time_{percentile}_ns'
+                                if time_col in row and pd.notna(row[time_col]) and row[time_col] > 0:
+                                    time_ns = row[time_col]
+                                    time_us = time_ns / 1000.0  # Convert to microseconds
+                                    percentile_data.append((queue_size, time_us))
+
+                                # Also try drain_statistics dict format
+                                elif 'drain_statistics' in row and isinstance(row['drain_statistics'], dict):
+                                    drain_stats = row['drain_statistics']
+                                    if 'time' in drain_stats and isinstance(drain_stats['time'], dict):
+                                        time_stats = drain_stats['time']
+                                        if percentile in time_stats and time_stats[percentile] > 0:
+                                            time_ns = time_stats[percentile]
+                                            time_us = time_ns / 1000.0  # Convert to microseconds
+                                            percentile_data.append((queue_size, time_us))
+
+                            # Plot this percentile's data if we have any
+                            if percentile_data:
+                                queue_sizes = [d[0] for d in percentile_data]
+                                times_us = [d[1] for d in percentile_data]
+
+                                ax.scatter(queue_sizes, times_us,
+                                         label=drainage_percentile_labels[percentile],
+                                         alpha=0.7, s=60, marker='o',
+                                         color=percentile_colors[percentile])
+                                plotted_any = True
+                                category_found = True
+
+                        if plotted_any:
+                            scale_title = f'{interval} Interval'
+                            if scale_type == 'log':
+                                scale_title += ' (Log Scale)'
+                            ax.set_title(scale_title, fontsize=12, fontweight='bold')
+                            ax.set_xlabel('Queue Size', fontsize=10)
+                            ax.set_ylabel(f'{category.title()} Drainage Time (μs)', fontsize=10)
+                            ax.grid(True, alpha=0.3)
+
+                            # Add legend to first subplot
+                            if i == 0:
+                                ax.legend(fontsize=8, loc='upper left')
+
+                            # Prevent scientific notation
+                            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
+                            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.1f}'))
+
+                            # Set scales based on type
+                            if scale_type == 'log':
+                                ax.set_xscale('log')
+                                ax.set_yscale('log')
+                            elif len(interval_data) > 1:
+                                # For normal scale, only set log x-axis if wide range
+                                queue_range = interval_data['queue_size'].max() / interval_data['queue_size'].min()
+                                if queue_range > 10:
+                                    ax.set_xscale('log')
+                        else:
+                            ax.text(0.5, 0.5, f'No {category.title()} Data', transform=ax.transAxes,
+                                   ha='center', va='center', fontsize=12, alpha=0.5)
+                            ax.set_title(f'{interval} Interval - No Data', fontsize=12)
+
+                    # Hide unused subplots
+                    for i in range(len(intervals), len(axes)):
+                        axes[i].set_visible(False)
+
+                    if category_found:
+                        title_suffix = ' (Log Scale)' if scale_type == 'log' else ''
+                        plt.suptitle(f'{category.title()} Drainage Duration - All Percentiles{title_suffix}',
+                                   fontsize=16, fontweight='bold')
+                        plt.tight_layout()
+
+                        safe_category = category.replace(' ', '_').replace('/', '_')
+                        filename = f'drainage_duration_{safe_category}_all_percentiles_grid_{scale_type}'
+                        if progress_mode:
+                            filename += '_progress'
+                        filename += '.png'
+
+                        plt.savefig(drainage_plots_dir / filename, dpi=600, bbox_inches='tight')
+                        plt.close()
+                    else:
+                        plt.close()  # Close the figure if no data was found        print(f"📊 Drainage duration grid plots saved to {drainage_plots_dir}")
+
+    def plot_vm_ops_loss_grid(self, df: pd.DataFrame, progress_mode: bool = False):
+        """Create grid plots for VM operations loss percentage by queue size with one plot per interval"""
+        print("📊 Creating VM operations loss percentage grid plots...")
+
+        # Filter out rows where we don't have loss data
+        df_with_loss = df.dropna(subset=['loss_percentage'])
+
+        if df_with_loss.empty:
+            print("⚠️ No data with VM operations loss information found")
+            return
+
+        # Use only the latest entry for each unique configuration to avoid duplicates
+        print(f"    📊 Deduplicating VM ops loss grid data: {len(df_with_loss)} rows before deduplication")
+
+        # Group by configuration columns and take the last entry (most recent) for each group
+        config_columns = ['queue_size', 'interval']
+        if 'stack_depth' in df_with_loss.columns:
+            config_columns.append('stack_depth')
+        if 'native_duration' in df_with_loss.columns:
+            config_columns.append('native_duration')
+
+        df_deduplicated = df_with_loss.groupby(config_columns).last().reset_index()
+        print(f"    📊 After deduplication: {len(df_deduplicated)} rows")
+
+        # Create the output directory for VM ops loss plots
+        vm_ops_grid_plots_dir = PLOTS_DIR / "vm_ops_loss_grids"
+        vm_ops_grid_plots_dir.mkdir(exist_ok=True)
+
+        # Get unique intervals
+        intervals = sorted(df_with_loss['interval'].unique())
+        print(f"📊 Found {len(intervals)} intervals: {intervals}")
+
+        # Define VM operation categories to track
+        vm_op_categories = [
+            'no_vm_ops',
+            'in_jfr_safepoint',
+            'vm_op_handshakeallthreads',
+            'vm_op_g1collectforfullgc',
+            'vm_op_g1incremental',
+            'vm_op_cleanup',
+            'vm_op_other'
+        ]
+
+        vm_op_labels = {
+            'no_vm_ops': 'No VM Ops',
+            'in_jfr_safepoint': 'JFR Safepoint',
+            'vm_op_handshakeallthreads': 'Handshake All Threads',
+            'vm_op_g1collectforfullgc': 'G1 Full GC',
+            'vm_op_g1incremental': 'G1 Incremental',
+            'vm_op_cleanup': 'Cleanup',
+            'vm_op_other': 'Other VM Ops'
+        }
+
+        # Create both normal and log scale versions
+        for scale_type in ['normal', 'log']:
+            # Create grid plot with one subplot per interval
+            if len(intervals) > 1:
+                # Calculate grid dimensions
+                if len(intervals) <= 3:
+                    cols = len(intervals)
+                    rows = 1
+                elif len(intervals) <= 6:
+                    cols = 3
+                    rows = 2
+                else:
+                    cols = 3
+                    rows = (len(intervals) + cols - 1) // cols
+
+                fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 5*rows))
+                if len(intervals) == 1:
+                    axes = [axes]
+                elif rows == 1:
+                    axes = axes if hasattr(axes, '__len__') else [axes]
+                else:
+                    axes = axes.flatten()
+
+                for i, interval in enumerate(intervals):
+                    if i >= len(axes):
+                        break
+
+                    ax = axes[i]
+                    interval_data = df_with_loss[df_with_loss['interval'] == interval]
+
+                    if interval_data.empty:
+                        continue
+
+                    # Calculate VM operation loss percentages for this interval
+                    vm_ops_data = []
+
+                    for _, row in interval_data.iterrows():
+                        queue_size = row['queue_size']
+
+                        # Get VM operations data from the results
+                        vm_operations = {}
+                        total_lost_samples = 0
+
+                        # Try to get from raw dict format first
+                        if 'vm_operations' in row and isinstance(row['vm_operations'], dict):
+                            vm_operations = row['vm_operations']
+                            total_lost_samples = row.get('total_lost_samples', 0)
+                        else:
+                            # Try to get from flattened CSV format
+                            for category in vm_op_categories:
+                                csv_col = f'vm_op_{category}'
+                                if csv_col in row:
+                                    vm_operations[category] = row[csv_col] if pd.notna(row[csv_col]) else 0
+                                    total_lost_samples += vm_operations[category]
+
+                            if total_lost_samples == 0:
+                                total_lost_samples = row.get('total_lost_samples', 0)
+
+                        if not vm_operations or total_lost_samples == 0:
+                            continue
+
+                        # Calculate loss percentages for each VM operation category
+                        overall_loss_pct = row['loss_percentage']
+
+                        for category in vm_op_categories:
+                            category_count = vm_operations.get(category, 0)
+                            if total_lost_samples > 0:
+                                category_loss_pct = (category_count / total_lost_samples) * overall_loss_pct
+                            else:
+                                category_loss_pct = 0.0
+
+                            if category_loss_pct > 0:  # Only plot if there's actual loss
+                                vm_ops_data.append({
+                                    'queue_size': queue_size,
+                                    'vm_op_category': category,
+                                    'loss_percentage': category_loss_pct
+                                })
+
+                    # Plot the data for this interval - show all VM ops as different series
+                    plotted_any = False
+                    colors = plt.cm.Set1(np.linspace(0, 1, len(vm_op_categories)))
+
+                    for j, category in enumerate(vm_op_categories):
+                        cat_data = [d for d in vm_ops_data if d['vm_op_category'] == category]
+                        if cat_data:
+                            queue_sizes = [d['queue_size'] for d in cat_data]
+                            loss_percentages = [d['loss_percentage'] for d in cat_data]
+
+                            label = vm_op_labels.get(category, category)
+                            ax.scatter(queue_sizes, loss_percentages,
+                                     label=label, alpha=0.7, s=60, marker='o',
+                                     color=colors[j])
+                            plotted_any = True
+
+                    if plotted_any:
+                        scale_title = f'{interval} Interval'
+                        if scale_type == 'log':
+                            scale_title += ' (Log Scale)'
+                        ax.set_title(scale_title, fontsize=12, fontweight='bold')
+                        ax.set_xlabel('Queue Size', fontsize=10)
+                        ax.set_ylabel('VM Ops Loss Percentage (%)', fontsize=10)
+                        ax.grid(True, alpha=0.3)
+
+                        # Add legend only to first subplot
+                        if i == 0:
+                            ax.legend(fontsize=8, loc='upper left')
+
+                        # Prevent scientific notation
+                        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
+                        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.2f}'))
+
+                        # Set scales based on type
+                        if scale_type == 'log':
+                            ax.set_xscale('log')
+                            ax.set_yscale('log')
+                        elif len(interval_data) > 1:
+                            # For normal scale, only set log x-axis if wide range
+                            queue_range = interval_data['queue_size'].max() / interval_data['queue_size'].min()
+                            if queue_range > 10:
+                                ax.set_xscale('log')
+                    else:
+                        ax.text(0.5, 0.5, 'No VM Ops Loss Data', transform=ax.transAxes,
+                               ha='center', va='center', fontsize=12, alpha=0.5)
+                        ax.set_title(f'{interval} Interval - No Data', fontsize=12)
+
+                # Hide unused subplots
+                for i in range(len(intervals), len(axes)):
+                    axes[i].set_visible(False)
+
+                title_suffix = ' (Log Scale)' if scale_type == 'log' else ''
+                plt.suptitle(f'VM Operations Loss Percentage by Queue Size and Interval{title_suffix}',
+                           fontsize=16, fontweight='bold')
+                plt.tight_layout()
+
+                filename = f'vm_ops_loss_percentage_grid_{scale_type}'
+                if progress_mode:
+                    filename += '_progress'
+                filename += '.png'
+
+                plt.savefig(vm_ops_grid_plots_dir / filename, dpi=600, bbox_inches='tight')
+                plt.close()
+
+        # Create both normal and log scale versions
+        for scale_type in ['normal', 'log']:
+            # Create individual plots for each interval showing all VM ops as different series
+            for interval in intervals:
+                interval_data = df_with_loss[df_with_loss['interval'] == interval]
+
+                if interval_data.empty:
+                    continue
+
+                # Calculate VM operation loss percentages for this interval
+                vm_ops_data = []
+
+                for _, row in interval_data.iterrows():
+                    queue_size = row['queue_size']
+
+                    # Get VM operations data from the results
+                    vm_operations = {}
+                    total_lost_samples = 0
+
+                    # Try to get from raw dict format first
+                    if 'vm_operations' in row and isinstance(row['vm_operations'], dict):
+                        vm_operations = row['vm_operations']
+                        total_lost_samples = row.get('total_lost_samples', 0)
+                    else:
+                        # Try to get from flattened CSV format
+                        for category in vm_op_categories:
+                            csv_col = f'vm_op_{category}'
+                            if csv_col in row:
+                                vm_operations[category] = row[csv_col] if pd.notna(row[csv_col]) else 0
+                                total_lost_samples += vm_operations[category]
+
+                        if total_lost_samples == 0:
+                            total_lost_samples = row.get('total_lost_samples', 0)
+
+                    if not vm_operations or total_lost_samples == 0:
+                        continue
+
+                    # Calculate loss percentages for each VM operation category
+                    overall_loss_pct = row['loss_percentage']
+
+                    for category in vm_op_categories:
+                        category_count = vm_operations.get(category, 0)
+                        if total_lost_samples > 0:
+                            category_loss_pct = (category_count / total_lost_samples) * overall_loss_pct
+                        else:
+                            category_loss_pct = 0.0
+
+                        if category_loss_pct > 0:  # Only plot if there's actual loss
+                            vm_ops_data.append({
+                                'queue_size': queue_size,
+                                'vm_op_category': category,
+                                'loss_percentage': category_loss_pct
+                            })
+
+                # Create individual plot for this interval
+                if vm_ops_data:
+                    fig, ax = plt.subplots(figsize=(10, 6))
+
+                    # Plot all VM ops as different series
+                    plotted_any = False
+                    colors = plt.cm.Set1(np.linspace(0, 1, len(vm_op_categories)))
+
+                    for j, category in enumerate(vm_op_categories):
+                        cat_data = [d for d in vm_ops_data if d['vm_op_category'] == category]
+                        if cat_data:
+                            queue_sizes = [d['queue_size'] for d in cat_data]
+                            loss_percentages = [d['loss_percentage'] for d in cat_data]
+
+                            label = vm_op_labels.get(category, category)
+                            ax.scatter(queue_sizes, loss_percentages,
+                                     label=label, alpha=0.7, s=60, marker='o',
+                                     color=colors[j])
+                            plotted_any = True
+
+                    if plotted_any:
+                        scale_title = f'VM Operations Loss - {interval} Interval'
+                        if scale_type == 'log':
+                            scale_title += ' (Log Scale)'
+                        ax.set_title(scale_title, fontsize=14, fontweight='bold')
+                        ax.set_xlabel('Queue Size', fontsize=12)
+                        ax.set_ylabel('VM Ops Loss Percentage (%)', fontsize=12)
+                        ax.grid(True, alpha=0.3)
+                        ax.legend(fontsize=10, loc='upper left')
+
+                        # Prevent scientific notation
+                        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
+                        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.2f}'))
+
+                        # Set scales based on type
+                        if scale_type == 'log':
+                            ax.set_xscale('log')
+                            ax.set_yscale('log')
+                        elif len(interval_data) > 1:
+                            # For normal scale, only set log x-axis if wide range
+                            queue_range = interval_data['queue_size'].max() / interval_data['queue_size'].min()
+                            if queue_range > 10:
+                                ax.set_xscale('log')
+
+                        plt.tight_layout()
+
+                        filename = f'vm_ops_loss_{interval}_all_categories_{scale_type}'
+                        if progress_mode:
+                            filename += '_progress'
+                        filename += '.png'
+
+                        plt.savefig(vm_ops_grid_plots_dir / filename, dpi=600, bbox_inches='tight')
+                        plt.close()
+                    else:
+                        plt.close()  # Close the figure if no data was plotted
+
+        print(f"📊 VM operations loss grid plots saved to {vm_ops_grid_plots_dir}")
 
 def main():
     parser = argparse.ArgumentParser(description='JFR Queue Size Benchmark Suite')
@@ -3209,12 +5323,6 @@ def main():
                        help='Number of retries for tests with JSON parsing failures (default: 2)')
     parser.add_argument('--verbose', action='store_true',
                        help='Enable verbose logging for debugging and detailed output')
-    parser.add_argument('--only-till', type=float, default=None,
-                       help='Only benchmark queue sizes for each interval until all loss values are lower than the given percentage (disabled by default, e.g. 0.5 for 0.5%%)')
-    parser.add_argument('--optimized', action='store_true',
-                       help='Use only the highest stack depth and longest duration for faster benchmarking')
-    parser.add_argument('--backup-progress', action='store_true',
-                       help='Backup all existing progress files before starting new benchmarks')
 
     args = parser.parse_args()
 
@@ -3226,14 +5334,8 @@ def main():
         parser.print_help()
         return
 
-    # Create benchmark runner with all requested configuration
-    runner = BenchmarkRunner(minimal=args.minimal, threads=args.threads, max_retries=args.retries,
-                            verbose=args.verbose, only_till=args.only_till, optimized=args.optimized)
-
-    # Backup progress files if requested
-    if args.backup_progress:
-        print("🗂️ Backing up existing progress files...")
-        backup_progress_files(verbose=args.verbose)
+    # Create benchmark runner with minimal configuration if requested
+    runner = BenchmarkRunner(minimal=args.minimal, threads=args.threads, max_retries=args.retries, verbose=args.verbose)
 
     # Show configuration info
     print(f"JFR Queue Size Benchmark Suite")
@@ -3260,7 +5362,7 @@ def main():
         # Special case: if only-renaissance, show only Renaissance estimates
         if args.only_renaissance:
             renaissance_seconds, renaissance_time = runner.estimate_runtime('renaissance')
-            renaissance_tests = len(runner.queue_sizes) * len(runner.sampling_intervals)  # Renaissance has no stack depths
+            renaissance_tests = len(runner.queue_sizes) * len(runner.sampling_intervals) * len(runner.stack_depths)
             print(f"🏛️ Renaissance Benchmark:")
             print(f"   Tests: {renaissance_tests}")
             print(f"   Estimated time: {renaissance_time}")
@@ -3283,7 +5385,7 @@ def main():
             # 3. --run-renaissance is specified
             if args.all or args.run_renaissance or (not args.minimal and not args.only_native):
                 renaissance_seconds, renaissance_time = runner.estimate_runtime('renaissance')
-                renaissance_tests = len(runner.queue_sizes) * len(runner.sampling_intervals)  # Renaissance has no stack depths
+                renaissance_tests = len(runner.queue_sizes) * len(runner.sampling_intervals) * len(runner.stack_depths)
                 print(f"🏛️ Renaissance Benchmark:")
                 print(f"   Tests: {renaissance_tests}")
                 print(f"   Estimated time: {renaissance_time}")

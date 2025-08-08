@@ -39,6 +39,9 @@ class JfrThreadSampling : AllStatic {
   static void process_cpu_time_request(JavaThread* jt, JfrThreadLocal* tl, Thread* current, bool lock);
  public:
   static void process_sample_request(JavaThread* jt);
+
+  // Signal handler statistics tracking
+  static void record_signal_handler_duration(long duration_ns);
 };
 
 #endif // SHARE_JFR_PERIODIC_SAMPLING_JFRTHREADSAMPLING_HPP

@@ -391,6 +391,9 @@ class JfrThreadLocal {
 
   void set_do_async_processing_of_cpu_time_jfr_requests(bool wants);
   bool wants_async_processing_of_cpu_time_jfr_requests();
+
+  volatile bool _currently_in_jfr_safepoint = false;
+
 #else
   bool has_cpu_time_jfr_requests() { return false; }
 #endif

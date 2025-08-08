@@ -481,11 +481,13 @@ struct DrainStats {
 
     // Calculate percentiles
     long time_median = calculate_time_percentile(50.0);
+    long time_p90 = calculate_time_percentile(90.0);
     long time_p95 = calculate_time_percentile(95.0);
     long time_p99 = calculate_time_percentile(99.0);
     long time_p999 = calculate_time_percentile(99.9);
 
     long event_median = calculate_event_percentile(50.0);
+    long event_p90 = calculate_event_percentile(90.0);
     long event_p95 = calculate_event_percentile(95.0);
     long event_p99 = calculate_event_percentile(99.0);
     long event_p999 = calculate_event_percentile(99.9);
@@ -625,9 +627,9 @@ struct DrainStats {
     // Build JSON string in memory to avoid printf buffering issues
     stringStream json_buffer;
 
-    json_buffer.print("DRAIN_STATS_JSON:{\"name\":\"%s\",\"drains\":%ld,\"runtime_ns\":%ld,\"runtime_seconds\":%.3f,\"time\":{\"sum\":%ld,\"avg\":%ld,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99_9\":%ld},\"events\":{\"sum\":%ld,\"avg\":%.2f,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99_9\":%ld},\"time_histogram\":[",
-           name, drains, json_runtime_ns, json_runtime_seconds, time_sum, drains > 0 ? time_sum / drains : 0, time_min, time_max, time_median, time_p95, time_p99, time_p999,
-           event_sum, drains > 0 ? event_sum * 1.0 / drains : 0.0, event_min, event_max, event_median, event_p95, event_p99, event_p999);
+    json_buffer.print("DRAIN_STATS_JSON:{\"name\":\"%s\",\"drains\":%ld,\"runtime_ns\":%ld,\"runtime_seconds\":%.3f,\"time\":{\"sum\":%ld,\"avg\":%ld,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p90\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99_9\":%ld},\"events\":{\"sum\":%ld,\"avg\":%.2f,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p90\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99_9\":%ld},\"time_histogram\":[",
+           name, drains, json_runtime_ns, json_runtime_seconds, time_sum, drains > 0 ? time_sum / drains : 0, time_min, time_max, time_median, time_p90, time_p95, time_p99, time_p999,
+           event_sum, drains > 0 ? event_sum * 1.0 / drains : 0.0, event_min, event_max, event_median, event_p90, event_p95, event_p99, event_p999);
 
     // Generate structured time histogram with from/to ranges
     bool first_time = true;
@@ -742,11 +744,13 @@ struct DrainStats {
 
     // Calculate combined percentiles
     long combined_time_median = calculate_combined_time_percentile(stats1, stats2, stats3, stats4, 50.0);
+    long combined_time_p90 = calculate_combined_time_percentile(stats1, stats2, stats3, stats4, 90.0);
     long combined_time_p95 = calculate_combined_time_percentile(stats1, stats2, stats3, stats4, 95.0);
     long combined_time_p99 = calculate_combined_time_percentile(stats1, stats2, stats3, stats4, 99.0);
     long combined_time_p999 = calculate_combined_time_percentile(stats1, stats2, stats3, stats4, 99.9);
 
     long combined_event_median = calculate_combined_event_percentile(stats1, stats2, stats3, stats4, 50.0);
+    long combined_event_p90 = calculate_combined_event_percentile(stats1, stats2, stats3, stats4, 90.0);
     long combined_event_p95 = calculate_combined_event_percentile(stats1, stats2, stats3, stats4, 95.0);
     long combined_event_p99 = calculate_combined_event_percentile(stats1, stats2, stats3, stats4, 99.0);
     long combined_event_p999 = calculate_combined_event_percentile(stats1, stats2, stats3, stats4, 99.9);
@@ -889,11 +893,11 @@ struct DrainStats {
     // Machine readable combined JSON output
     stringStream combined_json_buffer;
 
-    combined_json_buffer.print("COMBINED_DRAIN_STATS_JSON:{\"name\":\"%s\",\"drains\":%ld,\"time\":{\"sum\":%ld,\"avg\":%ld,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99_9\":%ld},\"events\":{\"sum\":%ld,\"avg\":%.2f,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99_9\":%ld},\"time_histogram\":[",
+    combined_json_buffer.print("COMBINED_DRAIN_STATS_JSON:{\"name\":\"%s\",\"drains\":%ld,\"time\":{\"sum\":%ld,\"avg\":%ld,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p90\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99_9\":%ld},\"events\":{\"sum\":%ld,\"avg\":%.2f,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p90\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99_9\":%ld},\"time_histogram\":[",
            name, total_drains, total_time_sum, total_drains > 0 ? total_time_sum / total_drains : 0, combined_time_min, combined_time_max,
-           combined_time_median, combined_time_p95, combined_time_p99, combined_time_p999,
+           combined_time_median, combined_time_p90, combined_time_p95, combined_time_p99, combined_time_p999,
            total_event_sum, total_drains > 0 ? total_event_sum * 1.0 / total_drains : 0.0, combined_event_min, combined_event_max,
-           combined_event_median, combined_event_p95, combined_event_p99, combined_event_p999);
+           combined_event_median, combined_event_p90, combined_event_p95, combined_event_p99, combined_event_p999);
 
     // Generate structured combined time histogram
     bool first_time = true;
@@ -1060,10 +1064,196 @@ struct DrainStats {
   }
 };
 
+// Signal Handler Statistics tracking
+struct SignalHandlerStats {
+  static const int HISTOGRAM_BUCKETS = 1000;
+  static const long MAX_HANDLER_TIME_NS = 100000000L; // 100ms in nanoseconds (reasonable max for signal handler)
+
+  volatile long _signals_processed;
+  volatile long _handler_time_sum;
+  volatile long _handler_time_max;
+  volatile long _handler_time_min;
+  volatile long _last_print_time;
+  volatile long _start_time;
+
+  // Time histogram for signal handler duration: [0] = underflow, [1-1000] = buckets, [1001] = overflow
+  volatile long _handler_time_histogram[HISTOGRAM_BUCKETS + 2];
+
+  SignalHandlerStats() : _signals_processed(0), _handler_time_sum(0), _handler_time_max(0), _handler_time_min(LONG_MAX),
+                        _last_print_time(0), _start_time(0) {
+    for (int i = 0; i < HISTOGRAM_BUCKETS + 2; i++) {
+      _handler_time_histogram[i] = 0;
+    }
+  }
+
+  void update(long handler_duration_ns) {
+    // Initialize start time on first update
+    if (_start_time == 0) {
+      _start_time = os::javaTimeNanos();
+    }
+
+    Atomic::inc(&_signals_processed);
+    Atomic::add(&_handler_time_sum, handler_duration_ns);
+
+    // Update handler time max
+    if (handler_duration_ns > _handler_time_max) {
+      while (true) {
+        long old_max = _handler_time_max;
+        if (handler_duration_ns <= old_max || Atomic::cmpxchg(&_handler_time_max, old_max, handler_duration_ns) == old_max) {
+          break;
+        }
+      }
+    }
+
+    // Update handler time min
+    if (handler_duration_ns < _handler_time_min) {
+      while (true) {
+        long old_min = _handler_time_min;
+        if (handler_duration_ns >= old_min || Atomic::cmpxchg(&_handler_time_min, old_min, handler_duration_ns) == old_min) {
+          break;
+        }
+      }
+    }
+
+    // Update handler time histogram (logarithmic bucketing)
+    int time_bucket;
+    if (handler_duration_ns <= 0) {
+      time_bucket = 0; // underflow
+    } else if (handler_duration_ns >= MAX_HANDLER_TIME_NS) {
+      time_bucket = HISTOGRAM_BUCKETS + 1; // overflow
+    } else {
+      // Logarithmic bucketing: log10(handler_duration_ns + 1) mapped to [1, HISTOGRAM_BUCKETS]
+      double log_time = log10((double)(handler_duration_ns + 1));
+      double log_max = log10((double)(MAX_HANDLER_TIME_NS + 1));
+      time_bucket = 1 + (int)((log_time * HISTOGRAM_BUCKETS) / log_max);
+      if (time_bucket > HISTOGRAM_BUCKETS) time_bucket = HISTOGRAM_BUCKETS;
+    }
+    Atomic::inc(&_handler_time_histogram[time_bucket]);
+  }
+
+  bool should_print() {
+    long current_time = os::javaTimeNanos();
+    long last_print = Atomic::load(&_last_print_time);
+
+    // Print every 1 second (1,000,000,000 ns)
+    if (current_time - last_print >= 1000000000L) {
+      // Try to update the last print time atomically
+      if (Atomic::cmpxchg(&_last_print_time, last_print, current_time) == last_print) {
+        return true; // We successfully updated the time, so we should print
+      }
+    }
+    return false; // Either not enough time has passed or another thread is printing
+  }
+
+  // Calculate percentiles from signal handler duration histogram
+  long calculate_handler_time_percentile(double percentile) const {
+    long total_signals = Atomic::load(&_signals_processed);
+    if (total_signals == 0) return 0;
+
+    long target_count = (long)(total_signals * percentile / 100.0);
+    long cumulative_count = 0;
+
+    // Check underflow bucket first
+    cumulative_count += Atomic::load(&_handler_time_histogram[0]);
+    if (cumulative_count >= target_count) return 0;
+
+    // Check regular buckets
+    for (int i = 1; i <= HISTOGRAM_BUCKETS; i++) {
+      cumulative_count += Atomic::load(&_handler_time_histogram[i]);
+      if (cumulative_count >= target_count) {
+        // Found the bucket containing the percentile
+        // Convert bucket back to time value (middle of bucket range)
+        double log_max = log10((double)(MAX_HANDLER_TIME_NS + 1));
+        double log_mid = ((double)(i - 1) + 0.5) * log_max / HISTOGRAM_BUCKETS;
+        long time_mid = (long)(pow(10.0, log_mid)) - 1;
+        if (time_mid < 0) time_mid = 0;
+        return time_mid;
+      }
+    }
+
+    // If we get here, it's in the overflow bucket - return max value
+    return MAX_HANDLER_TIME_NS;
+  }
+
+  void print(const char* name) {
+    long signals = Atomic::load(&_signals_processed);
+    long time_sum = Atomic::load(&_handler_time_sum);
+    long time_max = Atomic::load(&_handler_time_max);
+    long time_min = (_handler_time_min == LONG_MAX) ? 0 : Atomic::load(&_handler_time_min);
+
+    if (signals == 0) {
+      printf("Signal Handler Stats [%s]: No signals processed yet\n", name);
+      return;
+    }
+
+    printf("Signal Handler Stats [%s]: signals=%ld avg=%.1fns min=%ldns max=%ldns\n",
+           name, signals, signals > 0 ? time_sum * 1.0 / signals : 0.0, time_min, time_max);
+
+    // Calculate percentiles
+    long time_median = calculate_handler_time_percentile(50.0);
+    long time_p90 = calculate_handler_time_percentile(90.0);
+    long time_p95 = calculate_handler_time_percentile(95.0);
+    long time_p99 = calculate_handler_time_percentile(99.0);
+    long time_p999 = calculate_handler_time_percentile(99.9);
+
+    printf("Signal Handler Percentiles [%s]: p50=%ldns p90=%ldns p95=%ldns p99=%ldns p99.9=%ldns\n",
+           name, time_median, time_p90, time_p95, time_p99, time_p999);
+
+    // Generate JSON output for machine parsing
+    long current_time = os::javaTimeNanos();
+    long runtime_ns = (_start_time > 0) ? (current_time - _start_time) : 0;
+    double runtime_seconds = runtime_ns / 1000000000.0;
+
+    stringStream json_buffer;
+    json_buffer.print("SIGNAL_HANDLER_STATS_JSON:{\"name\":\"%s\",\"signals_processed\":%ld,\"runtime_ns\":%ld,\"runtime_seconds\":%.3f,\"handler_time\":{\"sum\":%ld,\"avg\":%ld,\"min\":%ld,\"max\":%ld,\"median\":%ld,\"p90\":%ld,\"p95\":%ld,\"p99\":%ld,\"p99_9\":%ld},\"handler_time_histogram\":[",
+           name, signals, runtime_ns, runtime_seconds, time_sum, signals > 0 ? time_sum / signals : 0, time_min, time_max, time_median, time_p90, time_p95, time_p99, time_p999);
+
+    // Generate structured time histogram
+    bool first_time = true;
+    for (int i = 0; i < HISTOGRAM_BUCKETS + 2; i++) {
+      long count = Atomic::load(&_handler_time_histogram[i]);
+      if (count > 0) {  // Only include non-zero buckets
+        if (!first_time) json_buffer.print(",");
+        first_time = false;
+
+        if (i == 0) {
+          json_buffer.print("{\"from\":0,\"to\":1,\"count\":%ld,\"range\":\"underflow\"}", count);
+        } else if (i >= HISTOGRAM_BUCKETS + 1) {
+          json_buffer.print("{\"from\":%ld,\"to\":null,\"count\":%ld,\"range\":\"overflow\"}", MAX_HANDLER_TIME_NS, count);
+        } else {
+          // Convert bucket back to time range
+          double log_max = log10((double)(MAX_HANDLER_TIME_NS + 1));
+          double log_start = ((double)(i - 1)) * log_max / HISTOGRAM_BUCKETS;
+          double log_end = ((double)(i)) * log_max / HISTOGRAM_BUCKETS;
+          long time_start = (long)(pow(10.0, log_start)) - 1;
+          long time_end = (long)(pow(10.0, log_end)) - 1;
+          if (time_start < 0) time_start = 0;
+          if (time_end < 0) time_end = 0;
+          json_buffer.print("{\"from\":%ld,\"to\":%ld,\"count\":%ld}", time_start, time_end, count);
+        }
+      }
+    }
+
+    json_buffer.print("]}\n");
+    printf("%s", json_buffer.freeze());
+    fflush(stdout);
+  }
+};
+
 DrainStats out_of_thread_drain_stats;
 DrainStats safepoint_drain_stats;
 DrainStats safepoint_drain_stats_w_locking;
 DrainStats drain_stats;
+
+// Signal handler statistics instance
+SignalHandlerStats signal_handler_stats;
+
+// Internal function to print signal handler stats periodically
+static void print_signal_handler_stats_if_needed() {
+  if (signal_handler_stats.should_print()) {
+    signal_handler_stats.print("signal_handler");
+  }
+}
 
 static void drain_enqueued_cpu_time_requests(const JfrTicks& now, JfrThreadLocal* tl, JavaThread* jt, Thread* current, bool lock) {
   assert(tl != nullptr, "invariant");
@@ -1132,6 +1322,7 @@ static void drain_enqueued_cpu_time_requests(const JfrTicks& now, JfrThreadLocal
         safepoint_drain_stats.print("safepoint");
         safepoint_drain_stats_w_locking.print("safepoint with locks");
         out_of_thread_drain_stats.print("out of thread");
+        signal_handler_stats.print("signal handler duration");
 
         // Restore stdout and close file
         stdout = original_stdout;
@@ -1142,6 +1333,7 @@ static void drain_enqueued_cpu_time_requests(const JfrTicks& now, JfrThreadLocal
         safepoint_drain_stats.print("safepoint");
         safepoint_drain_stats_w_locking.print("safepoint with locks");
         out_of_thread_drain_stats.print("out of thread");
+        signal_handler_stats.print("signal handler duration");
       }
     } else {
       // Default behavior - print to stdout
@@ -1149,6 +1341,7 @@ static void drain_enqueued_cpu_time_requests(const JfrTicks& now, JfrThreadLocal
       safepoint_drain_stats.print("safepoint");
       safepoint_drain_stats_w_locking.print("safepoint with locks");
       out_of_thread_drain_stats.print("out of thread");
+      signal_handler_stats.print("signal handler duration");
     }
   }
 #endif
@@ -1246,5 +1439,12 @@ void JfrThreadSampling::process_sample_request(JavaThread* jt) {
     }
   }
   drain_all_enqueued_requests(now, tl, jt, jt);
+}
+
+// Signal handler statistics public methods
+void JfrThreadSampling::record_signal_handler_duration(long duration_ns) {
+  signal_handler_stats.update(duration_ns);
+  // Call the internal print function
+  print_signal_handler_stats_if_needed();
 }
 

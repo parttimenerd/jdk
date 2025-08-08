@@ -144,6 +144,21 @@ class VMThread: public NamedThread {
 
   // Pointer to single-instance of VM thread
   static VMThread*     _vm_thread;
+
+
+   volatile s8 _current_vm_ops = -1;
+
+  public:
+   void set_vm_ops(u8 ops) {
+    Atomic::release_store(&_current_vm_ops, (s8)ops);
+  }
+  // -1 for no currently running ops
+   s8 get_vm_ops() {
+    return Atomic::load_acquire(&_current_vm_ops);
+  }
+   void clear_vm_ops() {
+    set_vm_ops(-1);
+  }
 };
 
 #endif // SHARE_RUNTIME_VMTHREAD_HPP

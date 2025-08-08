@@ -37,6 +37,7 @@
 #include "memory/resourceArea.hpp"
 #include "runtime/atomic.hpp"
 #include "runtime/javaThread.hpp"
+#include "runtime/os.hpp"
 #include "runtime/osThread.hpp"
 #include "runtime/safepointMechanism.inline.hpp"
 #include "runtime/threadSMR.hpp"
@@ -434,15 +435,102 @@ void JfrCPUTimeThreadSampling::send_event(const JfrTicks &start_time, traceid si
   }
 }
 
+struct LostSampleReasons {
+  volatile long could_not_acquire_lock = 0;
+  volatile long invalid_state;
+  volatile long state_thread_uninitialized = 0;
+  volatile long state_thread_new = 0;
+  volatile long state_thread_new_trans = 0;
+  volatile long state_thread_in_native_trans = 0;
+  volatile long state_thread_in_vm = 0;
+  volatile long state_thread_in_vm_trans = 0;
+  volatile long state_thread_in_java_trans = 0;
+  volatile long state_thread_blocked = 0;
+  volatile long state_thread_blocked_trans = 0;
+  volatile long enqueue_failed = 0;
+  volatile long stw_gc = 0;
+
+  volatile long vm_ops[10000] = {0};
+  volatile long no_vm_ops = 0;
+  volatile long in_jfr_safepoint = 0;
+};
+
+LostSampleReasons lost_sample_reasons;
+
+// Static variables for throttling send_lost_event to once per second
+static volatile jlong last_lost_event_time = 0;
+static volatile int lost_event_lock = 0;
+static const jlong LOST_EVENT_INTERVAL_NS = 1000000000LL; // 1 second in nanoseconds
+
 void JfrCPUTimeThreadSampling::send_lost_event(const JfrTicks &time, traceid tid, s4 lost_samples) {
   if (!EventCPUTimeSamplesLost::is_enabled()) {
     return;
   }
+
+  // Throttle to once per second and ensure only one thread can send
+  jlong current_time = os::javaTimeNanos();
+  jlong last_time = last_lost_event_time;
+
+  // Check if enough time has passed (1 second)
+  if (current_time - last_time < LOST_EVENT_INTERVAL_NS) {
+    return;
+  }
+
+  // Try to acquire the lock atomically using compare-and-swap
+  if (Atomic::cmpxchg(&lost_event_lock, 0, 1) != 0) {
+    // Another thread is already sending the event
+    return;
+  }
+
+  // Double-check the time after acquiring the lock
+  if (current_time - last_lost_event_time < LOST_EVENT_INTERVAL_NS) {
+    // Release lock and return
+    Atomic::store(&lost_event_lock, 0);
+    return;
+  }
+
+  // Update the last event time
+  last_lost_event_time = current_time;
+
+  // Build machine-readable lost sample stats in a single line using fixed buffer and snprintf
+  char buffer[81920];  // Large buffer to handle all possible VM operations
+  int pos = 0;
+
+  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "LOST_SAMPLE_STATS: ");
+  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "could_not_acquire_lock=%ld ", lost_sample_reasons.could_not_acquire_lock);
+  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "invalid_state=%ld ", lost_sample_reasons.invalid_state);
+  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "state_thread_uninitialized=%ld ", lost_sample_reasons.state_thread_uninitialized);
+  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "state_thread_new=%ld ", lost_sample_reasons.state_thread_new);
+  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "state_thread_new_trans=%ld ", lost_sample_reasons.state_thread_new_trans);
+  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "state_thread_in_native_trans=%ld ", lost_sample_reasons.state_thread_in_native_trans);
+  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "state_thread_in_vm=%ld ", lost_sample_reasons.state_thread_in_vm);
+  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "state_thread_in_vm_trans=%ld ", lost_sample_reasons.state_thread_in_vm_trans);
+  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "state_thread_in_java_trans=%ld ", lost_sample_reasons.state_thread_in_java_trans);
+  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "state_thread_blocked=%ld ", lost_sample_reasons.state_thread_blocked);
+  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "state_thread_blocked_trans=%ld ", lost_sample_reasons.state_thread_blocked_trans);
+  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "enqueue_failed=%ld ", lost_sample_reasons.enqueue_failed);
+  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "stw_gc=%ld ", lost_sample_reasons.stw_gc);
+  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "no_vm_ops=%ld ", lost_sample_reasons.no_vm_ops);
+  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "in_jfr_safepoint=%ld", lost_sample_reasons.in_jfr_safepoint);
+
+  // Add VM operations to the same line
+  for (int i = 0; i < 10000 && pos < (int)(sizeof(buffer) - 100); i++) {
+    if (lost_sample_reasons.vm_ops[i] > 0) {
+      pos += snprintf(buffer + pos, sizeof(buffer) - pos, " vm_op_%s=%ld", VM_Operation::name(i), lost_sample_reasons.vm_ops[i]);
+    }
+  }
+
+  // Print the complete single line
+  printf("%s\n", buffer);
+
   EventCPUTimeSamplesLost event(UNTIMED);
   event.set_starttime(time);
   event.set_lostSamples(lost_samples);
   event.set_eventThread(tid);
   event.commit();
+
+  // Release the lock
+  Atomic::store(&lost_event_lock, 0);
 }
 
 void JfrCPUSamplerThread::post_run() {
@@ -554,11 +642,22 @@ void JfrCPUTimeThreadSampling::handle_timer_signal(siginfo_t* info, void* contex
   }
   assert(_sampler != nullptr, "invariant");
 
+  // Record signal handler start time for duration measurement
+  long signal_start_time = os::javaTimeNanos();
+
   if (!_sampler->increment_signal_handler_count()) {
+    // Record duration even for early exits
+    long signal_duration = os::javaTimeNanos() - signal_start_time;
+    JfrThreadSampling::record_signal_handler_duration(signal_duration);
     return;
   }
+
   _sampler->handle_timer_signal(info, context);
   _sampler->decrement_signal_handler_count();
+
+  // Record signal handler duration
+  long signal_duration = os::javaTimeNanos() - signal_start_time;
+  JfrThreadSampling::record_signal_handler_duration(signal_duration);
 }
 
 void JfrCPUSamplerThread::sample_thread(JfrSampleRequest& request, void* ucontext, JavaThread* jt, JfrThreadLocal* tl, JfrTicks& now) {
@@ -583,12 +682,59 @@ void JfrCPUSamplerThread::handle_timer_signal(siginfo_t* info, void* context) {
   }
   JfrThreadLocal* tl = jt->jfr_thread_local();
   JfrCPUTimeTraceQueue& queue = tl->cpu_time_jfr_queue();
+  if (Universe::heap()->is_stw_gc_active()) {
+    queue.increment_lost_samples();
+    Atomic::inc(&lost_sample_reasons.stw_gc);
+    return;
+  }
   if (!check_state(jt)) {
     queue.increment_lost_samples();
+    Atomic::inc(&lost_sample_reasons.invalid_state);
+    switch (jt->thread_state()) {
+      case _thread_uninitialized:
+        Atomic::inc(&lost_sample_reasons.state_thread_uninitialized);
+        break;
+      case _thread_new:
+        Atomic::inc(&lost_sample_reasons.state_thread_new);
+        break;
+      case _thread_new_trans:
+        Atomic::inc(&lost_sample_reasons.state_thread_new);
+        break;
+      case _thread_in_native_trans:
+        Atomic::inc(&lost_sample_reasons.state_thread_in_native_trans);
+        break;
+        case _thread_in_vm:
+        Atomic::inc(&lost_sample_reasons.state_thread_in_vm);
+        break;
+      case _thread_in_vm_trans:
+        Atomic::inc(&lost_sample_reasons.state_thread_in_vm_trans);
+        break;
+        case _thread_in_Java_trans:
+        Atomic::inc(&lost_sample_reasons.state_thread_in_java_trans);
+        break;
+      case _thread_blocked:
+        Atomic::inc(&lost_sample_reasons.state_thread_blocked);
+        break;
+      case _thread_blocked_trans:
+        Atomic::inc(&lost_sample_reasons.state_thread_blocked_trans);
+        break;
+      default:
+        break;
+    }
+    if (Atomic::load(&tl->_currently_in_jfr_safepoint) > 0) {
+      Atomic::inc(&lost_sample_reasons.in_jfr_safepoint);
+    }
+    s8 ops = VMThread::vm_thread()->get_vm_ops();
+    if (ops != -1) {
+      Atomic::inc(&lost_sample_reasons.vm_ops[ops]);
+    } else {
+      Atomic::inc(&lost_sample_reasons.no_vm_ops);
+    }
     return;
   }
   if (!tl->try_acquire_cpu_time_jfr_enqueue_lock()) {
     queue.increment_lost_samples();
+    Atomic::inc(&lost_sample_reasons.could_not_acquire_lock);
     return;
   }
 
@@ -606,6 +752,7 @@ void JfrCPUSamplerThread::handle_timer_signal(siginfo_t* info, void* context) {
     }
   } else {
     queue.increment_lost_samples();
+    Atomic::inc(&lost_sample_reasons.enqueue_failed);
   }
 
   if (jt->thread_state() == _thread_in_native) {

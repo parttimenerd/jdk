@@ -1,53 +1,87 @@
-# JFR Queue Size Benchmarking Suite
+# JFR Benchmarking & Renaissance Visualization Suite
 
-This folder contains tools for comprehensive benchmarking and analysis of JFR (Java Flight Recorder) queue sizes and their impact on sampling performance.
+A comprehensive suite for JFR (Java Flight Recorder) queue size benchmarking and Renaissance benchmark visualization with advanced web interface and analysis capabilities.
 
-## Overview
+## 🚀 Quick Start
 
-The JFR sampling system uses internal queues to buffer sampling events. The queue size directly affects sampling performance, loss rates, and overhead. This benchmarking suite systematically tests different queue sizes, sampling intervals, native durations, and stack depths to understand their interactions and measure sampling loss rates.
-
-## Files
-
-### Core Benchmarking
-- **`benchmark_queue_sizes.py`** - Main benchmarking script that runs systematic tests across different configurations
-- **`analyze_combined_results.py`** - Analysis script that reads CSV results and generates combined visualization graphs
-
-### Analysis Scripts
-- **`analyze_benchmark_results.py`** - Individual result analysis
-- **`analyze_drain_categories.py`** - Queue drain category analysis
-- **`analyze_drain_stats_unified.py`** - Unified drain statistics analysis
-- **`visualize_histograms.py`** - Histogram visualization tools
-- **`visualize_structured_histograms.py`** - Structured histogram analysis
-
-### Data
-- **`benchmark_results/`** - Directory containing all benchmark data
-  - `data/` - CSV and JSON result files
-  - `logs/` - Raw JFR log files from individual tests
-  - `plots/` - Generated visualization plots
-
-## Quick Start
-
-### 1. Run Runtime Estimates
+### Web Interface (Recommended) - Auto-Setup Enabled! ✨
 ```bash
-python3 benchmark_queue_sizes.py --estimate
+python3 web_frontend.py
+# 🔧 Auto-creates virtual environment
+# 📦 Auto-installs Flask, pandas, matplotlib, seaborn, numpy
+# 🌐 Opens web interface at http://localhost:8080
 ```
 
-### 2. Run Minimal Test Suite (Quick Validation)
+**No manual dependency installation needed!** The web frontend automatically:
+- Creates a virtual environment (`.venv_web_frontend`)
+- Installs all required packages
+- Activates the environment and starts the server
+
+Advanced options:
 ```bash
-python3 benchmark_queue_sizes.py --minimal
+python3 web_frontend.py --port 9000 --debug          # Custom port and debug mode
+python3 web_frontend.py --no-auto-setup              # Skip auto-setup (manual mode)
 ```
 
-### 3. Run Full Native Benchmark
+### Command Line Visualization
 ```bash
-python3 benchmark_queue_sizes.py --run-native
+python3 renaissance_visualizer.py --yaxis-mode p --plot-type scatter
+# Note: Use web_frontend.py for the modern web interface
 ```
 
-### 4. Run Renaissance Benchmark
+### Benchmarking
 ```bash
-python3 benchmark_queue_sizes.py --run-renaissance
+python3 benchmark_queue_sizes.py --minimal     # Quick test
+python3 benchmark_queue_sizes.py --run-native  # Full native benchmark
 ```
 
-### 5. Generate Visualizations
+## ✨ Key Features
+
+- **🌐 Advanced Web Interface**: Real-time visualization with dual Y-axes, 13+ data modes, professional styling
+- **📊 Multiple Visualization Types**: Scatter, line, bar charts with statistical analysis
+- **🔬 Comprehensive Benchmarking**: Systematic JFR queue size testing across configurations
+- **📦 Standalone Packages**: Self-contained analysis scripts with embedded data
+- **📈 High-DPI Exports**: Publication-quality outputs (150-1200 DPI)
+- **🎨 Professional Styling**: 10+ color palettes, responsive design, interactive features
+
+## 📁 Core Files
+
+| File | Purpose |
+|------|---------|
+| `web_frontend.py` | **Modern web interface** (1,500+ lines) with advanced features |
+| `renaissance_visualizer.py` | Legacy visualization engine (used as backend by web_frontend.py) |
+| `benchmark_queue_sizes.py` | Benchmarking execution |
+| `static/js/app.js` | Dynamic UI framework (2,000+ lines) |
+| `static/css/framework.css` | Professional styling system |
+
+## 📊 Visualization Modes
+
+**Data Types**: Percentiles, drainage stats, loss analysis, signal handlers, thread metrics, GC analysis, method profiling
+
+**Features**: Dual Y-axis, trend analysis, statistical overlays, optimal point detection, correlation analysis
+
+## 🔧 Requirements
+
+- Python 3.7+ with pandas, matplotlib, seaborn, numpy, flask
+- Auto-setup creates virtual environment and installs dependencies
+- Modern web browser for full web interface experience
+
+## 📚 Documentation
+
+- **📖 Complete Guide**: `README_COMPREHENSIVE.md` - Full documentation
+- **🎯 Quick Reference**: This file for essential information
+- **🔧 Troubleshooting**: See comprehensive guide for detailed help
+
+## 🎯 Use Cases
+
+- **Research**: Performance analysis and regression testing
+- **Production**: Configuration optimization and monitoring
+- **Education**: Performance engineering and JFR training
+- **Collaboration**: Shareable analysis configurations and packages
+
+---
+
+**For complete documentation, examples, and advanced features, see `README_COMPREHENSIVE.md`**
 ```bash
 python3 benchmark_queue_sizes.py --visualize
 ```

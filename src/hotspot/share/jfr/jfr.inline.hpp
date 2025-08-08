@@ -38,7 +38,10 @@ inline bool Jfr::has_sample_request(JavaThread* jt) {
 
 inline void Jfr::check_and_process_sample_request(JavaThread* jt) {
   if (has_sample_request(jt)) {
+    Atomic::store(&jt->jfr_thread_local()->_currently_in_jfr_safepoint, true);
     JfrThreadSampling::process_sample_request(jt);
+        Atomic::store(&jt->jfr_thread_local()->_currently_in_jfr_safepoint, false);
+
   }
 }
 
