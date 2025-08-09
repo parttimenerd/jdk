@@ -1080,7 +1080,7 @@ struct SignalHandlerStats {
   volatile long _handler_time_histogram[HISTOGRAM_BUCKETS + 2];
 
   SignalHandlerStats() : _signals_processed(0), _handler_time_sum(0), _handler_time_max(0), _handler_time_min(LONG_MAX),
-                        _last_print_time(0), _start_time(0) {
+                        _last_print_time(os::javaTimeNanos()), _start_time(0) {
     for (int i = 0; i < HISTOGRAM_BUCKETS + 2; i++) {
       _handler_time_histogram[i] = 0;
     }
@@ -1135,8 +1135,8 @@ struct SignalHandlerStats {
     long current_time = os::javaTimeNanos();
     long last_print = Atomic::load(&_last_print_time);
 
-    // Print every 1 second (1,000,000,000 ns)
-    if (current_time - last_print >= 10000000000L) {
+    // Print every 30 seconds (30,000,000,000 ns)
+    if (current_time - last_print >= 30000000000L) {
       // Try to update the last print time atomically
       if (Atomic::cmpxchg(&_last_print_time, last_print, current_time) == last_print) {
         return true; // We successfully updated the time, so we should print
@@ -1323,6 +1323,7 @@ static void drain_enqueued_cpu_time_requests(const JfrTicks& now, JfrThreadLocal
         safepoint_drain_stats_w_locking.print("safepoint with locks");
         out_of_thread_drain_stats.print("out of thread");
         signal_handler_stats.print("signal handler duration");
+        JfrCPUTimeThreadSampling::print_vm_ops_stats();
 
         // Restore stdout and close file
         stdout = original_stdout;
@@ -1334,6 +1335,7 @@ static void drain_enqueued_cpu_time_requests(const JfrTicks& now, JfrThreadLocal
         safepoint_drain_stats_w_locking.print("safepoint with locks");
         out_of_thread_drain_stats.print("out of thread");
         signal_handler_stats.print("signal handler duration");
+        JfrCPUTimeThreadSampling::print_vm_ops_stats();
       }
     } else {
       // Default behavior - print to stdout
@@ -1342,6 +1344,7 @@ static void drain_enqueued_cpu_time_requests(const JfrTicks& now, JfrThreadLocal
       safepoint_drain_stats_w_locking.print("safepoint with locks");
       out_of_thread_drain_stats.print("out of thread");
       signal_handler_stats.print("signal handler duration");
+      JfrCPUTimeThreadSampling::print_vm_ops_stats();
     }
   }
 #endif

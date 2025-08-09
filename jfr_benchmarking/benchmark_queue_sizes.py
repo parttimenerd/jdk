@@ -152,7 +152,7 @@ MINIMAL_STACK_DEPTHS = [100, 1200]  # Test both stack depths
 MINIMAL_TEST_DURATION = 30  # seconds
 
 # Renaissance specific
-RENAISSANCE_ITERATIONS = 10
+RENAISSANCE_ITERATIONS = 3
 MINIMAL_RENAISSANCE_ITERATIONS = 1  # Faster minimal testing
 
 # Output directories

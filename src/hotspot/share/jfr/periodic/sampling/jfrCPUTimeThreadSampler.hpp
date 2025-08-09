@@ -128,6 +128,7 @@ class JfrCPUTimeThreadSampling : public JfrCHeapObj {
   static void send_empty_event(const JfrTicks& start_time, traceid tid, Tickspan cpu_time_period);
   static void send_event(const JfrTicks& start_time, traceid sid, traceid tid, Tickspan cpu_time_period, bool biased);
   static void send_lost_event(const JfrTicks& time, traceid tid, s4 lost_samples);
+  static void print_vm_ops_stats();
 
   static void trigger_async_processing_of_cpu_time_jfr_requests();
 };

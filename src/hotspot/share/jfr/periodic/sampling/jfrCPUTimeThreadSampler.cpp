@@ -449,49 +449,32 @@ struct LostSampleReasons {
   volatile long enqueue_failed = 0;
   volatile long stw_gc = 0;
 
-  volatile long vm_ops[10000] = {0};
+  volatile long vm_ops[200] = {0};
   volatile long no_vm_ops = 0;
   volatile long in_jfr_safepoint = 0;
 };
 
 LostSampleReasons lost_sample_reasons;
 
+void JfrCPUTimeThreadSampling::print_vm_ops_stats() {
+  // Print VM operations statistics
+  printf("VM_OPS_STATS: ");
+  printf("no_vm_ops=%ld ", lost_sample_reasons.no_vm_ops);
+  printf("in_jfr_safepoint=%ld", lost_sample_reasons.in_jfr_safepoint);
+
+  // Add VM operations to the same line
+  for (int i = 0; i < 200; i++) {
+    if (lost_sample_reasons.vm_ops[i] > 0) {
+      printf(" vm_op_%s=%ld", VM_Operation::name(i), lost_sample_reasons.vm_ops[i]);
+    }
+  }
+  printf("\n");
+}
 
 void JfrCPUTimeThreadSampling::send_lost_event(const JfrTicks &time, traceid tid, s4 lost_samples) {
   if (!EventCPUTimeSamplesLost::is_enabled()) {
     return;
   }
-
-  // Build machine-readable lost sample stats in a single line using fixed buffer and snprintf
-  char buffer[81920];  // Large buffer to handle all possible VM operations
-  int pos = 0;
-
-  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "LOST_SAMPLE_STATS: ");
-  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "could_not_acquire_lock=%ld ", lost_sample_reasons.could_not_acquire_lock);
-  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "invalid_state=%ld ", lost_sample_reasons.invalid_state);
-  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "state_thread_uninitialized=%ld ", lost_sample_reasons.state_thread_uninitialized);
-  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "state_thread_new=%ld ", lost_sample_reasons.state_thread_new);
-  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "state_thread_new_trans=%ld ", lost_sample_reasons.state_thread_new_trans);
-  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "state_thread_in_native_trans=%ld ", lost_sample_reasons.state_thread_in_native_trans);
-  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "state_thread_in_vm=%ld ", lost_sample_reasons.state_thread_in_vm);
-  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "state_thread_in_vm_trans=%ld ", lost_sample_reasons.state_thread_in_vm_trans);
-  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "state_thread_in_java_trans=%ld ", lost_sample_reasons.state_thread_in_java_trans);
-  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "state_thread_blocked=%ld ", lost_sample_reasons.state_thread_blocked);
-  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "state_thread_blocked_trans=%ld ", lost_sample_reasons.state_thread_blocked_trans);
-  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "enqueue_failed=%ld ", lost_sample_reasons.enqueue_failed);
-  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "stw_gc=%ld ", lost_sample_reasons.stw_gc);
-  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "no_vm_ops=%ld ", lost_sample_reasons.no_vm_ops);
-  pos += snprintf(buffer + pos, sizeof(buffer) - pos, "in_jfr_safepoint=%ld", lost_sample_reasons.in_jfr_safepoint);
-
-  // Add VM operations to the same line
-  for (int i = 0; i < 10000 && pos < (int)(sizeof(buffer) - 100); i++) {
-    if (lost_sample_reasons.vm_ops[i] > 0) {
-      pos += snprintf(buffer + pos, sizeof(buffer) - pos, " vm_op_%s=%ld", VM_Operation::name(i), lost_sample_reasons.vm_ops[i]);
-    }
-  }
-
-  // Print the complete single line
-  printf("%s\n", buffer);
 
   EventCPUTimeSamplesLost event(UNTIMED);
   event.set_starttime(time);
