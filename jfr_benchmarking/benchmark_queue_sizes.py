@@ -140,7 +140,7 @@ def has_json_parsing_errors(log_path: Path, verbose: bool = False) -> bool:
 QUEUE_SIZES = [1, 2, 5, 10, 20, 50, 100, 200, 300, 400, 500, 750, 1000]
 # restart threads after every native call
 RESTART_THREADS_EVERY = 1
-SAMPLING_INTERVALS = ["1ms","10ms", "20ms"] #  ["1ms", "2ms", "5ms", "10ms", "20ms"]
+SAMPLING_INTERVALS = ["1ms", "10ms", "20ms"] #  ["1ms", "2ms", "5ms", "10ms", "20ms"]
 NATIVE_DURATIONS = [30] # 250] # [5, 250]  # seconds
 STACK_DEPTHS = [1200] #  [100, 1200]  # Different stack depths to test
 TEST_DURATION = 250  # seconds
