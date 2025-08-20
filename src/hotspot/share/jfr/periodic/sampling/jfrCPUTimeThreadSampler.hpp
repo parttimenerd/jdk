@@ -48,6 +48,7 @@ class JfrCPUTimeTraceQueue {
   // the default queue capacity, scaled if the sampling period is smaller than 10ms
   // when the thread is started
   static const u4 CPU_TIME_QUEUE_CAPACITY = 500;
+  static const u4 CPU_TIME_QUEUE_CAPACITY_MAX = 2000;
 
   JfrCPUTimeSampleRequest* _data;
   u4 _capacity;
@@ -55,6 +56,7 @@ class JfrCPUTimeTraceQueue {
   volatile u4 _head;
 
   volatile u4 _lost_samples;
+  volatile u4 _lost_samples_due_to_queue_full;
 
 public:
   JfrCPUTimeTraceQueue(u4 capacity);
@@ -81,8 +83,12 @@ public:
 
   void increment_lost_samples();
 
+  void increment_lost_samples_due_to_queue_full();
+
   // returns the previous lost samples count
   u4 get_and_reset_lost_samples();
+
+  u4 get_and_reset_lost_samples_due_to_queue_full();
 
   void resize(u4 capacity);
 
@@ -90,6 +96,7 @@ public:
 
   void clear();
 
+  void increase_size_if_needed();
 };
 
 

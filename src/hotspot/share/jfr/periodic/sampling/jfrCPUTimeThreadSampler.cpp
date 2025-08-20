@@ -48,6 +48,11 @@
 
 static const int64_t RECOMPUTE_INTERVAL_MS = 100;
 
+static volatile uint64_t max_combined_queue_size = 0;
+static volatile uint64_t combined_queue_size = 0;
+static volatile uint64_t queue_size_increase_count = 0;
+
+
 static bool is_excluded(JavaThread* jt) {
   return jt->is_hidden_from_external_view() ||
          jt->jfr_thread_local()->is_excluded() ||
@@ -69,8 +74,12 @@ static JavaThread* get_java_thread_if_valid() {
 }
 
 JfrCPUTimeTraceQueue::JfrCPUTimeTraceQueue(u4 capacity) :
-   _data(nullptr), _capacity(capacity), _head(0), _lost_samples(0) {
+   _data(nullptr), _capacity(capacity), _head(0), _lost_samples(0), _lost_samples_due_to_queue_full(0) {
   if (capacity != 0) {
+    Atomic::add(&combined_queue_size, capacity);
+    if (Atomic::load(&combined_queue_size) > Atomic::load(&max_combined_queue_size)) {
+      Atomic::store(&max_combined_queue_size, Atomic::load(&combined_queue_size));
+    }
     _data = JfrCHeapObj::new_array<JfrCPUTimeSampleRequest>(capacity);
   }
 }
@@ -78,6 +87,7 @@ JfrCPUTimeTraceQueue::JfrCPUTimeTraceQueue(u4 capacity) :
 JfrCPUTimeTraceQueue::~JfrCPUTimeTraceQueue() {
   if (_data != nullptr) {
     assert(_capacity != 0, "invariant");
+    Atomic::sub(&combined_queue_size, _capacity);
     JfrCHeapObj::free(_data, _capacity * sizeof(JfrCPUTimeSampleRequest));
   }
 }
@@ -119,10 +129,15 @@ void JfrCPUTimeTraceQueue::set_capacity(u4 capacity) {
   _head = 0;
   if (_data != nullptr) {
     assert(_capacity != 0, "invariant");
+    Atomic::sub(&combined_queue_size, _capacity);
     JfrCHeapObj::free(_data, _capacity * sizeof(JfrCPUTimeSampleRequest));
   }
   if (capacity != 0) {
+    Atomic::add(&combined_queue_size, capacity);
     _data = JfrCHeapObj::new_array<JfrCPUTimeSampleRequest>(capacity);
+    if (Atomic::load(&combined_queue_size) > Atomic::load(&max_combined_queue_size)) {
+      Atomic::store(&max_combined_queue_size, Atomic::load(&combined_queue_size));
+    }
   } else {
     _data = nullptr;
   }
@@ -142,8 +157,16 @@ void JfrCPUTimeTraceQueue::increment_lost_samples() {
   Atomic::inc(&_lost_samples);
 }
 
+void JfrCPUTimeTraceQueue::increment_lost_samples_due_to_queue_full() {
+  Atomic::inc(&_lost_samples_due_to_queue_full);
+}
+
 u4 JfrCPUTimeTraceQueue::get_and_reset_lost_samples() {
   return Atomic::xchg(&_lost_samples, (u4)0);
+}
+
+u4 JfrCPUTimeTraceQueue::get_and_reset_lost_samples_due_to_queue_full() {
+  return Atomic::xchg(&_lost_samples_due_to_queue_full, (u4)0);
 }
 
 void JfrCPUTimeTraceQueue::resize(u4 capacity) {
@@ -176,6 +199,43 @@ void JfrCPUTimeTraceQueue::resize_for_period(u4 period_millis) {
 
 void JfrCPUTimeTraceQueue::clear() {
   Atomic::release_store(&_head, (u4)0);
+}
+
+static volatile u8 lost_samples_due_sum = 0;
+
+void JfrCPUTimeTraceQueue::increase_size_if_needed() {
+   // if environment variable "DYNAMIC_QUEUE_SIZE" is set to true,
+  // then check that the enqueue induced loss rate is lower 1%
+  // if not double queue size
+  // if loss rate is not smaller than 50% quadruple
+  // but only if queue is smaller than max size
+  u4 lost_samples_due_to_queue_full = get_and_reset_lost_samples_due_to_queue_full();
+  if (lost_samples_due_to_queue_full == 0) {
+    return;
+  }
+  Atomic::add(&lost_samples_due_sum, lost_samples_due_to_queue_full);
+  auto val = getenv("DYNAMIC_QUEUE_SIZE");
+  if (val != nullptr && strcmp(val, "true") == 0) {
+    if (_capacity < CPU_TIME_QUEUE_CAPACITY_MAX) {
+      float ratio = (float)lost_samples_due_to_queue_full / (float)_capacity;
+      int factor = 1;
+      if (ratio > 8) { // idea is to quickly scale the queue in the worst case
+        factor = ratio;
+      } else if (ratio > 2) {
+        factor = 8;
+      } else if (ratio > 0.5) {
+        factor = 4;
+      } else if (ratio > 0.01) {
+        factor = 2;
+      }
+      if (factor > 1) {
+        u4 new_size = _capacity * factor > CPU_TIME_QUEUE_CAPACITY_MAX ? CPU_TIME_QUEUE_CAPACITY_MAX : _capacity * factor;
+       // printf("Increasing queue size to %u (factor: %d, ratio: %.2f, lost: %u) for thread %lu (sum %lu)\n", new_size, factor, ratio, lost_samples_due_to_queue_full, (unsigned long)this % 100000, Atomic::load(&lost_samples_due_sum));
+        resize(new_size);
+        Atomic::inc(&queue_size_increase_count);
+      }
+    }
+  }
 }
 
 // A throttle is either a rate or a fixed period
@@ -471,6 +531,10 @@ void JfrCPUTimeThreadSampling::print_vm_ops_stats() {
   printf("\n");
 }
 
+static volatile uint64_t max_logged_queue_size = 0;
+static volatile uint64_t logged_queue_increase_count = 0;
+static volatile int64_t last_queue_stats_print_time = 0;
+
 void JfrCPUTimeThreadSampling::send_lost_event(const JfrTicks &time, traceid tid, s4 lost_samples) {
   if (!EventCPUTimeSamplesLost::is_enabled()) {
     return;
@@ -481,6 +545,30 @@ void JfrCPUTimeThreadSampling::send_lost_event(const JfrTicks &time, traceid tid
   event.set_lostSamples(lost_samples);
   event.set_eventThread(tid);
   event.commit();
+
+  // Throttle printing to at most once per second
+  int64_t current_time = os::javaTimeNanos();
+  bool should_print = false;
+
+  // Check if we need to print queue size stats (throttled to once per second)
+  if ((current_time - Atomic::load(&last_queue_stats_print_time)) > 1000000000LL) { // 1 second in nanoseconds
+    if (Atomic::cmpxchg(&last_queue_stats_print_time, Atomic::load(&last_queue_stats_print_time), current_time) == Atomic::load(&last_queue_stats_print_time)) {
+      should_print = true;
+    } else {
+      return;
+    }
+  }
+  // now the queue is empty, let's record first the max queue size
+  if (Atomic::load(&max_combined_queue_size) > Atomic::load(&max_logged_queue_size)) {
+    Atomic::store(&max_logged_queue_size, Atomic::load(&max_combined_queue_size));
+    printf("MAX_QUEUE_SIZE_SUM: %lu\n", Atomic::load(&max_logged_queue_size));
+        printf("QUEUE_SIZE_INCREASE_COUNT: %lu\n", Atomic::load(&logged_queue_increase_count));
+
+  }
+  if (Atomic::load(&queue_size_increase_count) > Atomic::load(&logged_queue_increase_count)) {
+    Atomic::store(&logged_queue_increase_count, Atomic::load(&queue_size_increase_count));
+    printf("QUEUE_SIZE_INCREASE_COUNT: %lu\n", Atomic::load(&logged_queue_increase_count));
+  }
 }
 
 void JfrCPUSamplerThread::post_run() {
@@ -703,6 +791,7 @@ void JfrCPUSamplerThread::handle_timer_signal(siginfo_t* info, void* context) {
   } else {
     queue.increment_lost_samples();
     Atomic::inc(&lost_sample_reasons.enqueue_failed);
+    queue.increment_lost_samples_due_to_queue_full();
   }
 
   if (jt->thread_state() == _thread_in_native) {

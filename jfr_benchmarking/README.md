@@ -33,12 +33,16 @@ python3 renaissance_visualizer.py --yaxis-mode p --plot-type scatter
 ```bash
 python3 benchmark_queue_sizes.py --minimal     # Quick test
 python3 benchmark_queue_sizes.py --run-native  # Full native benchmark
+python3 benchmark_queue_sizes.py --dynamic-queue-size --minimal  # Test with dynamic queue sizing
+python3 benchmark_queue_sizes.py --dynamic-queue-size --all      # Full suite with dynamic queues
 ```
 
 ## ✨ Key Features
 
 - **🌐 Advanced Web Interface**: Real-time visualization with dual Y-axes, 13+ data modes, professional styling
 - **📊 Multiple Visualization Types**: Scatter, line, bar charts with statistical analysis
+- **🔄 Dynamic Queue Sizing**: Support for `--dynamic-queue-size` flag with adaptive JFR queue capacity
+- **📈 Triple Y-Axis Plotting**: Simultaneous visualization of loss percentage, queue memory consumption, and queue size increases
 - **🔬 Comprehensive Benchmarking**: Systematic JFR queue size testing across configurations
 - **📦 Standalone Packages**: Self-contained analysis scripts with embedded data
 - **📈 High-DPI Exports**: Publication-quality outputs (150-1200 DPI)
@@ -50,15 +54,16 @@ python3 benchmark_queue_sizes.py --run-native  # Full native benchmark
 |------|---------|
 | `web_frontend.py` | **Modern web interface** (1,500+ lines) with advanced features |
 | `renaissance_visualizer.py` | Legacy visualization engine (used as backend by web_frontend.py) |
-| `benchmark_queue_sizes.py` | Benchmarking execution |
+| `benchmark_queue_sizes.py` | Benchmarking execution with dynamic queue sizing support |
+| `parse_logs_directly.py` | Enhanced log parsing with `QUEUE_SIZE_INCREASE_COUNT` extraction |
 | `static/js/app.js` | Dynamic UI framework (2,000+ lines) |
 | `static/css/framework.css` | Professional styling system |
 
 ## 📊 Visualization Modes
 
-**Data Types**: Percentiles, drainage stats, loss analysis, signal handlers, thread metrics, GC analysis, method profiling
+**Data Types**: Percentiles, drainage stats, loss analysis, signal handlers, thread metrics, GC analysis, method profiling, queue size increases
 
-**Features**: Dual Y-axis, trend analysis, statistical overlays, optimal point detection, correlation analysis
+**Features**: Triple Y-axis plotting, dual Y-axis, trend analysis, statistical overlays, optimal point detection, correlation analysis, dynamic queue metrics
 
 ## 🔧 Requirements
 

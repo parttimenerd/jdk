@@ -23,7 +23,7 @@ public class DynamicStackCPUStressTest {
     /**
      * Execute the stress test by calling the first class in the chain for the given thread
      */
-    public void executeTest(int stackDepth, int threadId, int totalDuration, int nativeDuration) throws Exception {
+    public void executeTest(int stackDepth, int threadId, int totalDuration, int nativeDuration, int restartFrequency) throws Exception {
         // Call the first class in the chain for this thread
         String firstClassName = "DynamicStressClass" + threadId + "_1";
 
@@ -41,6 +41,7 @@ public class DynamicStackCPUStressTest {
             } else {
                 // Chunked execution: call native method repeatedly with nativeDuration chunks
                 int callCount = 0;
+                int restartCount = 0;
                 while (System.currentTimeMillis() < endTime) {
                     long remainingTime = (endTime - System.currentTimeMillis()) / 1000L;
                     int currentChunkDuration = (int) Math.min(nativeDuration, remainingTime);
@@ -52,10 +53,28 @@ public class DynamicStackCPUStressTest {
                     callCount++;
                     callMethod.invoke(null, this, threadId, currentChunkDuration);
 
-                    // Small pause between chunks to ensure we return to Java
-                    Thread.sleep(1);
+                    // Check if we need to restart this thread (simulate thread restart)
+                    if (restartFrequency > 0 && (callCount % restartFrequency) == 0) {
+                        restartCount++;
+                        System.out.println("Thread " + threadId + ": Restarting after " + callCount + " calls (restart #" + restartCount + ")");
+
+                        // Simulate thread restart by sleeping briefly and creating a new thread context
+                        Thread.sleep(10); // Slightly longer pause to simulate restart overhead
+
+                        // Force class reloading to simulate a fresh thread context
+                        firstClass = Class.forName(firstClassName);
+                        callMethod = firstClass.getMethod("call",
+                            DynamicStackCPUStressTest.class, int.class, int.class);
+                    } else {
+                        // Small pause between chunks to ensure we return to Java
+                        Thread.sleep(1);
+                    }
                 }
-                System.out.println("Thread " + threadId + ": Completed " + callCount + " native chunks");
+                if (restartFrequency > 0) {
+                    System.out.println("Thread " + threadId + ": Completed " + callCount + " native chunks with " + restartCount + " restarts");
+                } else {
+                    System.out.println("Thread " + threadId + ": Completed " + callCount + " native chunks");
+                }
             }
         } catch (ClassNotFoundException e) {
             throw new RuntimeException("Class " + firstClassName + " not found. " +
@@ -65,7 +84,8 @@ public class DynamicStackCPUStressTest {
 
     public static void main(String[] args) throws Exception {
         if (args.length < 1) {
-            System.err.println("Usage: DynamicStackCPUStressTest <stackDepth> [duration] [threads] [nativeDuration]");
+            System.err.println("Usage: DynamicStackCPUStressTest <stackDepth> [duration] [threads] [nativeDuration] [restartFrequency]");
+            System.err.println("  restartFrequency: restart threads every N native calls (0 = no restarts, default: 0)");
             return;
         }
 
@@ -73,6 +93,7 @@ public class DynamicStackCPUStressTest {
         int duration = args.length > 1 ? Integer.parseInt(args[1]) : 10;
         int threads = args.length > 2 ? Integer.parseInt(args[2]) : Runtime.getRuntime().availableProcessors();
         int nativeDuration = args.length > 3 ? Integer.parseInt(args[3]) : duration; // Default to entire duration
+        int restartFrequency = args.length > 4 ? Integer.parseInt(args[4]) : 0; // Default: no restarts
 
         if (stackDepth < 1) {
             System.err.println("Stack depth must be at least 1");
@@ -81,6 +102,11 @@ public class DynamicStackCPUStressTest {
 
         if (nativeDuration > duration) {
             System.err.println("Native duration cannot be longer than total duration");
+            return;
+        }
+
+        if (restartFrequency < 0) {
+            System.err.println("Restart frequency must be 0 or positive");
             return;
         }
 
@@ -93,6 +119,11 @@ public class DynamicStackCPUStressTest {
             System.out.println("  Native call duration: " + nativeDuration + " seconds (chunked execution)");
         } else {
             System.out.println("  Native call duration: entire test duration");
+        }
+        if (restartFrequency > 0) {
+            System.out.println("  Thread restart frequency: every " + restartFrequency + " native calls");
+        } else {
+            System.out.println("  Thread restart frequency: disabled");
         }
 
         DynamicStackCPUStressTest test = new DynamicStackCPUStressTest();
@@ -112,7 +143,7 @@ public class DynamicStackCPUStressTest {
                         startLatch.await();
 
                         // Execute the test with pre-generated classes
-                        test.executeTest(stackDepth, threadId, duration, nativeDuration);
+                        test.executeTest(stackDepth, threadId, duration, nativeDuration, restartFrequency);
 
                     } catch (Exception e) {
                         System.err.println("Thread " + threadId + " failed: " + e.getMessage());

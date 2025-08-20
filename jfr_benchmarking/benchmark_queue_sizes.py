@@ -49,7 +49,7 @@ except ImportError as e:
 
 # Import direct log parsing functions
 try:
-    from parse_logs_directly import parse_all_logs, create_percentile_dataframe
+    from parse_logs_directly import parse_all_logs, create_percentile_dataframe, parse_drain_stats_from_log
     DIRECT_PARSING_AVAILABLE = True
 except ImportError as e:
     print(f"⚠️ Direct log parsing not available: {e}")
@@ -137,18 +137,20 @@ def has_json_parsing_errors(log_path: Path, verbose: bool = False) -> bool:
         return True  # Assume there are errors if we can't check
 
 # Configuration
-QUEUE_SIZES = [1, 2, 5, 10, 20, 50, 100, 200, 300, 400, 500, 750, 1000, 2000]
-SAMPLING_INTERVALS = ["1ms", "2ms", "5ms", "10ms", "20ms"]
-NATIVE_DURATIONS = [5, 250]  # seconds
-STACK_DEPTHS = [100, 1200]  # Different stack depths to test
+QUEUE_SIZES = [1, 2, 5, 10, 20, 50, 100, 200, 300, 400, 500, 750, 1000]
+# restart threads after every native call
+RESTART_THREADS_EVERY = 1
+SAMPLING_INTERVALS = ["1ms","10ms", "20ms"] #  ["1ms", "2ms", "5ms", "10ms", "20ms"]
+NATIVE_DURATIONS = [30] # 250] # [5, 250]  # seconds
+STACK_DEPTHS = [1200] #  [100, 1200]  # Different stack depths to test
 TEST_DURATION = 250  # seconds
 THREADS = os.cpu_count() or 4  # Use number of CPUs, fallback to 4
 
 # Minimal configuration for quick testing
 MINIMAL_QUEUE_SIZES = [100, 500]
 MINIMAL_SAMPLING_INTERVALS = ["1ms", "10ms"]
-MINIMAL_NATIVE_DURATIONS = [10, 25]  # seconds
-MINIMAL_STACK_DEPTHS = [100, 1200]  # Test both stack depths
+MINIMAL_NATIVE_DURATIONS = [10]  #[10, 25]  # seconds
+MINIMAL_STACK_DEPTHS = [1200] #[100, 1200]  # Test both stack depths
 MINIMAL_TEST_DURATION = 30  # seconds
 
 # Renaissance specific
@@ -163,7 +165,7 @@ PLOTS_DIR = RESULTS_DIR / "plots"
 TABLES_DIR = RESULTS_DIR / "tables"
 
 class BenchmarkRunner:
-    def __init__(self, minimal=False, threads=None, max_retries=2, verbose=False):
+    def __init__(self, minimal=False, threads=None, max_retries=2, verbose=False, dynamic_queue_size=False):
         self.setup_directories()
         self.results = {
             'native': [],
@@ -172,6 +174,10 @@ class BenchmarkRunner:
         self.minimal = minimal
         self.max_retries = max_retries
         self.verbose = verbose
+        self.dynamic_queue_size = dynamic_queue_size
+
+        # Track session start time to filter data from current run only
+        self.session_start_time = time.time()
 
         # Always plot after every iteration for real-time feedback
         self.plot_frequency = 1  # Plot after every single test
@@ -203,7 +209,11 @@ class BenchmarkRunner:
             if len(name_parts) > 1:
                 return f"{'.'.join(name_parts[:-1])}_progress.{name_parts[-1]}"
             else:
-                return f"{base_name}_progress"
+                return f"{base_name}_progress.png"
+        else:
+            # Ensure .png extension if not present
+            if not base_name.endswith('.png'):
+                return f"{base_name}.png"
         return base_name
 
     def estimate_runtime(self, test_type: str) -> Tuple[int, str]:
@@ -807,8 +817,14 @@ class BenchmarkRunner:
             "-f", str(log_path.absolute()) + ".raw"
         ]
 
+        if self.dynamic_queue_size:
+            cmd.append("--dynamic-queue-size")
+
         if native_duration:
             cmd.extend(["--native-duration", str(native_duration)])
+
+        if RESTART_THREADS_EVERY > 0:
+            cmd.extend(["--restart-frequency", str(RESTART_THREADS_EVERY)])
 
         # Generate log filename
 
@@ -817,12 +833,19 @@ class BenchmarkRunner:
 
         # Run test
         try:
+            # Set up environment variables
+            env = os.environ.copy()
+            if self.dynamic_queue_size:
+                env['DYNAMIC_QUEUE_SIZE'] = 'true'
+                self.vprint(f"    Environment: DYNAMIC_QUEUE_SIZE=true")
+
             with open(log_path, 'w') as log_file:
                 result = subprocess.run(
                     cmd,
                     cwd="../run_in_native",
                     stdout=log_file,
                     stderr=subprocess.STDOUT,
+                    env=env,
                 )
 
             self.vprint(f"    Return code: {result.returncode}")
@@ -838,11 +861,25 @@ class BenchmarkRunner:
                 out_of_thread_details = extracted_data.get('out_of_thread_details')
                 all_without_locks_events = extracted_data.get('all_without_locks_events')
                 all_without_locks_details = extracted_data.get('all_without_locks_details')
+                final_max_queue_size = extracted_data.get('final_max_queue_size')
+                final_queue_size_increase_count = extracted_data.get('final_queue_size_increase_count')
                 print(f"    Loss: {loss_percentage}%")
                 if out_of_thread_percentage is not None:
                     print(f"    Out-of-thread: {out_of_thread_events:,} events ({out_of_thread_percentage:.2f}%)")
                 if all_without_locks_events is not None:
                     self.vprint(f"    All-without-locks: {all_without_locks_events:,} events")
+                if final_max_queue_size is not None:
+                    print(f"    Max Queue Size: {final_max_queue_size}")
+                if final_queue_size_increase_count is not None:
+                    print(f"    Queue Size Increases: {final_queue_size_increase_count}")
+
+                # Check for missing queue statistics when dynamic queue sizing is enabled
+                if self.dynamic_queue_size and (final_max_queue_size is None or final_queue_size_increase_count is None):
+                    print(f"    ⚠️  WARNING: Dynamic queue sizing enabled but queue statistics missing!")
+                    print(f"       MAX_QUEUE_SIZE_SUM found: {'✅' if final_max_queue_size is not None else '❌'}")
+                    print(f"       QUEUE_SIZE_INCREASE_COUNT found: {'✅' if final_queue_size_increase_count is not None else '❌'}")
+                    print(f"       This suggests the JFR output may not contain queue size statistics")
+
             else:
                 # Fallback for old format
                 loss_percentage = extracted_data
@@ -851,6 +888,8 @@ class BenchmarkRunner:
                 out_of_thread_details = None
                 all_without_locks_events = None
                 all_without_locks_details = None
+                final_max_queue_size = None
+                final_queue_size_increase_count = None
                 print(f"    Loss: {loss_percentage}%")
 
             # Extract additional loss kind data if available
@@ -875,6 +914,8 @@ class BenchmarkRunner:
                 'out_of_thread_details': out_of_thread_details,
                 'all_without_locks_events': all_without_locks_events,
                 'all_without_locks_details': all_without_locks_details,
+                'final_max_queue_size': final_max_queue_size if final_max_queue_size is not None else queue_size,  # fallback to original queue size
+                'final_queue_size_increase_count': final_queue_size_increase_count if final_queue_size_increase_count is not None else 0,  # fallback to 0
                 'log_file': str(log_filename),
                 'timestamp': datetime.now().isoformat(),
                 'success': result.returncode == 0 and loss_percentage is not None
@@ -926,17 +967,27 @@ class BenchmarkRunner:
             "-f", str(log_path.absolute()) + ".raw",
         ]
 
+        if self.dynamic_queue_size:
+            cmd.append("--dynamic-queue-size")
+
         # Generate log filename
 
 
         # Run test
         try:
+            # Set up environment variables
+            env = os.environ.copy()
+            if self.dynamic_queue_size:
+                env['DYNAMIC_QUEUE_SIZE'] = 'true'
+                self.vprint(f"    Environment: DYNAMIC_QUEUE_SIZE=true")
+
             with open(log_path, 'w') as log_file:
                 result = subprocess.run(
                     cmd,
                     cwd="../run_in_native",
                     stdout=log_file,
                     stderr=subprocess.STDOUT,
+                    env=env,
                 )
 
             # Extract loss percentage from log
@@ -950,11 +1001,25 @@ class BenchmarkRunner:
                 out_of_thread_details = extracted_data.get('out_of_thread_details')
                 all_without_locks_events = extracted_data.get('all_without_locks_events')
                 all_without_locks_details = extracted_data.get('all_without_locks_details')
+                final_max_queue_size = extracted_data.get('final_max_queue_size')
+                final_queue_size_increase_count = extracted_data.get('final_queue_size_increase_count')
                 print(f"    Loss: {loss_percentage}%")
                 if out_of_thread_percentage is not None:
                     print(f"    Out-of-thread: {out_of_thread_events:,} events ({out_of_thread_percentage:.2f}%)")
                 if all_without_locks_events is not None:
                     self.vprint(f"    All-without-locks: {all_without_locks_events:,} events")
+                if final_max_queue_size is not None:
+                    print(f"    Max Queue Size: {final_max_queue_size}")
+                if final_queue_size_increase_count is not None:
+                    print(f"    Queue Size Increases: {final_queue_size_increase_count}")
+
+                # Check for missing queue statistics when dynamic queue sizing is enabled
+                if self.dynamic_queue_size and (final_max_queue_size is None or final_queue_size_increase_count is None):
+                    print(f"    ⚠️  WARNING: Dynamic queue sizing enabled but queue statistics missing!")
+                    print(f"       MAX_QUEUE_SIZE_SUM found: {'✅' if final_max_queue_size is not None else '❌'}")
+                    print(f"       QUEUE_SIZE_INCREASE_COUNT found: {'✅' if final_queue_size_increase_count is not None else '❌'}")
+                    print(f"       This suggests the JFR output may not contain queue size statistics")
+
             else:
                 loss_percentage = extracted_data
                 out_of_thread_events = None
@@ -962,6 +1027,8 @@ class BenchmarkRunner:
                 out_of_thread_details = None
                 all_without_locks_events = None
                 all_without_locks_details = None
+                final_max_queue_size = None
+                final_queue_size_increase_count = None
                 print(f"    Loss: {loss_percentage}%")
 
             # Extract additional loss kind data if available (for Renaissance tests too)
@@ -990,6 +1057,8 @@ class BenchmarkRunner:
                 'out_of_thread_details': out_of_thread_details,
                 'all_without_locks_events': all_without_locks_events,
                 'all_without_locks_details': all_without_locks_details,
+                'final_max_queue_size': final_max_queue_size if final_max_queue_size is not None else queue_size,  # fallback to original queue size
+                'final_queue_size_increase_count': final_queue_size_increase_count if final_queue_size_increase_count is not None else 0,  # fallback to 0
                 'log_file': str(log_filename),
                 'timestamp': datetime.now().isoformat(),
                 'success': result.returncode == 0
@@ -1008,6 +1077,8 @@ class BenchmarkRunner:
                 'out_of_thread_details': None,
                 'all_without_locks_events': None,
                 'all_without_locks_details': None,
+                'final_max_queue_size': queue_size,  # fallback to original queue size
+                'final_queue_size_increase_count': 0,  # fallback to 0
                 'log_file': str(log_filename),
                 'timestamp': datetime.now().isoformat(),
                 'success': False,
@@ -1658,6 +1729,16 @@ class BenchmarkRunner:
             else:
                 self.vprint(f"    ⚠️ Could not find any drain statistics sections with events")
 
+            # Parse LOSS_PERCENTAGE output from run.sh (if available)
+            print(f"    🔍 Searching for LOSS_PERCENTAGE from run.sh...")
+            loss_percentage_pattern = r'LOSS_PERCENTAGE:\s*([\d.]+)'
+            loss_percentage_match = re.search(loss_percentage_pattern, content)
+            if loss_percentage_match:
+                result['loss_percentage'] = float(loss_percentage_match.group(1))
+                print(f"    ✅ Found LOSS_PERCENTAGE from run.sh: {result['loss_percentage']:.3f}%")
+            else:
+                print(f"    ⚠️ No LOSS_PERCENTAGE found from run.sh, will calculate from JFR statistics")
+
             # Parse LOST_SAMPLE_STATS for detailed loss kind breakdown
             print(f"    🔍 Searching for LOST_SAMPLE_STATS lines...")
             lost_sample_stats_pattern = r'LOST_SAMPLE_STATS:\s*(.+)'
@@ -1781,13 +1862,19 @@ class BenchmarkRunner:
                     self.vprint(f"    📊 Total attempted: {total + lost:,}")
                     self.vprint(f"    📊 Calculated loss rate: {loss_percentage:.2f}%")
 
-                    # Return loss percentage and out-of-thread data
-                    result['loss_percentage'] = loss_percentage
-                    return result
+                    # Set loss percentage but continue parsing for queue statistics
+                    # Only set loss_percentage if we didn't get it from run.sh LOSS_PERCENTAGE
+                    if 'loss_percentage' not in result:
+                        result['loss_percentage'] = loss_percentage
+                        self.vprint(f"    📊 Using calculated loss percentage: {loss_percentage:.2f}%")
+                    else:
+                        self.vprint(f"    📊 Keeping LOSS_PERCENTAGE from run.sh: {result['loss_percentage']:.2f}%")
+                    # Continue to parse queue statistics instead of returning early
                 else:
                     self.vprint(f"    ⚠️ Total attempted samples is 0")
-                    result['loss_percentage'] = 0.0
-                    return result
+                    if 'loss_percentage' not in result:
+                        result['loss_percentage'] = 0.0
+                    # Continue to parse queue statistics instead of returning early
 
             # If direct search didn't work, try the original section-based approach
 
@@ -1798,8 +1885,12 @@ class BenchmarkRunner:
             if match:
                 loss_rate = float(match.group(1))
                 self.vprint(f"    Found loss rate pattern: {loss_rate}%")
-                result['loss_percentage'] = loss_rate
-                return result
+                if 'loss_percentage' not in result:
+                    result['loss_percentage'] = loss_rate
+                    self.vprint(f"    📊 Using pattern-matched loss percentage: {loss_rate:.2f}%")
+                else:
+                    self.vprint(f"    📊 Keeping LOSS_PERCENTAGE from run.sh: {result['loss_percentage']:.2f}%")
+                # Continue to parse queue statistics instead of returning early
 
             # Look for JFR CPU Time Sample Statistics section
             # Look for the section and capture everything until we hit a line that starts with a special character or emoji
@@ -1829,12 +1920,17 @@ class BenchmarkRunner:
                         print(f"    📊 Parsed: Successful={successful:,}, Total={total:,}, Lost={lost:,}")
                         print(f"    📊 Total attempted: {total + lost:,}")
                         print(f"    📊 Calculated loss rate: {loss_percentage:.2f}%")
-                        result['loss_percentage'] = loss_percentage
-                        return result
+                        if 'loss_percentage' not in result:
+                            result['loss_percentage'] = loss_percentage
+                            print(f"    📊 Using section-parsed loss percentage: {loss_percentage:.2f}%")
+                        else:
+                            print(f"    📊 Keeping LOSS_PERCENTAGE from run.sh: {result['loss_percentage']:.2f}%")
+                        # Continue to parse queue statistics instead of returning early
                     else:
                         print(f"    ⚠️ Total attempted samples is 0")
-                        result['loss_percentage'] = 0.0
-                        return result
+                        if 'loss_percentage' not in result:
+                            result['loss_percentage'] = 0.0
+                        # Continue to parse queue statistics instead of returning early
                 else:
                     print(f"    ⚠️ Could not parse all required statistics from JFR section")
                     if successful_match:
@@ -1856,7 +1952,28 @@ class BenchmarkRunner:
             else:
                 print(f"    ⚠️ Could not find 'CPU Time Sample Statistics' section in log")
 
-            # Show last few lines of log for debugging
+            # Parse queue size statistics from JFR output (get the LAST occurrence)
+            print(f"    🔍 Searching for queue size statistics...")
+            max_queue_size_pattern = r'MAX_QUEUE_SIZE_SUM:\s*(\d+)'
+            queue_increase_pattern = r'QUEUE_SIZE_INCREASE_COUNT:\s*(\d+)'
+
+            # Find ALL matches and take the last one
+            max_queue_matches = re.findall(max_queue_size_pattern, content)
+            queue_increase_matches = re.findall(queue_increase_pattern, content)
+
+            if max_queue_matches:
+                result['final_max_queue_size'] = int(max_queue_matches[-1])  # Take the LAST match
+                print(f"    ✅ Found MAX_QUEUE_SIZE_SUM: {result['final_max_queue_size']} (from {len(max_queue_matches)} total entries)")
+            else:
+                print(f"    ⚠️ No MAX_QUEUE_SIZE_SUM found in log")
+                result['final_max_queue_size'] = None
+
+            if queue_increase_matches:
+                result['final_queue_size_increase_count'] = int(queue_increase_matches[-1])  # Take the LAST match
+                print(f"    ✅ Found QUEUE_SIZE_INCREASE_COUNT: {result['final_queue_size_increase_count']} (from {len(queue_increase_matches)} total entries)")
+            else:
+                print(f"    ⚠️ No QUEUE_SIZE_INCREASE_COUNT found in log")
+                result['final_queue_size_increase_count'] = None            # Show last few lines of log for debugging
             lines = content.split('\n')
             print(f"    Last 5 lines of log:")
             for line in lines[-5:]:
@@ -1935,6 +2052,14 @@ class BenchmarkRunner:
                                 self.plot_signal_handler_duration_grid(native_df, progress_mode=True)
                                 self.plot_drainage_duration_grid(native_df, progress_mode=True)
                                 self.plot_vm_ops_loss_grid(native_df, progress_mode=True)
+
+                                # Generate queue memory consumption plots using main results (contains proper loss_percentage)
+                                try:
+                                    if native_df is not None and len(native_df) >= 2:
+                                        print(f"    💾 Generating queue memory consumption plots...")
+                                        self.plot_queue_memory_consumption(native_df, progress_mode=True)
+                                except Exception as e:
+                                    print(f"    ⚠️ Queue memory plot generation failed: {e}")
                         else:
                             print(f"    ❌ Failed or no data (took {test_time:.1f}s)")
                             if result:
@@ -1948,7 +2073,7 @@ class BenchmarkRunner:
         total_time = time.time() - start_time
         print(f"\n✅ Native benchmark complete!")
         print(f"   Total runtime: {total_time/3600:.1f} hours ({total_time/60:.1f} minutes)")
-        print(f"   Results saved to {DATA_DIR}")
+        print(f"   Results saved to {DATA_DIR.absolute()}")
 
         # Generate final comprehensive real-time plots
         print(f"   📊 Generating final real-time plots...")
@@ -2032,6 +2157,14 @@ class BenchmarkRunner:
                         self.plot_signal_handler_duration_grid(renaissance_df, progress_mode=True)
                         self.plot_drainage_duration_grid(renaissance_df, progress_mode=True)
                         self.plot_vm_ops_loss_grid(renaissance_df, progress_mode=True)
+
+                        # Generate queue memory consumption plots using main results (contains proper loss_percentage)
+                        try:
+                            if renaissance_df is not None and len(renaissance_df) >= 2:
+                                print(f"    💾 Generating queue memory consumption plots...")
+                                self.plot_queue_memory_consumption(renaissance_df, progress_mode=True)
+                        except Exception as e:
+                            print(f"    ⚠️ Queue memory plot generation failed: {e}")
                 else:
                     print(f"    ❌ Failed or no data (took {test_time:.1f}s)")
                     if result:
@@ -2045,7 +2178,7 @@ class BenchmarkRunner:
         total_time = time.time() - start_time
         print(f"\n✅ Renaissance benchmark complete!")
         print(f"   Total runtime: {total_time/3600:.1f} hours ({total_time/60:.1f} minutes)")
-        print(f"   Results saved to {DATA_DIR}")
+        print(f"   Results saved to {DATA_DIR.absolute()}")
 
         # Generate final comprehensive real-time plots
         print(f"   📊 Generating final real-time plots...")
@@ -2130,8 +2263,12 @@ class BenchmarkRunner:
             print(f"No results found for {test_type}. Run benchmark first.")
             return None
 
-    def load_drain_statistics(self) -> Optional[pd.DataFrame]:
-        """Load drain statistics using direct log parsing"""
+    def load_drain_statistics(self, session_only: bool = False) -> Optional[pd.DataFrame]:
+        """Load drain statistics using direct log parsing
+
+        Args:
+            session_only: If True, only load logs created after session start time
+        """
         if not DIRECT_PARSING_AVAILABLE:
             print("⚠️ Direct log parsing not available")
             return None
@@ -2143,15 +2280,45 @@ class BenchmarkRunner:
                 print(f"❌ Logs directory not found: {logs_dir}")
                 return None
 
-            # Parse all logs using direct parsing
-            results = parse_all_logs(logs_dir)
+            # Filter log files by session time if requested
+            if session_only and hasattr(self, 'session_start_time'):
+                # Use a 60-second buffer before session start to account for timing differences
+                session_start_with_buffer = self.session_start_time - 60
+                print(f"   🔍 Filtering logs to current session only (started {datetime.fromtimestamp(self.session_start_time).strftime('%H:%M:%S')})")
+                log_files = []
+                for log_file in logs_dir.glob("*.txt"):
+                    file_mtime = log_file.stat().st_mtime
+                    if file_mtime >= session_start_with_buffer:
+                        log_files.append(log_file)
+
+                if not log_files:
+                    print("   ⚠️ No log files from current session found, falling back to all logs")
+                    # Fallback to all logs if no session-specific logs found
+                    results = parse_all_logs(logs_dir)
+                else:
+                    print(f"   ✅ Found {len(log_files)} log files from current session")
+
+                    # Parse only current session logs
+                    results = []
+                    for log_file in log_files:
+                        try:
+                            file_results = parse_drain_stats_from_log(log_file)
+                            if file_results:
+                                results.append(file_results)
+                        except Exception as e:
+                            print(f"   ⚠️ Error parsing {log_file}: {e}")
+            else:
+                # Parse all logs (original behavior)
+                results = parse_all_logs(logs_dir)
+
             if not results:
                 print("❌ No drain statistics found in log files")
                 return None
 
             # Create DataFrame
             drain_df = create_percentile_dataframe(results)
-            print(f"✅ Loaded drain statistics: {len(drain_df)} records across {len(drain_df['drain_category'].unique())} categories")
+            session_desc = " from current session" if session_only else ""
+            print(f"✅ Loaded drain statistics{session_desc}: {len(drain_df)} records across {len(drain_df['drain_category'].unique())} categories")
             return drain_df
 
         except Exception as e:
@@ -2334,8 +2501,7 @@ class BenchmarkRunner:
             plt.savefig(plot_path, dpi=600, bbox_inches='tight', pad_inches=0.1)
             plt.close(fig)
 
-            print(f"    📊 Saved combined real-time plot: {plot_filename}")
-            print(f"    📍 Absolute path: {plot_path.absolute()}")
+            print(f"    📊 Saved combined real-time plot: {plot_path.absolute()}")
 
             # Also create log-scaled version with unified y-range and 1% reference line
             self._create_log_scaled_combined_plot(df, test_type, realtime_plots_dir)
@@ -2501,8 +2667,7 @@ class BenchmarkRunner:
             plt.savefig(log_plot_path, dpi=600, bbox_inches='tight', pad_inches=0.1)
             plt.close(fig)
 
-            print(f"    📊 Saved log-scale combined plot: {log_plot_filename}")
-            print(f"    📍 Absolute path: {log_plot_path.absolute()}")
+            print(f"    📊 Saved log-scale combined plot: {log_plot_path.absolute()}")
 
         except Exception as e:
             print(f"    ⚠️ Error generating log-scale plot: {e}")
@@ -2600,10 +2765,9 @@ class BenchmarkRunner:
                 plt.savefig(plot_path, dpi=600, bbox_inches='tight', pad_inches=0.1)
                 plt.close(fig)
 
-                self.vprint(f"    📊 Saved individual plot: {plot_filename}")
+                self.vprint(f"    📊 Saved individual plot: {plot_path.absolute()}")
 
-            print(f"    📊 Saved {len(intervals)} individual interval plots to: individual/")
-            print(f"    📍 Directory: {individual_plots_dir.absolute()}")
+            print(f"    📊 Saved {len(intervals)} individual interval plots to: {individual_plots_dir.absolute()}")
 
             # Create additional Renaissance plots with all intervals combined
             if test_type == 'renaissance':
@@ -2734,8 +2898,7 @@ class BenchmarkRunner:
             plt.savefig(plot_path, dpi=600, bbox_inches='tight', pad_inches=0.1)
             plt.close(fig)
 
-            print(f"    📊 Saved Renaissance combined intervals plot ({filename_suffix}): {plot_filename}")
-            print(f"    📍 Absolute path: {plot_path.absolute()}")
+            print(f"    📊 Saved Renaissance combined intervals plot ({filename_suffix}): {plot_path.absolute()}")
 
         except Exception as e:
             print(f"    ⚠️ Error generating Renaissance all intervals plot: {e}")
@@ -2761,6 +2924,8 @@ class BenchmarkRunner:
             self.plot_signal_handler_duration_grid(native_df)
             self.plot_drainage_duration_grid(native_df)
             self.plot_vm_ops_loss_grid(native_df)
+            # Queue memory consumption plots
+            self.plot_queue_memory_consumption(native_df)
 
         if renaissance_df is not None:
             self.plot_renaissance_results(renaissance_df)
@@ -2772,6 +2937,8 @@ class BenchmarkRunner:
             self.plot_signal_handler_duration_grid(renaissance_df)
             self.plot_drainage_duration_grid(renaissance_df)
             self.plot_vm_ops_loss_grid(renaissance_df)
+            # Queue memory consumption plots
+            self.plot_queue_memory_consumption(renaissance_df)
 
             # Load drain statistics and create Renaissance-specific plots
             drain_df = self.load_drain_statistics()
@@ -2781,7 +2948,7 @@ class BenchmarkRunner:
         if native_df is not None and renaissance_df is not None:
             self.plot_comparison(native_df, renaissance_df)
 
-        print(f"📊 Visualizations saved to {PLOTS_DIR}")
+        print(f"📊 Visualizations saved to {PLOTS_DIR.absolute()}")
 
     def create_progress_visualizations(self, csv_file: Optional[str] = None):
         """Create visualizations from live CSV data with 'progress' suffix"""
@@ -2880,6 +3047,8 @@ class BenchmarkRunner:
             self.plot_signal_handler_duration_grid(df, progress_mode=True)
             self.plot_drainage_duration_grid(df, progress_mode=True)
             self.plot_vm_ops_loss_grid(df, progress_mode=True)
+            # Queue memory consumption plots
+            self.plot_queue_memory_consumption(df, progress_mode=True)
         else:
             self.plot_renaissance_results(df, progress_mode=True)
             self.plot_vm_operations(df, progress_mode=True)
@@ -2888,8 +3057,10 @@ class BenchmarkRunner:
             self.plot_signal_handler_duration_grid(df, progress_mode=True)
             self.plot_drainage_duration_grid(df, progress_mode=True)
             self.plot_vm_ops_loss_grid(df, progress_mode=True)
+            # Queue memory consumption plots
+            self.plot_queue_memory_consumption(df, progress_mode=True)
 
-        print(f"📊 Progress visualizations saved to {PLOTS_DIR} with '_progress' suffix")
+        print(f"📊 Progress visualizations saved to {PLOTS_DIR.absolute()} with '_progress' suffix")
 
     def watch_progress_visualizations(self, csv_file: Optional[str] = None):
         """Watch mode: continuously monitor and update progress visualizations"""
@@ -3763,7 +3934,7 @@ class BenchmarkRunner:
             plt.savefig(loss_plots_dir / 'loss_kinds_all_intervals.png', dpi=600, bbox_inches='tight', pad_inches=0.1)
             plt.close()
 
-        print(f"📊 Loss kinds plots saved to {loss_plots_dir}")
+        print(f"📊 Loss kinds plots saved to {loss_plots_dir.absolute()}")
 
     def plot_vm_operations(self, df: pd.DataFrame, progress_mode: bool = False):
         """Create plots for VM operations breakdown by queue size and interval"""
@@ -3974,7 +4145,7 @@ class BenchmarkRunner:
             plt.savefig(vm_ops_plots_dir / f'vm_operations_combined.png', dpi=600, bbox_inches='tight')
         plt.close()
 
-        print(f"📊 VM operations plots saved to {vm_ops_plots_dir}")
+        print(f"📊 VM operations plots saved to {vm_ops_plots_dir.absolute()}")
 
     def plot_renaissance_out_of_thread_percentage(self, drain_df: pd.DataFrame, progress_mode: bool = False):
         """Create plots showing percentage of 'out of thread' drainages for Renaissance tests"""
@@ -4264,7 +4435,7 @@ class BenchmarkRunner:
                        dpi=600, bbox_inches='tight')
         plt.close()
 
-        print(f"📊 Queue size distribution plots saved to {queue_dist_plots_dir}")
+        print(f"📊 Queue size distribution plots saved to {queue_dist_plots_dir.absolute()}")
 
     def plot_queue_size_percentiles(self, df: pd.DataFrame, test_type: str, progress_mode: bool = False):
         """Create plots for queue size percentiles (p95, p99, p99.9) from direct drain statistics"""
@@ -5291,7 +5462,601 @@ class BenchmarkRunner:
                     else:
                         plt.close()  # Close the figure if no data was plotted
 
-        print(f"📊 VM operations loss grid plots saved to {vm_ops_grid_plots_dir}")
+        print(f"📊 VM operations loss grid plots saved to {vm_ops_grid_plots_dir.absolute()}")
+
+    def plot_queue_memory_consumption(self, df: pd.DataFrame, progress_mode: bool = False):
+        """Create plots showing loss percentage vs queue memory consumption"""
+
+        try:
+            # Check if we have the original loss_percentage from test results
+            if 'loss_percentage' in df.columns:
+                print("   ✅ Using main results DataFrame with existing loss percentages")
+                loss_df = df.copy()
+
+                # Ensure queue memory consumption is calculated consistently
+                if 'queue_memory_consumption' not in loss_df.columns:
+                    loss_df['queue_memory_consumption'] = loss_df['queue_size'] * 48
+
+                # Add missing columns for main results DataFrame compatibility
+                if 'final_max_queue_size' not in loss_df.columns:
+                    loss_df['final_max_queue_size'] = loss_df['queue_size']  # Use original queue size as fallback
+                if 'final_queue_size_increase_count' not in loss_df.columns:
+                    loss_df['final_queue_size_increase_count'] = 0  # No dynamic sizing in main results
+
+                # Debug: Print actual loss values being used in plots
+                print(f"   🔍 DEBUG: Loss values from main results DataFrame:")
+                for _, row in loss_df.iterrows():
+                    queue_size = row.get('queue_size', 'N/A')
+                    interval = row.get('interval', 'N/A')
+                    loss_pct = row.get('loss_percentage', 'N/A')
+                    print(f"      Queue={queue_size}, Interval={interval}, Loss={loss_pct}%")
+
+            else:
+                print("   📊 Using drain statistics DataFrame - aggregating and calculating loss percentages")
+                # Use aggregated data across all drain categories for better coverage
+                # Group by test configuration to get total events and drains
+                group_columns = [
+                    'test_type', 'queue_size', 'interval', 'log_file',
+                    'final_max_queue_size', 'queue_memory_consumption', 'final_queue_size_increase_count'
+                ]
+
+                # Add test-specific fields if they exist
+                if 'stack_depth' in df.columns:
+                    group_columns.extend(['stack_depth', 'test_duration', 'native_duration'])
+                if 'iterations' in df.columns:
+                    group_columns.append('iterations')
+
+                loss_df = df.groupby(group_columns).agg({
+                    'total_events': 'sum',
+                    'drains': 'sum'
+                }).reset_index()
+
+                if loss_df.empty:
+                    print("⚠️ No drain data found for queue memory analysis")
+                    return
+
+                # Ensure queue memory consumption is calculated consistently
+                loss_df['queue_memory_consumption'] = loss_df['queue_size'] * 48
+
+                # Calculate loss percentage from drain statistics
+                loss_df['loss_events'] = loss_df['total_events'] - loss_df['drains']
+                loss_df['loss_percentage'] = np.where(
+                    loss_df['total_events'] > 0,
+                    (loss_df['loss_events'] / loss_df['total_events']) * 100,
+                    0
+                )
+
+                # Debug: Print calculated loss values being used in plots
+                print(f"   🔍 DEBUG: Calculated loss values from drain statistics:")
+                for _, row in loss_df.iterrows():
+                    queue_size = row.get('queue_size', 'N/A')
+                    interval = row.get('interval', 'N/A')
+                    total_events = row.get('total_events', 'N/A')
+                    drains = row.get('drains', 'N/A')
+                    loss_pct = row.get('loss_percentage', 'N/A')
+                    print(f"      Queue={queue_size}, Interval={interval}, Total={total_events}, Drains={drains}, Loss={loss_pct}%")
+
+            # Create output directory
+            queue_memory_plots_dir = PLOTS_DIR / "queue_memory_plots"
+            queue_memory_plots_dir.mkdir(parents=True, exist_ok=True)
+
+            # Get unique intervals
+            intervals = sorted(loss_df['interval'].unique())
+            print(f"📊 Creating queue memory consumption plots for intervals: {intervals}")
+
+            # Create individual plots for each interval
+            for interval in intervals:
+                self._create_loss_vs_memory_plot(loss_df, interval, queue_memory_plots_dir, progress_mode)
+                self._create_queue_increments_plot(loss_df, interval, queue_memory_plots_dir, progress_mode)
+
+            # Create combined grid plots for both plot types
+            self._create_loss_vs_memory_grid_plot(loss_df, intervals, queue_memory_plots_dir, progress_mode)
+            self._create_queue_increments_grid_plot(loss_df, intervals, queue_memory_plots_dir, progress_mode)
+
+            # Create raw data tables for all plots
+            self._create_memory_plots_data_tables(loss_df, intervals, queue_memory_plots_dir, progress_mode)
+
+            # Create summary statistics
+            self._create_queue_memory_summary(loss_df, queue_memory_plots_dir)
+
+            print(f"✅ Queue memory consumption plots saved to {queue_memory_plots_dir.absolute()}")
+
+        except Exception as e:
+            print(f"❌ Error creating queue memory consumption plots: {e}")
+            print("🔄 Benchmark will continue without queue memory plots")
+
+    def _create_loss_vs_memory_plot(self, df: pd.DataFrame, interval: str,
+                                   output_dir: Path, progress_mode: bool):
+        """Create dual-axis plot: Loss Percentage vs Queue Memory Consumption"""
+
+        df_interval = df[df['interval'] == interval].copy()
+
+        if df_interval.empty:
+            print(f"⚠️ No data for interval {interval}")
+            return
+
+        # Debug: Print data being plotted for this interval
+        print(f"   🔍 DEBUG: Plotting data for interval {interval}:")
+        for _, row in df_interval.iterrows():
+            queue_size = row.get('queue_size', 'N/A')
+            loss_pct = row.get('loss_percentage', 'N/A')
+            memory = row.get('queue_memory_consumption', 'N/A')
+            print(f"      Queue={queue_size}, Loss={loss_pct}%, Memory={memory} bytes")
+
+        # Sort by queue size for better line plotting
+        df_interval = df_interval.sort_values('queue_size')
+
+        # Create figure with dual y-axis
+        plt.style.use('seaborn-v0_8')
+        fig, ax1 = plt.subplots(figsize=(12, 8))
+        ax2 = ax1.twinx()
+
+        # Plot loss percentage on left axis
+        color1 = 'tab:red'
+        ax1.set_xlabel('Queue Size', fontsize=12)
+        ax1.set_ylabel('Loss Percentage (%)', color=color1, fontsize=12)
+        line1 = ax1.plot(df_interval['queue_size'], df_interval['loss_percentage'],
+                         'o', color=color1, markersize=8, label='Loss %')
+        ax1.tick_params(axis='y', labelcolor=color1)
+        ax1.grid(True, alpha=0.6)  # Make grid more visible
+
+        # Plot queue memory consumption on right axis
+        color2 = 'tab:blue'
+        ax2.set_ylabel('Queue Memory Consumption (bytes)', color=color2, fontsize=12)
+        line2 = ax2.plot(df_interval['queue_size'], df_interval['queue_memory_consumption'],
+                         's', color=color2, markersize=8, label='Memory')
+        ax2.tick_params(axis='y', labelcolor=color2)
+
+        # Format y-axis to avoid scientific notation
+        ax1.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, p: f'{x:.1f}' if np.isfinite(x) else '0'))
+        ax2.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, p: f'{x:,.0f}' if np.isfinite(x) else '0'))
+
+        # Set title
+        plt.title(f'Loss Percentage vs Queue Memory Consumption\nInterval: {interval}',
+                  fontsize=14, fontweight='bold')
+
+        # Add legend
+        lines = line1 + line2
+        labels = [l.get_label() for l in lines]
+        ax1.legend(lines, labels, loc='upper left')
+
+        # Adjust layout
+        plt.tight_layout()
+
+        # Save plot
+        filename = self._get_plot_filename(f"loss_vs_memory_{interval.replace('ms', 'ms')}", progress_mode)
+        filepath = output_dir / filename
+        plt.savefig(filepath, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        print(f"  📈 Saved loss vs memory plot: {filepath.absolute()}")
+
+    def _create_queue_increments_plot(self, df: pd.DataFrame, interval: str,
+                                    output_dir: Path, progress_mode: bool):
+        """Create single-focus plot: Queue Size Increase Count"""
+
+        df_interval = df[df['interval'] == interval].copy()
+
+        if df_interval.empty:
+            print(f"⚠️ No data for interval {interval}")
+            return
+
+        # Sort by queue size for better line plotting
+        df_interval = df_interval.sort_values('queue_size')
+
+        # Handle NaN values in queue size increase count
+        df_interval['final_queue_size_increase_count'] = df_interval['final_queue_size_increase_count'].fillna(0)
+
+        # Create figure with single y-axis
+        plt.style.use('seaborn-v0_8')
+        fig, ax = plt.subplots(figsize=(12, 8))
+
+        # Plot queue size increase count
+        color = 'tab:green'
+        ax.set_xlabel('Queue Size', fontsize=12)
+        ax.set_ylabel('Queue Size Increase Count', color=color, fontsize=12)
+        ax.plot(df_interval['queue_size'], df_interval['final_queue_size_increase_count'],
+                '^', color=color, markersize=10, label='Queue Increases')
+        ax.tick_params(axis='y', labelcolor=color)
+        ax.grid(True, alpha=0.6)  # Make grid more visible
+
+        # Format y-axis to avoid scientific notation
+        ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, p: f'{int(x)}' if np.isfinite(x) else '0'))
+
+        # Set y-axis minimum to 0 for better visualization
+        ax.set_ylim(bottom=0)
+
+        # Set title
+        plt.title(f'Queue Size Increase Count by Queue Size\nInterval: {interval}',
+                  fontsize=14, fontweight='bold')
+
+        # Add legend
+        ax.legend(loc='upper left')
+
+        # Adjust layout
+        plt.tight_layout()
+
+        # Save plot
+        filename = self._get_plot_filename(f"queue_increments_{interval.replace('ms', 'ms')}", progress_mode)
+        filepath = output_dir / filename
+        plt.savefig(filepath, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        print(f"  📈 Saved queue increments plot: {filepath.absolute()}")
+
+    def _create_loss_vs_memory_grid_plot(self, df: pd.DataFrame, intervals: List[str],
+                                       output_dir: Path, progress_mode: bool):
+        """Create combined grid plot: Loss vs Memory for all intervals"""
+
+        n_intervals = len(intervals)
+        cols = min(3, n_intervals)  # Max 3 columns
+        rows = (n_intervals + cols - 1) // cols
+
+        plt.style.use('seaborn-v0_8')
+        fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 4*rows))
+        if rows == 1 and cols == 1:
+            axes = [axes]
+        elif rows == 1:
+            axes = axes
+        else:
+            axes = axes.flatten()
+
+        # Find global y-axis limits for consistent scaling
+        all_loss = df['loss_percentage'].dropna()
+        all_memory = df['queue_memory_consumption'].dropna()
+
+        loss_min, loss_max = 0, max(all_loss.max() * 1.1, 1) if not all_loss.empty else 1
+        memory_min, memory_max = 0, max(all_memory.max() * 1.1, 1000) if not all_memory.empty else 1000
+
+        # Ensure min and max are valid finite numbers
+        def ensure_valid_limits(min_val, max_val, default_max=1):
+            if not np.isfinite(min_val) or not np.isfinite(max_val) or min_val == max_val:
+                return 0, default_max
+            return min_val, max_val
+
+        loss_min, loss_max = ensure_valid_limits(loss_min, loss_max, 1)
+        memory_min, memory_max = ensure_valid_limits(memory_min, memory_max, 1000)
+
+        for i, interval in enumerate(intervals):
+            if i >= len(axes):
+                break
+
+            ax1 = axes[i]
+            ax2 = ax1.twinx()
+
+            df_interval = df[df['interval'] == interval].copy()
+            df_interval = df_interval.sort_values('queue_size')
+
+            if not df_interval.empty:
+                # Plot loss percentage
+                color1 = 'tab:red'
+                ax1.plot(df_interval['queue_size'], df_interval['loss_percentage'],
+                        'o', color=color1, markersize=6)
+                ax1.set_ylabel('Loss %', color=color1, fontsize=10)
+                ax1.tick_params(axis='y', labelcolor=color1, labelsize=8)
+
+                # Plot queue memory consumption
+                color2 = 'tab:blue'
+                ax2.plot(df_interval['queue_size'], df_interval['queue_memory_consumption'],
+                        's', color=color2, markersize=6)
+                ax2.set_ylabel('Memory (bytes)', color=color2, fontsize=10)
+                ax2.tick_params(axis='y', labelcolor=color2, labelsize=8)
+
+                # Set consistent y-axis limits
+                ax1.set_ylim(loss_min, loss_max)
+                ax2.set_ylim(memory_min, memory_max)
+
+                # Format y-axis to avoid scientific notation
+                ax1.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, p: f'{x:.1f}' if np.isfinite(x) else '0'))
+                ax2.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, p: f'{x:,.0f}' if np.isfinite(x) else '0'))
+
+            ax1.set_xlabel('Queue Size', fontsize=10)
+            ax1.set_title(f'{interval}', fontsize=12, fontweight='bold')
+            ax1.grid(True, alpha=0.6)  # Make grid more visible
+            ax1.tick_params(axis='x', labelsize=8)
+
+        # Hide unused subplots
+        for i in range(len(intervals), len(axes)):
+            axes[i].set_visible(False)
+
+        # Main title
+        fig.suptitle('Loss Percentage vs Queue Memory Consumption - All Intervals',
+                    fontsize=16, fontweight='bold')
+
+        # Adjust layout
+        plt.tight_layout()
+
+        # Save plot
+        filename = self._get_plot_filename("loss_vs_memory_grid", progress_mode)
+        filepath = output_dir / filename
+        plt.savefig(filepath, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        print(f"  📊 Saved loss vs memory grid plot: {filepath.absolute()}")
+
+    def _create_queue_increments_grid_plot(self, df: pd.DataFrame, intervals: List[str],
+                                         output_dir: Path, progress_mode: bool):
+        """Create combined grid plot: Queue Increments for all intervals"""
+
+        n_intervals = len(intervals)
+        cols = min(3, n_intervals)  # Max 3 columns
+        rows = (n_intervals + cols - 1) // cols
+
+        plt.style.use('seaborn-v0_8')
+        fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 4*rows))
+        if rows == 1 and cols == 1:
+            axes = [axes]
+        elif rows == 1:
+            axes = axes
+        else:
+            axes = axes.flatten()
+
+        # Find global y-axis limits for consistent scaling
+        all_increases = df['final_queue_size_increase_count'].dropna()
+
+        # Handle case where all_increases might be empty or contain only zeros
+        if all_increases.empty:
+            all_increases = pd.Series([0, 1])  # Default fallback
+        elif all_increases.max() == 0:
+            all_increases = pd.Series([0, 1])  # Add minimal range for plotting
+
+        increases_min, increases_max = 0, max(all_increases.max() * 1.1, 1)
+
+        # Ensure min and max are valid finite numbers
+        def ensure_valid_limits(min_val, max_val, default_max=1):
+            if not np.isfinite(min_val) or not np.isfinite(max_val) or min_val == max_val:
+                return 0, default_max
+            return min_val, max_val
+
+        increases_min, increases_max = ensure_valid_limits(increases_min, increases_max, 1)
+
+        for i, interval in enumerate(intervals):
+            if i >= len(axes):
+                break
+
+            ax = axes[i]
+            df_interval = df[df['interval'] == interval].copy()
+            df_interval = df_interval.sort_values('queue_size')
+
+            if not df_interval.empty:
+                # Handle NaN values in queue size increase count
+                df_interval['final_queue_size_increase_count'] = df_interval['final_queue_size_increase_count'].fillna(0)
+
+                # Plot queue size increase count
+                color = 'tab:green'
+                ax.plot(df_interval['queue_size'], df_interval['final_queue_size_increase_count'],
+                       '^', color=color, markersize=8)
+                ax.set_ylabel('Queue Increases', color=color, fontsize=10)
+                ax.tick_params(axis='y', labelcolor=color, labelsize=8)
+
+                # Set consistent y-axis limits
+                ax.set_ylim(increases_min, increases_max)
+
+                # Format y-axis to avoid scientific notation
+                ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, p: f'{int(x)}' if np.isfinite(x) else '0'))
+
+            ax.set_xlabel('Queue Size', fontsize=10)
+            ax.set_title(f'{interval}', fontsize=12, fontweight='bold')
+            ax.grid(True, alpha=0.6)  # Make grid more visible
+            ax.tick_params(axis='x', labelsize=8)
+
+        # Hide unused subplots
+        for i in range(len(intervals), len(axes)):
+            axes[i].set_visible(False)
+
+        # Main title
+        fig.suptitle('Queue Size Increase Count - All Intervals',
+                    fontsize=16, fontweight='bold')
+
+        # Adjust layout
+        plt.tight_layout()
+
+        # Save plot
+        filename = self._get_plot_filename("queue_increments_grid", progress_mode)
+        filepath = output_dir / filename
+        plt.savefig(filepath, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        print(f"  📊 Saved queue increments grid plot: {filepath.absolute()}")
+
+    def _create_queue_memory_summary(self, df: pd.DataFrame, output_dir: Path):
+        """Create summary statistics table"""
+
+        summary_data = []
+
+        for interval in sorted(df['interval'].unique()):
+            df_interval = df[df['interval'] == interval]
+
+            if not df_interval.empty:
+                summary_data.append({
+                    'Interval': interval,
+                    'Queue Sizes': f"{df_interval['queue_size'].min()}-{df_interval['queue_size'].max()}",
+                    'Avg Loss %': f"{df_interval['loss_percentage'].mean():.2f}",
+                    'Max Loss %': f"{df_interval['loss_percentage'].max():.2f}",
+                    'Max Memory (MB)': f"{df_interval['queue_memory_consumption'].max() / (1024*1024):.2f}",
+                    'Max Increases': f"{df_interval['final_queue_size_increase_count'].max()}",
+                    'Avg Increases': f"{df_interval['final_queue_size_increase_count'].mean():.1f}",
+                    'Data Points': len(df_interval)
+                })
+
+        summary_df = pd.DataFrame(summary_data)
+
+        # Save as CSV
+        csv_path = output_dir / "queue_memory_summary.csv"
+        summary_df.to_csv(csv_path, index=False)
+
+        # Save as formatted text
+        txt_path = output_dir / "queue_memory_summary.txt"
+        with open(txt_path, 'w') as f:
+            f.write("Queue Memory Consumption Analysis Summary\n")
+            f.write("=" * 50 + "\n\n")
+            f.write(summary_df.to_string(index=False))
+            f.write("\n\nNotes:\n")
+            f.write("- Loss % = (total_events - drained_events) / total_events * 100\n")
+            f.write("- Memory consumption = queue_size * 48 bytes per entry\n")
+            f.write("- Queue increases = number of times queue size was increased dynamically\n")
+            f.write("- Data from 'out of thread' drain category\n")
+
+        print(f"  📄 Saved summary: queue_memory_summary.csv/txt")
+
+    def _create_memory_plots_data_tables(self, df: pd.DataFrame, intervals: List[str],
+                                       output_dir: Path, progress_mode: bool):
+        """Create raw data tables for all memory plots"""
+
+        try:
+            print(f"  📄 Creating raw data tables for memory plots...")
+
+            # Create data tables directory
+            data_tables_dir = output_dir / "data_tables"
+            data_tables_dir.mkdir(parents=True, exist_ok=True)
+
+            # Get the filename prefix based on progress mode
+            prefix = "progress_" if progress_mode else ""
+
+            # 1. Create individual data tables for each interval (loss vs memory)
+            for interval in intervals:
+                df_interval = df[df['interval'] == interval].copy()
+                if df_interval.empty:
+                    continue
+
+                # Sort by queue size for consistency
+                df_interval = df_interval.sort_values('queue_size')
+
+                # Select relevant columns for loss vs memory plot
+                loss_memory_cols = [
+                    'queue_size',
+                    'loss_percentage',
+                    'queue_memory_consumption',
+                    'interval'
+                ]
+
+                # Add optional columns if they exist
+                optional_cols = ['test_type', 'stack_depth', 'test_duration', 'native_duration', 'iterations']
+                for col in optional_cols:
+                    if col in df_interval.columns:
+                        loss_memory_cols.append(col)
+
+                loss_memory_data = df_interval[loss_memory_cols].copy()
+
+                # Save loss vs memory data
+                filename = f"{prefix}loss_vs_memory_{interval.replace('ms', 'ms')}_data.csv"
+                csv_path = data_tables_dir / filename
+                loss_memory_data.to_csv(csv_path, index=False)
+
+                # Save as formatted text
+                txt_filename = f"{prefix}loss_vs_memory_{interval.replace('ms', 'ms')}_data.txt"
+                txt_path = data_tables_dir / txt_filename
+                with open(txt_path, 'w') as f:
+                    f.write(f"Loss Percentage vs Queue Memory Consumption Data\\n")
+                    f.write(f"Interval: {interval}\\n")
+                    f.write("=" * 60 + "\\n\\n")
+                    f.write(loss_memory_data.to_string(index=False))
+                    f.write("\\n\\nColumn Descriptions:\\n")
+                    f.write("- queue_size: Initial queue size configuration\\n")
+                    f.write("- loss_percentage: Percentage of samples lost due to queue overflow\\n")
+                    f.write("- queue_memory_consumption: Memory used by queue (queue_size * 48 bytes)\\n")
+                    f.write("- interval: Sampling interval\\n")
+
+            # 2. Create individual data tables for queue increments
+            for interval in intervals:
+                df_interval = df[df['interval'] == interval].copy()
+                if df_interval.empty:
+                    continue
+
+                # Sort by queue size
+                df_interval = df_interval.sort_values('queue_size')
+
+                # Handle NaN values in queue size increase count
+                df_interval['final_queue_size_increase_count'] = df_interval['final_queue_size_increase_count'].fillna(0)
+
+                # Select relevant columns for queue increments plot
+                queue_inc_cols = [
+                    'queue_size',
+                    'final_queue_size_increase_count',
+                    'final_max_queue_size',
+                    'interval'
+                ]
+
+                # Add optional columns if they exist
+                for col in optional_cols:
+                    if col in df_interval.columns:
+                        queue_inc_cols.append(col)
+
+                queue_inc_data = df_interval[queue_inc_cols].copy()
+
+                # Save queue increments data
+                filename = f"{prefix}queue_increments_{interval.replace('ms', 'ms')}_data.csv"
+                csv_path = data_tables_dir / filename
+                queue_inc_data.to_csv(csv_path, index=False)
+
+                # Save as formatted text
+                txt_filename = f"{prefix}queue_increments_{interval.replace('ms', 'ms')}_data.txt"
+                txt_path = data_tables_dir / txt_filename
+                with open(txt_path, 'w') as f:
+                    f.write(f"Queue Size Increase Count Data\\n")
+                    f.write(f"Interval: {interval}\\n")
+                    f.write("=" * 50 + "\\n\\n")
+                    f.write(queue_inc_data.to_string(index=False))
+                    f.write("\\n\\nColumn Descriptions:\\n")
+                    f.write("- queue_size: Initial queue size configuration\\n")
+                    f.write("- final_queue_size_increase_count: Number of times queue size was increased\\n")
+                    f.write("- final_max_queue_size: Maximum queue size reached during test\\n")
+                    f.write("- interval: Sampling interval\\n")
+
+            # 3. Create combined data table for all intervals (loss vs memory)
+            combined_loss_memory_cols = [
+                'interval', 'queue_size', 'loss_percentage', 'queue_memory_consumption'
+            ]
+            for col in optional_cols:
+                if col in df.columns:
+                    combined_loss_memory_cols.append(col)
+
+            combined_loss_memory = df[combined_loss_memory_cols].copy().sort_values(['interval', 'queue_size'])
+
+            filename = f"{prefix}loss_vs_memory_all_intervals_data.csv"
+            csv_path = data_tables_dir / filename
+            combined_loss_memory.to_csv(csv_path, index=False)
+
+            txt_filename = f"{prefix}loss_vs_memory_all_intervals_data.txt"
+            txt_path = data_tables_dir / txt_filename
+            with open(txt_path, 'w') as f:
+                f.write("Loss Percentage vs Queue Memory Consumption - All Intervals\\n")
+                f.write("=" * 70 + "\\n\\n")
+                f.write(combined_loss_memory.to_string(index=False))
+                f.write("\\n\\nData corresponds to the Loss vs Memory Grid Plot\\n")
+
+            # 4. Create combined data table for all intervals (queue increments)
+            df_with_increments = df.copy()
+            df_with_increments['final_queue_size_increase_count'] = df_with_increments['final_queue_size_increase_count'].fillna(0)
+
+            combined_queue_inc_cols = [
+                'interval', 'queue_size', 'final_queue_size_increase_count', 'final_max_queue_size'
+            ]
+            for col in optional_cols:
+                if col in df_with_increments.columns:
+                    combined_queue_inc_cols.append(col)
+
+            combined_queue_inc = df_with_increments[combined_queue_inc_cols].copy().sort_values(['interval', 'queue_size'])
+
+            filename = f"{prefix}queue_increments_all_intervals_data.csv"
+            csv_path = data_tables_dir / filename
+            combined_queue_inc.to_csv(csv_path, index=False)
+
+            txt_filename = f"{prefix}queue_increments_all_intervals_data.txt"
+            txt_path = data_tables_dir / txt_filename
+            with open(txt_path, 'w') as f:
+                f.write("Queue Size Increase Count - All Intervals\\n")
+                f.write("=" * 50 + "\\n\\n")
+                f.write(combined_queue_inc.to_string(index=False))
+                f.write("\\n\\nData corresponds to the Queue Increments Grid Plot\\n")
+
+            print(f"  ✅ Raw data tables saved to {data_tables_dir.absolute()}")
+            print(f"     - Individual interval data: loss_vs_memory_*_data.csv/txt")
+            print(f"     - Individual interval data: queue_increments_*_data.csv/txt")
+            print(f"     - Combined data: *_all_intervals_data.csv/txt")
+
+        except Exception as e:
+            print(f"  ⚠️ Error creating data tables: {e}")
 
 def main():
     parser = argparse.ArgumentParser(description='JFR Queue Size Benchmark Suite')
@@ -5305,6 +6070,8 @@ def main():
                        help='Generate visualizations from existing data')
     parser.add_argument('--visualize-progress', action='store_true',
                        help='Generate in-progress visualizations from live CSV data (updates continuously)')
+    parser.add_argument('--queue-memory-plots', action='store_true',
+                       help='Generate only queue memory consumption plots from drain statistics')
     parser.add_argument('--watch', action='store_true',
                        help='Watch mode: continuously monitor and update progress visualizations')
     parser.add_argument('--csv-file', type=str,
@@ -5323,19 +6090,21 @@ def main():
                        help='Number of retries for tests with JSON parsing failures (default: 2)')
     parser.add_argument('--verbose', action='store_true',
                        help='Enable verbose logging for debugging and detailed output')
+    parser.add_argument('--dynamic-queue-size', action='store_true',
+                       help='Enable dynamic queue sizing (DYNAMIC_QUEUE_SIZE=true)')
 
     args = parser.parse_args()
 
     # If minimal flag is used without other flags, run only native (not renaissance)
-    if args.minimal and not any([args.run_native, args.run_renaissance, args.visualize, args.visualize_progress, args.watch, args.all, args.estimate, args.only_native, args.only_renaissance]):
+    if args.minimal and not any([args.run_native, args.run_renaissance, args.visualize, args.visualize_progress, args.queue_memory_plots, args.watch, args.all, args.estimate, args.only_native, args.only_renaissance]):
         args.run_native = True
 
-    if not any([args.run_native, args.run_renaissance, args.visualize, args.visualize_progress, args.watch, args.all, args.estimate, args.minimal, args.only_native, args.only_renaissance]):
+    if not any([args.run_native, args.run_renaissance, args.visualize, args.visualize_progress, args.queue_memory_plots, args.watch, args.all, args.estimate, args.minimal, args.only_native, args.only_renaissance]):
         parser.print_help()
         return
 
     # Create benchmark runner with minimal configuration if requested
-    runner = BenchmarkRunner(minimal=args.minimal, threads=args.threads, max_retries=args.retries, verbose=args.verbose)
+    runner = BenchmarkRunner(minimal=args.minimal, threads=args.threads, max_retries=args.retries, verbose=args.verbose, dynamic_queue_size=args.dynamic_queue_size)
 
     # Show configuration info
     print(f"JFR Queue Size Benchmark Suite")
@@ -5353,6 +6122,11 @@ def main():
         print(f"Sampling intervals: {len(runner.sampling_intervals)} values from {runner.sampling_intervals[0]} to {runner.sampling_intervals[-1]}")
         print(f"Test duration: {runner.test_duration}s")
         print(f"Threads: {runner.threads}")
+
+    if args.dynamic_queue_size:
+        print(f"🔄 Dynamic Queue Size: ENABLED (DYNAMIC_QUEUE_SIZE=true)")
+    else:
+        print(f"📏 Dynamic Queue Size: DISABLED (static queue sizes)")
     print(f"{'='*50}")
 
     # Show estimates if requested
@@ -5441,6 +6215,49 @@ def main():
             runner.watch_progress_visualizations(args.csv_file)
         else:
             runner.create_progress_visualizations(args.csv_file)
+        return
+
+    # Handle queue memory plots only
+    if args.queue_memory_plots:
+        print("📊 Generating queue memory consumption plots...")
+        benchmarker = BenchmarkRunner()
+
+        # Try to load main results first (contains proper loss_percentage values)
+        main_results_df = None
+        try:
+            # Look for the latest results file
+            data_dir = Path("benchmark_results/data")
+            if data_dir.exists():
+                # Find the most recent native results file
+                native_files = list(data_dir.glob("native_*.csv"))
+                if native_files:
+                    latest_file = max(native_files, key=lambda x: x.stat().st_mtime)
+                    print(f"📂 Loading main results from: {latest_file}")
+                    main_results_df = pd.read_csv(latest_file)
+                    print(f"✅ Loaded {len(main_results_df)} main test results")
+
+                    # Add queue memory consumption if not present
+                    if 'queue_memory_consumption' not in main_results_df.columns:
+                        main_results_df['queue_memory_consumption'] = main_results_df['queue_size'] * 48
+
+                    # Use main results (contains original loss_percentage from run.sh)
+                    benchmarker.plot_queue_memory_consumption(main_results_df)
+                    print("✅ Queue memory consumption plots generated successfully using main results!")
+                    return
+        except Exception as e:
+            print(f"⚠️ Could not load main results: {e}")
+
+        # Fallback to drain statistics if main results not available
+        if main_results_df is None:
+            print("📊 Falling back to drain statistics...")
+            drain_df = benchmarker.load_drain_statistics()
+            if drain_df is not None:
+                benchmarker.plot_queue_memory_consumption(drain_df)
+                print("✅ Queue memory consumption plots generated using drain statistics!")
+            else:
+                print("❌ No drain statistics found. Make sure you have log files in benchmark_results/logs/")
+        else:
+            print("❌ No data found. Run some benchmarks first or check benchmark_results/ directory")
         return
 
     try:

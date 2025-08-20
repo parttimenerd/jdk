@@ -13,6 +13,8 @@ MODE="native"
 RENAISSANCE_ITERATIONS=""
 NATIVE_DURATION=""
 QUEUE_SIZE=""
+DYNAMIC_QUEUE_SIZE=""
+RESTART_FREQUENCY=""
 NO_ANALYSIS=false
 NO_PLOTS=false
 
@@ -24,7 +26,7 @@ show_help() {
 Dynamic Stack CPU Stress Test & Renaissance Benchmark Runner
 
 USAGE:
-    run.sh [--mode native|renaissance] [-d duration] [-s stack_depth] [-t threads] [-j jvm_opts] [-f stats_file] [-i sampling_interval] [-n iterations] [--native-duration seconds] [-q queue_size] [-h]
+    run.sh [--mode native|renaissance] [-d duration] [-s stack_depth] [-t threads] [-j jvm_opts] [-f stats_file] [-i sampling_interval] [-n iterations] [--native-duration seconds] [-q queue_size] [--dynamic-queue-size] [--restart-frequency N] [-h]
 
 OPTIONS:
     --mode MODE          Execution mode: 'native' (default) or 'renaissance'
@@ -37,6 +39,8 @@ OPTIONS:
     -n iterations        Number of iterations for Renaissance benchmarks [renaissance mode only]
     --native-duration    Duration for each native call before returning to Java (default: entire duration) [native mode only]
     -q queue_size        JFR queue size override (default: 500, scaled by sampling frequency)
+    --dynamic-queue-size Enable dynamic queue sizing (DYNAMIC_QUEUE_SIZE=true)
+    --restart-frequency N Restart threads every N native calls (0 = no restarts, default: 0) [native mode only]
     --no-analysis        Skip automatic drain statistics analysis (no plots/visualizations)
     --no-plots           Run analysis but skip plot/visualization generation
     -h                   Show this help message
@@ -50,6 +54,10 @@ NATIVE MODE EXAMPLES:
     run.sh -d 30 --native-duration 2 -i 1ms      # 30s total, 2s native chunks, with JFR sampling
     run.sh -d 20 -i 1ms -q 1000                  # 20s test with 1ms sampling and 1000 queue size
     run.sh -q 2000 -i 100us                      # Override queue size for high-frequency sampling
+    run.sh --dynamic-queue-size -i 1ms           # Enable dynamic queue sizing with 1ms sampling
+    run.sh --restart-frequency 1000 -d 30        # Restart threads every 1000 native calls
+
+Renaissance mode examples:
 
 RENAISSANCE MODE EXAMPLES:
     run.sh --mode renaissance                 # Run all Renaissance benchmarks with default iterations
@@ -182,6 +190,8 @@ while [[ $# -gt 0 ]]; do
         -n) RENAISSANCE_ITERATIONS="$2"; shift 2 ;;
         --native-duration) NATIVE_DURATION="$2"; shift 2 ;;
         -q) QUEUE_SIZE="$2"; shift 2 ;;
+        --dynamic-queue-size) DYNAMIC_QUEUE_SIZE="true"; shift ;;
+        --restart-frequency) RESTART_FREQUENCY="$2"; shift 2 ;;
         --no-analysis) NO_ANALYSIS=true; shift ;;
         --no-plots) NO_PLOTS=true; shift ;;
         -h) show_help; exit 0 ;;
@@ -208,6 +218,14 @@ if [[ "$MODE" == "native" ]]; then
         echo "   Consider reducing -s (stack depth) or -t (threads) parameters"
         echo "   Example: ./run2.sh -s $((MAX_TOTAL_CLASSES / THREADS)) -t $THREADS"
         exit 1
+    fi
+
+    # Validate restart frequency
+    if [[ -n "$RESTART_FREQUENCY" ]]; then
+        if ! [[ "$RESTART_FREQUENCY" =~ ^[0-9]+$ ]] || [[ "$RESTART_FREQUENCY" -lt 0 ]]; then
+            echo "❌ ERROR: Restart frequency must be a non-negative integer, got: '$RESTART_FREQUENCY'"
+            exit 1
+        fi
     fi
 
     echo "🔧 NATIVE MODE: Dynamic Stack CPU Stress Test"
@@ -501,7 +519,7 @@ if [[ -n "$SAMPLING_INTERVAL" ]]; then
         JFR_FILENAME="profile_${SAMPLING_INTERVAL}.jfr"
     fi
 
-    JFR_OPTIONS="-XX:+FlightRecorder -XX:StartFlightRecording=jdk.CPUTimeSample#enabled=true,jdk.CPUTimeSample#throttle=${SAMPLING_INTERVAL},filename=${JFR_FILENAME}"
+    JFR_OPTIONS="-XX:StartFlightRecording=jdk.CPUTimeSample#enabled=true,jdk.CPUTimeSample#throttle=${SAMPLING_INTERVAL},filename=${JFR_FILENAME}"
     echo "Enabling JFR CPU time sampling with ${SAMPLING_INTERVAL} interval"
     echo "JFR profile will be saved to: ${JFR_FILENAME}"
 
@@ -512,7 +530,7 @@ if [[ -n "$SAMPLING_INTERVAL" ]]; then
         # Update JFR filename to match the auto-generated stats file
         STATS_BASE=$(basename "$STATS_FILE" .txt)
         JFR_FILENAME="${STATS_BASE}_${SAMPLING_INTERVAL}.jfr"
-        JFR_OPTIONS="-XX:+FlightRecorder -XX:StartFlightRecording=jdk.CPUTimeSample#enabled=true,jdk.CPUTimeSample#throttle=${SAMPLING_INTERVAL},filename=${JFR_FILENAME}"
+        JFR_OPTIONS="-XX:StartFlightRecording=jdk.CPUTimeSample#enabled=true,jdk.CPUTimeSample#throttle=${SAMPLING_INTERVAL},filename=${JFR_FILENAME}"
         echo "Updated JFR profile filename to: ${JFR_FILENAME}"
     fi
 
@@ -536,6 +554,12 @@ if [[ -n "$QUEUE_SIZE" ]]; then
     echo "JFR queue size override: $QUEUE_SIZE"
 fi
 
+# Export DYNAMIC_QUEUE_SIZE if specified
+if [[ -n "$DYNAMIC_QUEUE_SIZE" ]]; then
+    export DYNAMIC_QUEUE_SIZE
+    echo "Dynamic queue sizing: $DYNAMIC_QUEUE_SIZE"
+fi
+
 echo "Starting test execution..."
 
 # Execute based on mode
@@ -548,9 +572,10 @@ if [[ "$MODE" == "native" ]]; then
 
     # Use custom JDK's java runtime for native stress test
     if [[ -n "$NATIVE_DURATION" ]]; then
-        $JAVA_HOME/bin/java --enable-native-access=ALL-UNNAMED $JVM_OPTS -Djava.library.path=. -cp "$CLASSPATH" DynamicStackCPUStressTest $STACK_DEPTH $DURATION $THREADS $NATIVE_DURATION
+        $JAVA_HOME/bin/java --enable-native-access=ALL-UNNAMED $JVM_OPTS -Djava.library.path=. -cp "$CLASSPATH" DynamicStackCPUStressTest $STACK_DEPTH $DURATION $THREADS $NATIVE_DURATION ${RESTART_FREQUENCY:-0}
     else
-        $JAVA_HOME/bin/java --enable-native-access=ALL-UNNAMED $JVM_OPTS -Djava.library.path=. -cp "$CLASSPATH" DynamicStackCPUStressTest $STACK_DEPTH $DURATION $THREADS
+        # When native duration is not specified, use the total duration as native duration and pass restart frequency
+        $JAVA_HOME/bin/java --enable-native-access=ALL-UNNAMED $JVM_OPTS -Djava.library.path=. -cp "$CLASSPATH" DynamicStackCPUStressTest $STACK_DEPTH $DURATION $THREADS $DURATION ${RESTART_FREQUENCY:-0}
     fi
 elif [[ "$MODE" == "renaissance" ]]; then
     # Run Renaissance benchmarks
@@ -585,10 +610,23 @@ print_jfr_lost_events() {
             fi
 
             # Extract and highlight lost samples count
-            local lost_samples=$(echo "$jfr_stats" | grep "Lost Samples:" | awk '{print $3}' | tr -d ',')
+            local lost_samples
+            local total_samples
+            lost_samples=$(echo "$jfr_stats" | grep "Lost Samples:" | awk '{print $3}' | tr -d ',')
+            total_samples=$(echo "$jfr_stats" | grep "Total Samples:" | awk '{print $3}' | tr -d ',')
+
+            # Calculate loss percentage
+            local loss_percentage="0.0"
+            if [[ -n "$total_samples" && "$total_samples" != "0" && -n "$lost_samples" ]]; then
+                loss_percentage=$(echo "scale=3; ($lost_samples / $total_samples) * 100" | bc -l)
+            fi
+
+            # Output loss percentage for parsing by benchmark scripts
+            echo "LOSS_PERCENTAGE: $loss_percentage"
+
             if [[ -n "$lost_samples" && "$lost_samples" != "0" ]]; then
                 echo
-                echo "⚠️  ATTENTION: $lost_samples lost samples detected!"
+                echo "⚠️  ATTENTION: $lost_samples lost samples detected ($loss_percentage%)!"
                 echo "   This may indicate JFR buffer overflow or high system load."
             else
                 echo
