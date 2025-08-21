@@ -137,7 +137,7 @@ def has_json_parsing_errors(log_path: Path, verbose: bool = False) -> bool:
         return True  # Assume there are errors if we can't check
 
 # Configuration
-QUEUE_SIZES = [1, 2, 5, 10, 20, 50, 100, 200, 300, 400, 500, 750, 1000]
+QUEUE_SIZES = [20]# [1, 2, 5, 10, 20, 50, 100, 200, 300, 400, 500, 750, 1000]
 # restart threads after every native call
 RESTART_THREADS_EVERY = 1
 SAMPLING_INTERVALS = ["1ms", "10ms", "20ms"] #  ["1ms", "2ms", "5ms", "10ms", "20ms"]
@@ -440,8 +440,15 @@ class BenchmarkRunner:
             table_filename = base_filename.replace('.png', '.txt')
             table_path = tables_subdir / table_filename
 
-            # Loss categories as defined in the plotting function
-            loss_categories = ['stw_gc', 'invalid_state', 'could_not_acquire_lock', 'enqueue_failed']
+            # Loss categories as defined in the plotting function (expanded set)
+            main_categories = ['stw_gc', 'invalid_state', 'could_not_acquire_lock', 'enqueue_failed']
+            thread_state_categories = [
+                'state_thread_uninitialized', 'state_thread_new', 'state_thread_new_trans',
+                'state_thread_in_native_trans', 'state_thread_in_vm', 'state_thread_in_vm_trans',
+                'state_thread_in_java_trans', 'state_thread_blocked', 'state_thread_blocked_trans'
+            ]
+            context_categories = ['no_vm_ops', 'in_jfr_safepoint', 'other']
+            all_loss_categories = main_categories + thread_state_categories + context_categories
 
             # Process data to get loss kinds breakdown
             loss_data = []
@@ -459,7 +466,7 @@ class BenchmarkRunner:
                     total_lost_samples = row.get('total_lost_samples', 0)
                 else:
                     # Try to get from flattened CSV format
-                    for category in loss_categories:
+                    for category in all_loss_categories:
                         csv_col = f'loss_kind_{category}'
                         if csv_col in row:
                             loss_kinds[category] = row[csv_col] if pd.notna(row[csv_col]) else 0
@@ -467,7 +474,7 @@ class BenchmarkRunner:
 
                 if loss_kinds and total_lost_samples > 0:
                     overall_loss_pct = row['loss_percentage']
-                    for category in loss_categories:
+                    for category in all_loss_categories:
                         category_count = loss_kinds.get(category, 0)
                         category_loss_pct = (category_count / total_lost_samples) * overall_loss_pct if total_lost_samples > 0 else 0.0
 
@@ -548,6 +555,126 @@ class BenchmarkRunner:
 
         except Exception as e:
             self.vprint(f"    ⚠️ Error saving loss kinds ASCII table {base_filename}: {e}")
+
+    def save_vm_operations_ascii_table(self, df: pd.DataFrame, base_filename: str, title: str, progress_mode: bool = False):
+        """Save an ASCII table for VM operations breakdown"""
+        try:
+            # Create tables subdirectory if needed
+            tables_subdir = TABLES_DIR / "vm_operations"
+            if progress_mode:
+                tables_subdir = TABLES_DIR / "progress" / "vm_operations"
+            tables_subdir.mkdir(parents=True, exist_ok=True)
+
+            # Generate filename
+            table_filename = base_filename.replace('.png', '_vm_ops.txt')
+            table_path = tables_subdir / table_filename
+
+            # VM operations categories
+            vm_ops_categories = ['vm_ops_gc', 'vm_ops_safepoint', 'vm_ops_other', 'vm_ops_none']
+
+            # Process data to get VM operations breakdown
+            vm_ops_data = []
+            for _, row in df.iterrows():
+                queue_size = row['queue_size']
+                interval = row['interval']
+
+                # Get VM operations data (handle both raw dict and flattened CSV format)
+                vm_operations = {}
+                total_vm_ops = 0
+
+                # Try to get from raw dict format first
+                if 'vm_operations' in row and isinstance(row['vm_operations'], dict):
+                    vm_operations = row['vm_operations']
+                    total_vm_ops = sum(vm_operations.values())
+                else:
+                    # Try to get from flattened CSV format
+                    for category in vm_ops_categories:
+                        csv_col = f'vm_ops_{category.replace("vm_ops_", "")}'
+                        if csv_col in row:
+                            vm_operations[category] = row[csv_col] if pd.notna(row[csv_col]) else 0
+                            total_vm_ops += vm_operations[category]
+
+                if vm_operations and total_vm_ops > 0:
+                    for category in vm_ops_categories:
+                        category_count = vm_operations.get(category, 0)
+                        category_pct = (category_count / total_vm_ops * 100) if total_vm_ops > 0 else 0.0
+
+                        vm_ops_data.append({
+                            'queue_size': queue_size,
+                            'interval': interval,
+                            'vm_ops_category': category,
+                            'percentage': category_pct,
+                            'count': category_count,
+                            'total_vm_ops': total_vm_ops
+                        })
+
+            if not vm_ops_data:
+                self.vprint(f"    ⚠️ No VM operations data available for table {base_filename}")
+                return
+
+            vm_ops_df = pd.DataFrame(vm_ops_data)
+
+            # Create ASCII table content
+            with open(table_path, 'w') as f:
+                f.write(f"{title} - VM Operations Breakdown\n")
+                f.write("=" * (len(title) + 25) + "\n\n")
+
+                # Group by interval
+                intervals = sorted(vm_ops_df['interval'].unique())
+
+                for interval in intervals:
+                    interval_data = vm_ops_df[vm_ops_df['interval'] == interval]
+                    f.write(f"Sampling Interval: {interval}ms\n")
+                    f.write("-" * 40 + "\n")
+
+                    # Get unique queue sizes for this interval
+                    queue_sizes = sorted(interval_data['queue_size'].unique())
+
+                    for queue_size in queue_sizes:
+                        queue_data = interval_data[interval_data['queue_size'] == queue_size]
+                        f.write(f"\nQueue Size: {int(queue_size):,}\n")
+
+                        # Create table headers
+                        headers = ["VM Operation", "Count", "Percentage"]
+                        col_widths = [20, 10, 12]
+
+                        # Write headers
+                        header_line = " | ".join(h.ljust(w) for h, w in zip(headers, col_widths))
+                        f.write(header_line + "\n")
+                        f.write("-" * len(header_line) + "\n")
+
+                        # Write data rows
+                        for _, row in queue_data.iterrows():
+                            category = row['vm_ops_category'].replace('vm_ops_', '').replace('_', ' ').title()
+                            count = int(row['count'])
+                            percentage = row['percentage']
+
+                            values = [category, f"{count:,}", f"{percentage:.1f}%"]
+                            data_line = " | ".join(v.ljust(w) for v, w in zip(values, col_widths))
+                            f.write(data_line + "\n")
+
+                        total_ops = queue_data.iloc[0]['total_vm_ops'] if len(queue_data) > 0 else 0
+                        f.write(f"\nTotal VM Operations: {total_ops:,}\n")
+
+                    f.write("\n" + "=" * 60 + "\n\n")
+
+                # Add overall summary
+                f.write("Overall Summary:\n")
+                f.write("-" * 16 + "\n")
+
+                category_totals = vm_ops_df.groupby('vm_ops_category').agg({
+                    'count': 'sum',
+                    'percentage': 'mean'
+                }).round(1)
+
+                for category, data in category_totals.iterrows():
+                    category_name = category.replace('vm_ops_', '').replace('_', ' ').title()
+                    f.write(f"{category_name}: {data['count']:,} operations (avg {data['percentage']:.1f}%)\n")
+
+            self.vprint(f"    📋 Saved VM operations ASCII table: {table_path}")
+
+        except Exception as e:
+            self.vprint(f"    ⚠️ Error saving VM operations ASCII table {base_filename}: {e}")
 
     def flatten_for_csv(self, results: List[Dict]) -> pd.DataFrame:
         """Flatten complex nested fields for CSV export"""
@@ -898,6 +1025,11 @@ class BenchmarkRunner:
             total_lost_samples = extracted_data.get('total_lost_samples', 0)
             main_loss_percentage = extracted_data.get('main_loss_percentage', 0)
 
+            # Extract VM operations data if available
+            vm_operations = extracted_data.get('vm_operations', {})
+            vm_op_percentages = extracted_data.get('vm_op_percentages', {})
+            total_vm_ops_context = extracted_data.get('total_vm_ops_context', 0)
+
             result_data = {
                 'queue_size': queue_size,
                 'interval': interval,
@@ -909,6 +1041,9 @@ class BenchmarkRunner:
                 'loss_kind_percentages': loss_kind_percentages,
                 'total_lost_samples': total_lost_samples,
                 'main_loss_percentage': main_loss_percentage,
+                'vm_operations': vm_operations,
+                'vm_op_percentages': vm_op_percentages,
+                'total_vm_ops_context': total_vm_ops_context,
                 'out_of_thread_events': out_of_thread_events,
                 'out_of_thread_percentage': out_of_thread_percentage,
                 'out_of_thread_details': out_of_thread_details,
@@ -1750,27 +1885,27 @@ class BenchmarkRunner:
                 # Parse the last entry (most recent/complete statistics)
                 last_stats_line = lost_stats_matches[-1]
 
-                # Initialize loss kind statistics
+                # Initialize loss kind statistics with all categories from C++ output
                 loss_kinds = {
                     'stw_gc': 0,
                     'invalid_state': 0,
                     'could_not_acquire_lock': 0,
                     'enqueue_failed': 0,
-                    'other': 0  # sum of all other loss types (excluding VM ops)
-                }
-
-                # Initialize VM operations tracking
-                vm_operations = {
+                    'state_thread_uninitialized': 0,
+                    'state_thread_new': 0,
+                    'state_thread_new_trans': 0,
+                    'state_thread_in_native_trans': 0,
+                    'state_thread_in_vm': 0,
+                    'state_thread_in_vm_trans': 0,
+                    'state_thread_in_java_trans': 0,
+                    'state_thread_blocked': 0,
+                    'state_thread_blocked_trans': 0,
                     'no_vm_ops': 0,
                     'in_jfr_safepoint': 0,
-                    'vm_op_handshakeallthreads': 0,
-                    'vm_op_g1collectforfullgc': 0,
-                    'vm_op_g1incremental': 0,
-                    'vm_op_cleanup': 0,
-                    'vm_op_other': 0  # sum of all other VM operations
+                    'other': 0  # sum of all other loss types (excluding known VM ops)
                 }
 
-                # Parse each key=value pair
+                # Parse each key=value pair from the LOST_SAMPLE_STATS line
                 pairs = last_stats_line.split()
                 total_lost_samples = 0
 
@@ -1779,35 +1914,51 @@ class BenchmarkRunner:
                         key, value = pair.split('=', 1)
                         try:
                             value = int(value)
-                            total_lost_samples += value
 
+                            # Add to total for known loss types (not VM ops)
                             if key in loss_kinds:
                                 loss_kinds[key] = value
-                            elif key in ['no_vm_ops', 'in_jfr_safepoint']:
-                                vm_operations[key] = value
+                                # Don't add VM ops tracking fields to total lost samples
+                                if key not in ['no_vm_ops', 'in_jfr_safepoint']:
+                                    total_lost_samples += value
                             elif key.startswith('vm_op_'):
-                                # Convert to lowercase for matching
-                                key_lower = key.lower()
-                                if key_lower in vm_operations:
-                                    vm_operations[key_lower] = value
-                                else:
-                                    vm_operations['vm_op_other'] += value
-                            elif key in ['state_thread_uninitialized', 'state_thread_new',
-                                        'state_thread_new_trans', 'state_thread_in_native_trans',
-                                        'state_thread_in_vm', 'state_thread_in_vm_trans',
-                                        'state_thread_in_java_trans', 'state_thread_blocked',
-                                        'state_thread_blocked_trans']:
+                                # Handle VM operations separately - these are not lost samples but context
+                                # Just track them for analysis but don't add to total
+                                pass  # VM ops are tracked separately in the C++ code
+                            else:
+                                # Unknown field - add to 'other' category
                                 loss_kinds['other'] += value
+                                total_lost_samples += value
                         except ValueError:
                             continue
 
                 if total_lost_samples > 0:
-                    self.vprint(f"    📊 Loss breakdown: STW_GC={loss_kinds['stw_gc']}, Invalid_State={loss_kinds['invalid_state']}, "
-                              f"Lock={loss_kinds['could_not_acquire_lock']}, Enqueue={loss_kinds['enqueue_failed']}, Other={loss_kinds['other']}")
-                    self.vprint(f"    📊 VM operations: no_vm_ops={vm_operations['no_vm_ops']}, in_jfr_safepoint={vm_operations['in_jfr_safepoint']}, "
-                              f"handshake={vm_operations['vm_op_handshakeallthreads']}, other_vm_ops={vm_operations['vm_op_other']}")
+                    # Print detailed breakdown with all thread states
+                    self.vprint(f"    📊 Main loss categories:")
+                    self.vprint(f"       STW_GC: {loss_kinds['stw_gc']}")
+                    self.vprint(f"       Invalid_State: {loss_kinds['invalid_state']}")
+                    self.vprint(f"       Could_Not_Acquire_Lock: {loss_kinds['could_not_acquire_lock']}")
+                    self.vprint(f"       Enqueue_Failed: {loss_kinds['enqueue_failed']}")
 
-                    # Calculate percentages for loss kinds
+                    self.vprint(f"    📊 Thread state breakdown:")
+                    self.vprint(f"       Uninitialized: {loss_kinds['state_thread_uninitialized']}")
+                    self.vprint(f"       New: {loss_kinds['state_thread_new']}")
+                    self.vprint(f"       New_Trans: {loss_kinds['state_thread_new_trans']}")
+                    self.vprint(f"       Native_Trans: {loss_kinds['state_thread_in_native_trans']}")
+                    self.vprint(f"       VM: {loss_kinds['state_thread_in_vm']}")
+                    self.vprint(f"       VM_Trans: {loss_kinds['state_thread_in_vm_trans']}")
+                    self.vprint(f"       Java_Trans: {loss_kinds['state_thread_in_java_trans']}")
+                    self.vprint(f"       Blocked: {loss_kinds['state_thread_blocked']}")
+                    self.vprint(f"       Blocked_Trans: {loss_kinds['state_thread_blocked_trans']}")
+
+                    self.vprint(f"    📊 Safepoint context:")
+                    self.vprint(f"       No_VM_Ops: {loss_kinds['no_vm_ops']}")
+                    self.vprint(f"       In_JFR_Safepoint: {loss_kinds['in_jfr_safepoint']}")
+                    self.vprint(f"       Other: {loss_kinds['other']}")
+
+                    self.vprint(f"    📊 Total lost samples: {total_lost_samples}")
+
+                    # Calculate percentages for all loss kinds
                     loss_kind_percentages = {}
                     for kind, count in loss_kinds.items():
                         if total_lost_samples > 0:
@@ -1815,28 +1966,83 @@ class BenchmarkRunner:
                         else:
                             loss_kind_percentages[kind] = 0.0
 
-                    # Calculate percentages for VM operations
-                    vm_op_percentages = {}
-                    for kind, count in vm_operations.items():
-                        if total_lost_samples > 0:
-                            vm_op_percentages[kind] = (count / total_lost_samples) * 100
-                        else:
-                            vm_op_percentages[kind] = 0.0
-
-                    result['loss_kinds'] = loss_kinds
-                    result['loss_kind_percentages'] = loss_kind_percentages
-                    result['vm_operations'] = vm_operations
-                    result['vm_op_percentages'] = vm_op_percentages
-                    result['total_lost_samples'] = total_lost_samples
-
-                    # Calculate the main loss categories as requested (stw_gc + invalid_state + could_not_acquire_lock + enqueue_failed)
-                    main_loss_categories = loss_kinds['stw_gc'] + loss_kinds['invalid_state'] + loss_kinds['could_not_acquire_lock'] + loss_kinds['enqueue_failed']
+                    # Calculate the main loss categories as requested (main categories only)
+                    main_loss_categories = (loss_kinds['stw_gc'] + loss_kinds['invalid_state'] +
+                                          loss_kinds['could_not_acquire_lock'] + loss_kinds['enqueue_failed'])
                     if total_lost_samples > 0:
                         main_loss_percentage = (main_loss_categories / total_lost_samples) * 100
                         result['main_loss_percentage'] = main_loss_percentage
                         self.vprint(f"    📊 Main loss categories: {main_loss_percentage:.2f}% ({main_loss_categories}/{total_lost_samples})")
+
+                    result['loss_kinds'] = loss_kinds
+                    result['loss_kind_percentages'] = loss_kind_percentages
+                    result['total_lost_samples'] = total_lost_samples
+
+                    print(f"    ✅ LOST_SAMPLE_STATS parsing completed: {len(loss_kinds)} categories, {total_lost_samples} total lost samples")
             else:
                 print(f"    ⚠️ No LOST_SAMPLE_STATS found in log file")
+
+            # Parse VM_OPS_STATS for VM operations context information
+            print(f"    🔍 Searching for VM_OPS_STATS lines...")
+            vm_ops_stats_pattern = r'VM_OPS_STATS:\s*(.+)'
+            vm_ops_matches = re.findall(vm_ops_stats_pattern, content)
+
+            if vm_ops_matches:
+                print(f"    📊 Found {len(vm_ops_matches)} VM_OPS_STATS entries")
+
+                # Parse the last entry (most recent/complete statistics)
+                last_vm_ops_line = vm_ops_matches[-1]
+
+                # Initialize VM operations tracking
+                vm_operations = {
+                    'no_vm_ops': 0,
+                    'in_jfr_safepoint': 0,
+                    'vm_op_other': 0  # sum of all other VM operations
+                }
+
+                # Parse each key=value pair from the VM_OPS_STATS line
+                pairs = last_vm_ops_line.split()
+                total_vm_ops_context = 0
+
+                for pair in pairs:
+                    if '=' in pair:
+                        key, value = pair.split('=', 1)
+                        try:
+                            value = int(value)
+
+                            if key in ['no_vm_ops', 'in_jfr_safepoint']:
+                                vm_operations[key] = value
+                                total_vm_ops_context += value
+                            elif key.startswith('vm_op_'):
+                                # Collect all VM operations into vm_op_other for summary
+                                vm_operations['vm_op_other'] += value
+                                total_vm_ops_context += value
+                                # Also store individual VM operations
+                                vm_operations[key] = value
+                        except ValueError:
+                            continue
+
+                if total_vm_ops_context > 0:
+                    self.vprint(f"    📊 VM Operations context:")
+                    self.vprint(f"       No_VM_Ops: {vm_operations['no_vm_ops']}")
+                    self.vprint(f"       In_JFR_Safepoint: {vm_operations['in_jfr_safepoint']}")
+                    self.vprint(f"       VM_Operations_Total: {vm_operations['vm_op_other']}")
+
+                    # Calculate percentages for VM operations context
+                    vm_op_percentages = {}
+                    for kind, count in vm_operations.items():
+                        if total_vm_ops_context > 0:
+                            vm_op_percentages[kind] = (count / total_vm_ops_context) * 100
+                        else:
+                            vm_op_percentages[kind] = 0.0
+
+                    result['vm_operations'] = vm_operations
+                    result['vm_op_percentages'] = vm_op_percentages
+                    result['total_vm_ops_context'] = total_vm_ops_context
+
+                    print(f"    ✅ VM_OPS_STATS parsing completed: {len(vm_operations)} categories, {total_vm_ops_context} total context entries")
+            else:
+                print(f"    ⚠️ No VM_OPS_STATS found in log file")
 
             # First try direct search for all statistics in entire content
             self.vprint(f"    🔍 Searching entire log for JFR statistics...")
@@ -3771,6 +3977,10 @@ class BenchmarkRunner:
             print("⚠️ No data with loss kinds information found")
             return
 
+        # Determine test type based on presence of native_duration column
+        test_type = 'native' if 'native_duration' in df_with_loss_kinds.columns else 'renaissance'
+        print(f"    📊 Creating plots for {test_type} test type")
+
         # Use only the latest entry for each unique configuration to avoid duplicates
         print(f"    📊 Deduplicating data: {len(df_with_loss_kinds)} rows before deduplication")
 
@@ -3784,17 +3994,26 @@ class BenchmarkRunner:
         df_deduplicated = df_with_loss_kinds.groupby(config_columns).last().reset_index()
         print(f"    📊 After deduplication: {len(df_deduplicated)} rows")
 
-        # Create the output directory for loss kind plots
-        loss_plots_dir = PLOTS_DIR / "loss_kinds"
-        loss_plots_dir.mkdir(exist_ok=True)
+        # Create the output directory for loss kind plots with test type separation
+        loss_plots_dir = PLOTS_DIR / "loss_kinds" / test_type
+        loss_plots_dir.mkdir(parents=True, exist_ok=True)
 
         # Get unique intervals
         intervals = sorted(df_deduplicated['interval'].unique())
 
         print(f"📊 Found {len(intervals)} intervals: {intervals}")
 
-        # Define loss categories
-        loss_categories = ['stw_gc', 'invalid_state', 'could_not_acquire_lock', 'enqueue_failed']
+        # Define all loss categories (main categories and detailed thread states)
+        main_categories = ['stw_gc', 'invalid_state', 'could_not_acquire_lock', 'enqueue_failed']
+        thread_state_categories = [
+            'state_thread_uninitialized', 'state_thread_new', 'state_thread_new_trans',
+            'state_thread_in_native_trans', 'state_thread_in_vm', 'state_thread_in_vm_trans',
+            'state_thread_in_java_trans', 'state_thread_blocked', 'state_thread_blocked_trans'
+        ]
+        context_categories = ['no_vm_ops', 'in_jfr_safepoint', 'other']
+
+        # All categories for comprehensive analysis
+        all_loss_categories = main_categories + thread_state_categories + context_categories
 
         # Calculate loss percentages for each category
         loss_data = []
@@ -3813,7 +4032,7 @@ class BenchmarkRunner:
                 total_lost_samples = row.get('total_lost_samples', 0)
             else:
                 # Try to get from flattened CSV format
-                for category in loss_categories:
+                for category in all_loss_categories:
                     csv_col = f'loss_kind_{category}'
                     if csv_col in row:
                         loss_kinds[category] = row[csv_col] if pd.notna(row[csv_col]) else 0
@@ -3827,7 +4046,7 @@ class BenchmarkRunner:
             # Loss percentage = (category_count / total_lost_samples) * overall_loss_percentage
             overall_loss_pct = row['loss_percentage']
 
-            for category in loss_categories:
+            for category in all_loss_categories:
                 category_count = loss_kinds.get(category, 0)
                 if total_lost_samples > 0:
                     # This gives the percentage of total samples lost to this specific category
@@ -3857,7 +4076,7 @@ class BenchmarkRunner:
             fig, ax = plt.subplots(figsize=(12, 8))
 
             # Create scatter plot for each loss category
-            for category in loss_categories:
+            for category in all_loss_categories:
                 cat_data = interval_data[interval_data['loss_category'] == category]
                 if not cat_data.empty:
                     ax.scatter(cat_data['queue_size'], cat_data['loss_percentage'],
@@ -3905,7 +4124,7 @@ class BenchmarkRunner:
                 interval_data = loss_df[loss_df['interval'] == interval]
 
                 # Create scatter plot for each loss category
-                for category in loss_categories:
+                for category in all_loss_categories:
                     cat_data = interval_data[interval_data['loss_category'] == category]
                     if not cat_data.empty:
                         ax.scatter(cat_data['queue_size'], cat_data['loss_percentage'],
@@ -3936,6 +4155,186 @@ class BenchmarkRunner:
 
         print(f"📊 Loss kinds plots saved to {loss_plots_dir.absolute()}")
 
+        # Create detailed breakdown plots for different categories
+        # Combine thread states into a single breakdown instead of individual plots
+        self.plot_loss_categories_breakdown(loss_df, main_categories, "Main Loss Categories", loss_plots_dir, test_type)
+        self.plot_loss_categories_breakdown(loss_df, thread_state_categories, "Thread State Breakdown", loss_plots_dir, test_type)
+        self.plot_loss_categories_breakdown(loss_df, context_categories, "Context & Other Categories", loss_plots_dir, test_type)
+
+        # Generate ASCII table for loss kinds breakdown
+        self.save_loss_kinds_ascii_table(df_deduplicated, f'{test_type}_loss_kinds_analysis.png', f'{test_type.title()} Loss Kinds Analysis', progress_mode)
+
+    def plot_loss_categories_breakdown(self, loss_df: pd.DataFrame, categories: list, title: str, output_dir, test_type: str = 'unknown'):
+        """Create focused plots for specific categories of loss reasons with logarithmic and linear scales"""
+        print(f"📊 Creating {title} plots...")
+
+        # Filter data for these specific categories
+        category_data = loss_df[loss_df['loss_category'].isin(categories)]
+
+        if category_data.empty:
+            print(f"⚠️ No data found for {title}")
+            return
+
+        # Get unique intervals
+        intervals = sorted(category_data['interval'].unique())
+        safe_title = title.lower().replace(' ', '_').replace('&', 'and')
+
+        # Create individual plots for each interval (both linear and logarithmic)
+        for interval in intervals:
+            interval_data = category_data[category_data['interval'] == interval]
+
+            if interval_data.empty:
+                continue
+
+            # Create both linear and logarithmic plots
+            for scale_type in ['linear', 'logarithmic']:
+                fig, ax = plt.subplots(figsize=(12, 8))
+
+                # Create scatter plot for each category in this group
+                for category in categories:
+                    cat_data = interval_data[interval_data['loss_category'] == category]
+                    if not cat_data.empty:
+                        ax.scatter(cat_data['queue_size'], cat_data['loss_percentage'],
+                                 label=category.replace('_', ' ').title(), alpha=0.7, s=60)
+
+                plot_title = f'{title} - {interval}ms Interval ({scale_type.title()} Scale)'
+                ax.set_title(plot_title, fontsize=14, fontweight='bold')
+                ax.set_xlabel('Queue Size', fontsize=12)
+                ax.set_ylabel('Loss Percentage (%)', fontsize=12)
+                ax.grid(True, alpha=0.6)
+                ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+
+                # Set scale
+                if scale_type == 'logarithmic':
+                    ax.set_xscale('log')
+                    # Only set y-axis to log scale if there are positive values
+                    if category_data['loss_percentage'].min() > 0:
+                        ax.set_yscale('log')
+                else:
+                    # Set minimum y-axis to 0 for better comparison in linear scale
+                    ax.set_ylim(bottom=0)
+
+                # Format axes
+                if scale_type == 'logarithmic':
+                    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x >= 1 else f'{x:.1f}'))
+                    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.3f}'))
+                else:
+                    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+                    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.3f}'))
+
+                # Save plot
+                plt.savefig(output_dir / f'{safe_title}_{interval}ms_{scale_type}.png', dpi=600, bbox_inches='tight', pad_inches=0.1)
+                plt.close()
+
+            # Generate ASCII table for this interval
+            interval_df = self._prepare_interval_dataframe_for_table(interval_data, categories)
+            if not interval_df.empty:
+                self.save_loss_kinds_ascii_table(interval_df, f'{test_type}_{safe_title}_{interval}ms.png', f'{test_type.title()} {title} - {interval}ms Interval')
+
+        # Create combined plot with all intervals (both linear and logarithmic)
+        if len(intervals) > 1:
+            for scale_type in ['linear', 'logarithmic']:
+                fig, axes = plt.subplots(1, len(intervals), figsize=(6 * len(intervals), 6))
+                if len(intervals) == 1:
+                    axes = [axes]
+
+                # Calculate common y-axis range
+                if scale_type == 'linear':
+                    y_min = 0
+                    y_max = category_data['loss_percentage'].max() * 1.1 if not category_data.empty else 1
+                else:
+                    y_min = max(category_data['loss_percentage'].min() * 0.5, 0.001) if not category_data.empty else 0.001
+                    y_max = category_data['loss_percentage'].max() * 2 if not category_data.empty else 1
+
+                for idx, interval in enumerate(intervals):
+                    ax = axes[idx]
+                    interval_data = category_data[category_data['interval'] == interval]
+
+                    # Create scatter plot for each category
+                    for category in categories:
+                        cat_data = interval_data[interval_data['loss_category'] == category]
+                        if not cat_data.empty:
+                            ax.scatter(cat_data['queue_size'], cat_data['loss_percentage'],
+                                     label=category.replace('_', ' ').title(), alpha=0.7, s=40)
+
+                    ax.set_title(f'{interval}ms Interval', fontsize=12, fontweight='bold')
+                    ax.set_xlabel('Queue Size', fontsize=10)
+                    ax.set_ylabel('Loss %', fontsize=10)
+                    ax.grid(True, alpha=0.6)
+
+                    # Set scale
+                    if scale_type == 'logarithmic':
+                        ax.set_xscale('log')
+                        # Only set y-axis to log scale if there are positive values
+                        if category_data['loss_percentage'].min() > 0:
+                            ax.set_yscale('log')
+                            ax.set_ylim(y_min, y_max)
+                    else:
+                        ax.set_ylim(y_min, y_max)
+
+                    # Format axes
+                    if scale_type == 'logarithmic':
+                        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x >= 1 else f'{x:.1f}'))
+                        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.3f}'))
+                    else:
+                        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+                        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.3f}'))
+
+                # Add legend to the last subplot
+                if intervals:
+                    axes[-1].legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+
+                plt.suptitle(f'{title} - All Intervals ({scale_type.title()} Scale)', fontsize=16, fontweight='bold')
+                plt.tight_layout()
+                plt.savefig(output_dir / f'{safe_title}_all_intervals_{scale_type}.png', dpi=600, bbox_inches='tight', pad_inches=0.1)
+                plt.close()
+
+            # Generate ASCII table for all intervals combined
+            combined_df = self._prepare_interval_dataframe_for_table(category_data, categories)
+            if not combined_df.empty:
+                self.save_loss_kinds_ascii_table(combined_df, f'{test_type}_{safe_title}_all_intervals.png', f'{test_type.title()} {title} - All Intervals')
+
+        print(f"📊 {title} plots saved (linear and logarithmic scales)")
+
+    def _prepare_interval_dataframe_for_table(self, loss_df: pd.DataFrame, categories: list) -> pd.DataFrame:
+        """Convert loss DataFrame format to the format expected by ASCII table function"""
+        if loss_df.empty:
+            return pd.DataFrame()
+
+        # Group by configuration and aggregate data
+        config_columns = ['queue_size', 'interval']
+        if 'stack_depth' in loss_df.columns:
+            config_columns.append('stack_depth')
+        if 'native_duration' in loss_df.columns:
+            config_columns.append('native_duration')
+
+        # Create aggregated rows for ASCII table
+        table_rows = []
+        for config, group in loss_df.groupby(config_columns):
+            if isinstance(config, tuple):
+                config_dict = dict(zip(config_columns, config))
+            else:
+                config_dict = {config_columns[0]: config}
+
+            # Create a mock loss_kinds dictionary for the table
+            loss_kinds = {}
+            for category in categories:
+                category_data = group[group['loss_category'] == category]
+                if not category_data.empty:
+                    # Use the loss percentage directly as a proxy for count
+                    loss_kinds[category] = category_data['loss_percentage'].iloc[0]
+                else:
+                    loss_kinds[category] = 0.0
+
+            # Add other expected fields
+            config_dict['loss_kinds'] = loss_kinds
+            config_dict['total_samples'] = 100000  # Mock value for percentage calculation
+            config_dict['lost_samples'] = sum(loss_kinds.values()) * 1000  # Mock proportional value
+
+            table_rows.append(config_dict)
+
+        return pd.DataFrame(table_rows)
+
     def plot_vm_operations(self, df: pd.DataFrame, progress_mode: bool = False):
         """Create plots for VM operations breakdown by queue size and interval"""
         print("📊 Creating VM operations plots...")
@@ -3946,6 +4345,10 @@ class BenchmarkRunner:
         if df_with_loss_kinds.empty:
             print("⚠️ No data with loss kinds information found")
             return
+
+        # Determine test type based on presence of native_duration column
+        test_type = 'native' if 'native_duration' in df_with_loss_kinds.columns else 'renaissance'
+        print(f"    📊 Creating VM operations plots for {test_type} test type")
 
         # Use only the latest entry for each unique configuration to avoid duplicates
         print(f"    📊 Deduplicating VM operations data: {len(df_with_loss_kinds)} rows before deduplication")
@@ -3960,9 +4363,9 @@ class BenchmarkRunner:
         df_deduplicated = df_with_loss_kinds.groupby(config_columns).last().reset_index()
         print(f"    📊 After deduplication: {len(df_deduplicated)} rows")
 
-        # Create the output directory for VM operations plots
-        vm_ops_plots_dir = PLOTS_DIR / "vm_operations"
-        vm_ops_plots_dir.mkdir(exist_ok=True)
+        # Create the output directory for VM operations plots with test type separation
+        vm_ops_plots_dir = PLOTS_DIR / "vm_operations" / test_type
+        vm_ops_plots_dir.mkdir(parents=True, exist_ok=True)
 
         # Get unique intervals
         intervals = sorted(df_deduplicated['interval'].unique())
@@ -4146,6 +4549,9 @@ class BenchmarkRunner:
         plt.close()
 
         print(f"📊 VM operations plots saved to {vm_ops_plots_dir.absolute()}")
+
+        # Generate ASCII table for VM operations breakdown
+        self.save_vm_operations_ascii_table(df_deduplicated, f'{test_type}_vm_operations_analysis.png', f'{test_type.title()} VM Operations Analysis', progress_mode)
 
     def plot_renaissance_out_of_thread_percentage(self, drain_df: pd.DataFrame, progress_mode: bool = False):
         """Create plots showing percentage of 'out of thread' drainages for Renaissance tests"""

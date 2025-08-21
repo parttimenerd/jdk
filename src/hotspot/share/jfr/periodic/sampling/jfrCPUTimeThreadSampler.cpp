@@ -517,18 +517,49 @@ struct LostSampleReasons {
 LostSampleReasons lost_sample_reasons;
 
 void JfrCPUTimeThreadSampling::print_vm_ops_stats() {
-  // Print VM operations statistics
-  printf("VM_OPS_STATS: ");
-  printf("no_vm_ops=%ld ", lost_sample_reasons.no_vm_ops);
-  printf("in_jfr_safepoint=%ld", lost_sample_reasons.in_jfr_safepoint);
+  // Build the complete LOST_SAMPLE_STATS string
+  char lost_sample_stats[4096];
+  int offset = snprintf(lost_sample_stats, sizeof(lost_sample_stats),
+    "LOST_SAMPLE_STATS: stw_gc=%ld invalid_state=%ld could_not_acquire_lock=%ld enqueue_failed=%ld "
+    "state_thread_uninitialized=%ld state_thread_new=%ld state_thread_new_trans=%ld "
+    "state_thread_in_native_trans=%ld state_thread_in_vm=%ld state_thread_in_vm_trans=%ld "
+    "state_thread_in_java_trans=%ld state_thread_blocked=%ld state_thread_blocked_trans=%ld "
+    "no_vm_ops=%ld in_jfr_safepoint=%ld",
+    lost_sample_reasons.stw_gc, lost_sample_reasons.invalid_state, lost_sample_reasons.could_not_acquire_lock,
+    lost_sample_reasons.enqueue_failed, lost_sample_reasons.state_thread_uninitialized,
+    lost_sample_reasons.state_thread_new, lost_sample_reasons.state_thread_new_trans,
+    lost_sample_reasons.state_thread_in_native_trans, lost_sample_reasons.state_thread_in_vm,
+    lost_sample_reasons.state_thread_in_vm_trans, lost_sample_reasons.state_thread_in_java_trans,
+    lost_sample_reasons.state_thread_blocked, lost_sample_reasons.state_thread_blocked_trans,
+    lost_sample_reasons.no_vm_ops, lost_sample_reasons.in_jfr_safepoint);
 
-  // Add VM operations to the same line
-  for (int i = 0; i < 200; i++) {
+  // Add VM operations to the same string
+  for (int i = 0; i < 200 && offset < (int)sizeof(lost_sample_stats) - 50; i++) {
     if (lost_sample_reasons.vm_ops[i] > 0) {
-      printf(" vm_op_%s=%ld", VM_Operation::name(i), lost_sample_reasons.vm_ops[i]);
+      offset += snprintf(lost_sample_stats + offset, sizeof(lost_sample_stats) - offset,
+                        " vm_op_%s=%ld", VM_Operation::name(i), lost_sample_reasons.vm_ops[i]);
     }
   }
-  printf("\n");
+
+  // Print the complete LOST_SAMPLE_STATS as a single string
+  printf("%s\n", lost_sample_stats);
+
+  // Build the complete VM_OPS_STATS string for backward compatibility
+  char vm_ops_stats[2048];
+  offset = snprintf(vm_ops_stats, sizeof(vm_ops_stats),
+    "VM_OPS_STATS: no_vm_ops=%ld in_jfr_safepoint=%ld",
+    lost_sample_reasons.no_vm_ops, lost_sample_reasons.in_jfr_safepoint);
+
+  // Add VM operations to the same string
+  for (int i = 0; i < 200 && offset < (int)sizeof(vm_ops_stats) - 50; i++) {
+    if (lost_sample_reasons.vm_ops[i] > 0) {
+      offset += snprintf(vm_ops_stats + offset, sizeof(vm_ops_stats) - offset,
+                        " vm_op_%s=%ld", VM_Operation::name(i), lost_sample_reasons.vm_ops[i]);
+    }
+  }
+
+  // Print the complete VM_OPS_STATS as a single string
+  printf("%s\n", vm_ops_stats);
 }
 
 static volatile uint64_t max_logged_queue_size = 0;
@@ -569,6 +600,7 @@ void JfrCPUTimeThreadSampling::send_lost_event(const JfrTicks &time, traceid tid
     Atomic::store(&logged_queue_increase_count, Atomic::load(&queue_size_increase_count));
     printf("QUEUE_SIZE_INCREASE_COUNT: %lu\n", Atomic::load(&logged_queue_increase_count));
   }
+  print_vm_ops_stats();
 }
 
 void JfrCPUSamplerThread::post_run() {
