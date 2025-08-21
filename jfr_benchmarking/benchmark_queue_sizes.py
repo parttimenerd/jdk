@@ -164,6 +164,24 @@ DATA_DIR = RESULTS_DIR / "data"
 PLOTS_DIR = RESULTS_DIR / "plots"
 TABLES_DIR = RESULTS_DIR / "tables"
 
+def interval_sort_key(interval):
+    """Sort intervals by numeric value (e.g., '1ms' -> 1, '10ms' -> 10)"""
+    return int(interval.replace('ms', ''))
+
+def constrain_figsize(width, height, max_pixels=3000, dpi=300):
+    return (width, height)
+
+def safe_tight_layout():
+    """Apply tight layout with warning suppression and fallback"""
+    #import warnings
+    #with warnings.catch_warnings():
+    #    warnings.simplefilter("ignore", UserWarning)
+    #    try:
+    #        safe_tight_layout()
+    #     except:
+    #        # If tight_layout fails, adjust subplot parameters manually
+    #        plt.subplots_adjust(top=0.9, bottom=0.1, left=0.1, right=0.9, hspace=0.4, wspace=0.3)
+
 class BenchmarkRunner:
     def __init__(self, minimal=False, threads=None, max_retries=2, verbose=False, dynamic_queue_size=False):
         self.setup_directories()
@@ -351,7 +369,7 @@ class BenchmarkRunner:
                 # Format the table
                 if 'interval' in df.columns:
                     # Group by interval for multi-interval data
-                    intervals = sorted(df_sorted['interval'].unique())
+                    intervals = sorted(df_sorted['interval'].unique(), key=interval_sort_key)
 
                     for interval in intervals:
                         interval_data = df_sorted[df_sorted['interval'] == interval]
@@ -499,7 +517,7 @@ class BenchmarkRunner:
                 f.write("=" * len(title) + "\n\n")
 
                 # Group by interval
-                intervals = sorted(loss_df['interval'].unique())
+                intervals = sorted(loss_df['interval'].unique(), key=interval_sort_key)
 
                 for interval in intervals:
                     interval_data = loss_df[loss_df['interval'] == interval]
@@ -620,7 +638,7 @@ class BenchmarkRunner:
                 f.write("=" * (len(title) + 25) + "\n\n")
 
                 # Group by interval
-                intervals = sorted(vm_ops_df['interval'].unique())
+                intervals = sorted(vm_ops_df['interval'].unique(), key=interval_sort_key)
 
                 for interval in intervals:
                     interval_data = vm_ops_df[vm_ops_df['interval'] == interval]
@@ -2567,10 +2585,6 @@ class BenchmarkRunner:
 
             # Create combined grid plot for all intervals
             # Order intervals by numeric value (1ms, 2ms, 5ms, 10ms, 20ms)
-            def interval_sort_key(interval):
-                """Sort intervals by numeric value"""
-                return int(interval.replace('ms', ''))
-
             intervals = sorted(df['interval'].unique(), key=interval_sort_key)
             n_intervals = len(intervals)
 
@@ -2593,7 +2607,8 @@ class BenchmarkRunner:
                 rows = (n_intervals + 2) // 3
 
             # Create figure with subplots
-            fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 5*rows))
+            figsize = constrain_figsize(6*cols, 5*rows)
+            fig, axes = plt.subplots(rows, cols, figsize=figsize)
 
             # Handle single subplot case
             if n_intervals == 1:
@@ -2702,9 +2717,9 @@ class BenchmarkRunner:
             plot_filename = f"{test_type}_realtime_combined_progress.png"
             plot_path = realtime_plots_dir / plot_filename
 
-            plt.tight_layout()
+            safe_tight_layout()
             plt.subplots_adjust(top=0.92, right=0.95)  # Move title higher and add right margin for x-labels
-            plt.savefig(plot_path, dpi=600, bbox_inches='tight', pad_inches=0.1)
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight', pad_inches=0.1)
             plt.close(fig)
 
             print(f"    📊 Saved combined real-time plot: {plot_path.absolute()}")
@@ -2722,10 +2737,6 @@ class BenchmarkRunner:
         """Create a log-scaled combined plot with unified y-range and 1% reference line"""
         try:
             # Order intervals by numeric value (1ms, 2ms, 5ms, 10ms, 20ms)
-            def interval_sort_key(interval):
-                """Sort intervals by numeric value"""
-                return int(interval.replace('ms', ''))
-
             intervals = sorted(df['interval'].unique(), key=interval_sort_key)
             n_intervals = len(intervals)
 
@@ -2756,7 +2767,8 @@ class BenchmarkRunner:
                 rows = (n_intervals + 2) // 3
 
             # Create figure with subplots
-            fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 5*rows))
+            figsize = constrain_figsize(6*cols, 5*rows)
+            fig, axes = plt.subplots(rows, cols, figsize=figsize)
 
             # Handle single subplot case
             if n_intervals == 1:
@@ -2868,9 +2880,9 @@ class BenchmarkRunner:
             log_plot_filename = f"{test_type}_realtime_combined_logscale.png"
             log_plot_path = realtime_plots_dir / log_plot_filename
 
-            plt.tight_layout()
+            safe_tight_layout()
             plt.subplots_adjust(top=0.92, right=0.95)  # Move title higher and add right margin for x-labels
-            plt.savefig(log_plot_path, dpi=600, bbox_inches='tight', pad_inches=0.1)
+            plt.savefig(log_plot_path, dpi=300, bbox_inches='tight', pad_inches=0.1)
             plt.close(fig)
 
             print(f"    📊 Saved log-scale combined plot: {log_plot_path.absolute()}")
@@ -2891,7 +2903,7 @@ class BenchmarkRunner:
                     continue
 
                 # Create individual plot for this interval
-                fig, ax = plt.subplots(figsize=(10, 8))
+                fig, ax = plt.subplots(figsize=constrain_figsize(10, 8))
 
                 if test_type == 'native':
                     # Plot points for each combination of stack depth and native duration
@@ -2967,8 +2979,8 @@ class BenchmarkRunner:
                 plot_filename = f"{test_type}_{interval}_individual.png"
                 plot_path = individual_plots_dir / plot_filename
 
-                plt.tight_layout()
-                plt.savefig(plot_path, dpi=600, bbox_inches='tight', pad_inches=0.1)
+                safe_tight_layout()
+                plt.savefig(plot_path, dpi=300, bbox_inches='tight', pad_inches=0.1)
                 plt.close(fig)
 
                 self.vprint(f"    📊 Saved individual plot: {plot_path.absolute()}")
@@ -2998,12 +3010,9 @@ class BenchmarkRunner:
         """Create a Renaissance plot with all intervals in one plot"""
         try:
             # Create figure
-            fig, ax = plt.subplots(figsize=(12, 9))
+            fig, ax = plt.subplots(figsize=constrain_figsize(12, 9))
 
             # Order intervals by numeric value
-            def interval_sort_key(interval):
-                return int(interval.replace('ms', ''))
-
             intervals = sorted(df['interval'].unique(), key=interval_sort_key)
 
             # Plot each interval as a separate line
@@ -3100,8 +3109,8 @@ class BenchmarkRunner:
             plot_filename = f"renaissance_all_intervals_{filename_suffix}.png"
             plot_path = output_dir / plot_filename
 
-            plt.tight_layout()
-            plt.savefig(plot_path, dpi=600, bbox_inches='tight', pad_inches=0.1)
+            safe_tight_layout()
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight', pad_inches=0.1)
             plt.close(fig)
 
             print(f"    📊 Saved Renaissance combined intervals plot ({filename_suffix}): {plot_path.absolute()}")
@@ -3356,7 +3365,7 @@ class BenchmarkRunner:
             cols = 4
             rows = (n_combinations + cols - 1) // cols
 
-        fig, axes = plt.subplots(rows, cols, figsize=(5*cols, 4*rows))
+        fig, axes = plt.subplots(rows, cols, figsize=constrain_figsize(5*cols, 4*rows))
         if rows == 1 and cols == 1:
             axes = [axes]
         elif rows == 1 or cols == 1:
@@ -3398,12 +3407,19 @@ class BenchmarkRunner:
         for j in range(i+1, len(axes)):
             axes[j].axis('off')
 
-        plt.tight_layout()
-        plt.savefig(PLOTS_DIR / self._get_plot_filename('native_heatmaps_by_duration_stack.png', progress_mode), dpi=600, bbox_inches='tight', pad_inches=0.1)
-        plt.close()
+        # Apply tight layout with warning suppression and fallback
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            try:
+                safe_tight_layout()
+            except:
+                # If tight_layout fails, adjust subplot parameters manually
+                plt.subplots_adjust(top=0.9, bottom=0.1, left=0.1, right=0.9, hspace=0.4, wspace=0.3)
 
-        # 2. Line plots: Loss Rate vs Queue Size for each Interval, showing all duration/stack combinations
-        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        plt.savefig(PLOTS_DIR / self._get_plot_filename('native_heatmaps_by_duration_stack.png', progress_mode), dpi=300, bbox_inches='tight', pad_inches=0.1)
+        plt.close()        # 2. Line plots: Loss Rate vs Queue Size for each Interval, showing all duration/stack combinations
+        fig, axes = plt.subplots(2, 2, figsize=constrain_figsize(16, 12))
         axes = axes.flatten()
         fig.suptitle('Native Test: Loss Rate vs Queue Size by Interval (All Duration/Stack Combinations)', fontsize=16)
 
@@ -3446,12 +3462,12 @@ class BenchmarkRunner:
             axes[i].xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
             axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
 
-        plt.tight_layout()
-        plt.savefig(PLOTS_DIR / self._get_plot_filename('native_loss_vs_queue_size_all_combinations.png', progress_mode), dpi=600, bbox_inches='tight', pad_inches=0.1)
+        safe_tight_layout()
+        plt.savefig(PLOTS_DIR / self._get_plot_filename('native_loss_vs_queue_size_all_combinations.png', progress_mode), dpi=300, bbox_inches='tight', pad_inches=0.1)
         plt.close()
 
         # 2b. Same plot but with log scale for y-axis
-        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        fig, axes = plt.subplots(2, 2, figsize=constrain_figsize(16, 12))
         axes = axes.flatten()
         fig.suptitle('Native Test: Loss Rate vs Queue Size by Interval (All Duration/Stack Combinations, Log Y-Scale)', fontsize=16)
 
@@ -3498,12 +3514,12 @@ class BenchmarkRunner:
             axes[i].xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
             axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
 
-        plt.tight_layout()
-        plt.savefig(PLOTS_DIR / self._get_plot_filename('native_loss_vs_queue_size_all_combinations_log.png', progress_mode), dpi=600, bbox_inches='tight', pad_inches=0.1)
+        safe_tight_layout()
+        plt.savefig(PLOTS_DIR / self._get_plot_filename('native_loss_vs_queue_size_all_combinations_log.png', progress_mode), dpi=300, bbox_inches='tight', pad_inches=0.1)
         plt.close()
 
         # 2c. Same plot but with y-axis starting from 0
-        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        fig, axes = plt.subplots(2, 2, figsize=constrain_figsize(16, 12))
         axes = axes.flatten()
         fig.suptitle('Native Test: Loss Rate vs Queue Size by Interval (All Duration/Stack Combinations, Y-Min=0)', fontsize=16)
 
@@ -3549,15 +3565,15 @@ class BenchmarkRunner:
             axes[i].xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
             axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
 
-        plt.tight_layout()
-        plt.savefig(PLOTS_DIR / self._get_plot_filename('native_loss_vs_queue_size_all_combinations_y0.png', progress_mode), dpi=600, bbox_inches='tight', pad_inches=0.1)
+        safe_tight_layout()
+        plt.savefig(PLOTS_DIR / self._get_plot_filename('native_loss_vs_queue_size_all_combinations_y0.png', progress_mode), dpi=300, bbox_inches='tight', pad_inches=0.1)
         plt.close()
 
         # 3. Separate plots for each stack depth showing native duration effects
         for stack_depth in df_success['stack_depth'].unique():
             df_stack = df_success[df_success['stack_depth'] == stack_depth]
 
-            fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+            fig, axes = plt.subplots(2, 2, figsize=constrain_figsize(15, 12))
             axes = axes.flatten()
             fig.suptitle(f'Native Test: Loss Rate vs Queue Size (Stack Depth: {stack_depth})', fontsize=16)
 
@@ -3593,12 +3609,12 @@ class BenchmarkRunner:
                 axes[i].xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
                 axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
 
-            plt.tight_layout()
-            plt.savefig(PLOTS_DIR / self._get_plot_filename(f'native_loss_vs_queue_size_stack{stack_depth}.png', progress_mode), dpi=600, bbox_inches='tight', pad_inches=0.1)
+            safe_tight_layout()
+            plt.savefig(PLOTS_DIR / self._get_plot_filename(f'native_loss_vs_queue_size_stack{stack_depth}.png', progress_mode), dpi=300, bbox_inches='tight', pad_inches=0.1)
             plt.close()
 
         # 4. 3D surface plot for most interesting interval (1ms) with one stack depth
-        fig = plt.figure(figsize=(12, 8))
+        fig = plt.figure(figsize=constrain_figsize(12, 8))
         ax = fig.add_subplot(111, projection='3d')
 
         # Use 1ms interval and first stack depth as it's likely most interesting
@@ -3625,7 +3641,7 @@ class BenchmarkRunner:
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{int(y):,}' if y % 1 == 0 else f'{y:,.1f}'))
             ax.zaxis.set_major_formatter(plt.FuncFormatter(lambda z, _: f'{z:,.2f}'))
 
-        plt.savefig(PLOTS_DIR / self._get_plot_filename('native_3d_surface.png', progress_mode), dpi=600, bbox_inches='tight')
+        plt.savefig(PLOTS_DIR / self._get_plot_filename('native_3d_surface.png', progress_mode), dpi=300, bbox_inches='tight')
         plt.close()
 
         # 5. Individual plots for each combination of interval, stack depth, and native duration
@@ -3669,7 +3685,7 @@ class BenchmarkRunner:
         })
 
         # 1. Create single heatmap (Renaissance doesn't have stack depth)
-        fig, ax = plt.subplots(figsize=(10, 8))
+        fig, ax = plt.subplots(figsize=constrain_figsize(10, 8))
 
         pivot = df_success.pivot(index='queue_size', columns='interval', values='loss_percentage')
         pivot = pivot.reindex(columns=interval_order)
@@ -3683,12 +3699,12 @@ class BenchmarkRunner:
         # Prevent scientific notation on heatmap axes
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{int(y):,}' if y % 1 == 0 else f'{y:,.1f}'))
 
-        plt.tight_layout()
-        plt.savefig(PLOTS_DIR / self._get_plot_filename(f'renaissance_heatmap.png', progress_mode), dpi=600, bbox_inches='tight', pad_inches=0.1)
+        safe_tight_layout()
+        plt.savefig(PLOTS_DIR / self._get_plot_filename(f'renaissance_heatmap.png', progress_mode), dpi=300, bbox_inches='tight', pad_inches=0.1)
         plt.close()
 
         # 2. Line plots: Loss Rate vs Queue Size for each Interval
-        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        fig, axes = plt.subplots(2, 2, figsize=constrain_figsize(15, 12))
         axes = axes.flatten()
         fig.suptitle('Renaissance Test: Loss Rate vs Queue Size by Interval', fontsize=16)
 
@@ -3722,12 +3738,12 @@ class BenchmarkRunner:
             axes[i].xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
             axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
 
-        plt.tight_layout()
-        plt.savefig(PLOTS_DIR / self._get_plot_filename('renaissance_loss_vs_queue_size.png', progress_mode), dpi=600, bbox_inches='tight', pad_inches=0.1)
+        safe_tight_layout()
+        plt.savefig(PLOTS_DIR / self._get_plot_filename('renaissance_loss_vs_queue_size.png', progress_mode), dpi=300, bbox_inches='tight', pad_inches=0.1)
         plt.close()
 
         # 2b. Same plot but with log scale for y-axis
-        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        fig, axes = plt.subplots(2, 2, figsize=constrain_figsize(15, 12))
         axes = axes.flatten()
         fig.suptitle('Renaissance Test: Loss Rate vs Queue Size by Interval (Log Y-Scale)', fontsize=16)
 
@@ -3765,12 +3781,12 @@ class BenchmarkRunner:
             axes[i].xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
             axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
 
-        plt.tight_layout()
-        plt.savefig(PLOTS_DIR / self._get_plot_filename('renaissance_loss_vs_queue_size_log.png', progress_mode), dpi=600, bbox_inches='tight')
+        safe_tight_layout()
+        plt.savefig(PLOTS_DIR / self._get_plot_filename('renaissance_loss_vs_queue_size_log.png', progress_mode), dpi=300, bbox_inches='tight')
         plt.close()
 
         # 2c. Same plot but with y-axis starting from 0
-        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        fig, axes = plt.subplots(2, 2, figsize=constrain_figsize(15, 12))
         axes = axes.flatten()
         fig.suptitle('Renaissance Test: Loss Rate vs Queue Size by Interval (Y-Min=0)', fontsize=16)
 
@@ -3807,8 +3823,8 @@ class BenchmarkRunner:
             axes[i].xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
             axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
 
-        plt.tight_layout()
-        plt.savefig(PLOTS_DIR / self._get_plot_filename('renaissance_loss_vs_queue_size_y0.png', progress_mode), dpi=600, bbox_inches='tight')
+        safe_tight_layout()
+        plt.savefig(PLOTS_DIR / self._get_plot_filename('renaissance_loss_vs_queue_size_y0.png', progress_mode), dpi=300, bbox_inches='tight')
         plt.close()
 
         # 3. Individual plots for each interval
@@ -3831,7 +3847,7 @@ class BenchmarkRunner:
         """Create both normal and log scale individual plots"""
 
         # 1. Normal scale with zero min y and 1% dotted line
-        fig, ax = plt.subplots(figsize=(10, 6))
+        fig, ax = plt.subplots(figsize=constrain_figsize(10, 6))
 
         ax.scatter(df['queue_size'], df['loss_percentage'], s=80, marker='o', label='Loss Rate', alpha=0.8)
 
@@ -3853,12 +3869,12 @@ class BenchmarkRunner:
         ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
 
-        plt.tight_layout()
-        plt.savefig(PLOTS_DIR / self._get_plot_filename(f'{base_filename}_normal.png', progress_mode), dpi=600, bbox_inches='tight')
+        safe_tight_layout()
+        plt.savefig(PLOTS_DIR / self._get_plot_filename(f'{base_filename}_normal.png', progress_mode), dpi=300, bbox_inches='tight')
         plt.close()
 
         # 2. Log scale version
-        fig, ax = plt.subplots(figsize=(10, 6))
+        fig, ax = plt.subplots(figsize=constrain_figsize(10, 6))
 
         ax.scatter(df['queue_size'], df['loss_percentage'], s=80, marker='o', label='Loss Rate', alpha=0.8)
         ax.set_xscale('log')
@@ -3899,8 +3915,8 @@ class BenchmarkRunner:
         ax.tick_params(axis='both', which='major', labelsize=8, labelbottom=True, labelleft=True)
         ax.tick_params(axis='both', which='minor', labelsize=6)
 
-        plt.tight_layout()
-        plt.savefig(PLOTS_DIR / self._get_plot_filename(f'{base_filename}_log.png', progress_mode), dpi=600, bbox_inches='tight')
+        safe_tight_layout()
+        plt.savefig(PLOTS_DIR / self._get_plot_filename(f'{base_filename}_log.png', progress_mode), dpi=300, bbox_inches='tight')
         plt.close()
 
     def plot_comparison(self, native_df: pd.DataFrame, renaissance_df: pd.DataFrame):
@@ -3943,7 +3959,7 @@ class BenchmarkRunner:
         # Comparison plot: Side-by-side bar charts
         interval_order = ["1ms", "5ms", "10ms", "20ms"]
 
-        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        fig, axes = plt.subplots(2, 2, figsize=constrain_figsize(16, 12))
         axes = axes.flatten()
         fig.suptitle('Comparison: Native vs Renaissance Loss Rates', fontsize=16)
 
@@ -3962,8 +3978,8 @@ class BenchmarkRunner:
                 axes[i].xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
                 axes[i].yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
 
-        plt.tight_layout()
-        plt.savefig(PLOTS_DIR / 'comparison_native_vs_renaissance.png', dpi=600, bbox_inches='tight', pad_inches=0.1)
+        safe_tight_layout()
+        plt.savefig(PLOTS_DIR / 'comparison_native_vs_renaissance.png', dpi=300, bbox_inches='tight', pad_inches=0.1)
         plt.close()
 
     def plot_loss_kinds(self, df: pd.DataFrame, progress_mode: bool = False):
@@ -3999,7 +4015,7 @@ class BenchmarkRunner:
         loss_plots_dir.mkdir(parents=True, exist_ok=True)
 
         # Get unique intervals
-        intervals = sorted(df_deduplicated['interval'].unique())
+        intervals = sorted(df_deduplicated['interval'].unique(), key=interval_sort_key)
 
         print(f"📊 Found {len(intervals)} intervals: {intervals}")
 
@@ -4066,14 +4082,42 @@ class BenchmarkRunner:
 
         if loss_df.empty:
             print("⚠️ No loss kinds data found - plots will be skipped")
-            return        # Create individual plots for each interval
+            return
+
+        # Generate CSV files for loss kinds data
+        print("📊 Generating CSV files for loss kinds data...")
+
+        # Save comprehensive CSV
+        csv_filename = f'loss_kinds_data_{test_type}'
+        if progress_mode:
+            csv_filename += '_progress'
+        csv_filename += '.csv'
+
+        csv_path = loss_plots_dir / csv_filename
+        loss_df.to_csv(csv_path, index=False)
+        print(f"📊 Loss kinds data saved to {csv_path}")
+
+        # Save interval-specific CSVs
+        for interval in intervals:
+            interval_data = loss_df[loss_df['interval'] == interval]
+            if not interval_data.empty:
+                interval_csv_filename = f'loss_kinds_data_{test_type}_{interval}'
+                if progress_mode:
+                    interval_csv_filename += '_progress'
+                interval_csv_filename += '.csv'
+
+                interval_csv_path = loss_plots_dir / interval_csv_filename
+                interval_data.to_csv(interval_csv_path, index=False)
+                print(f"📊 Loss kinds data for {interval} saved to {interval_csv_path}")
+
+        # Create individual plots for each interval
         for interval in intervals:
             interval_data = loss_df[loss_df['interval'] == interval]
 
             if interval_data.empty:
                 continue
 
-            fig, ax = plt.subplots(figsize=(12, 8))
+            fig, ax = plt.subplots(figsize=constrain_figsize(12, 8))
 
             # Create scatter plot for each loss category
             for category in all_loss_categories:
@@ -4089,11 +4133,11 @@ class BenchmarkRunner:
             ax.legend(title='Loss Category')
 
             # Prevent scientific notation
-            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
+            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.2f}'))
 
-            plt.tight_layout()
-            plt.savefig(loss_plots_dir / f'loss_kinds_{interval}ms.png', dpi=600, bbox_inches='tight', pad_inches=0.1)
+            safe_tight_layout()
+            plt.savefig(loss_plots_dir / f'loss_kinds_{interval}ms.png', dpi=300, bbox_inches='tight', pad_inches=0.1)
             plt.close()
 
         # Create combined plot with all intervals in a grid
@@ -4103,7 +4147,8 @@ class BenchmarkRunner:
             cols = min(3, n_intervals)  # Max 3 columns
             rows = (n_intervals + cols - 1) // cols
 
-            fig, axes = plt.subplots(rows, cols, figsize=(5*cols, 4*rows))
+            figsize = constrain_figsize(5*cols, 4*rows)
+            fig, axes = plt.subplots(rows, cols, figsize=figsize)
             if rows == 1 and cols == 1:
                 axes = [axes]
             elif rows == 1 or cols == 1:
@@ -4137,7 +4182,7 @@ class BenchmarkRunner:
                 ax.set_ylim(y_min, y_max)
 
                 # Prevent scientific notation
-                ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
+                ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
                 ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.1f}'))
 
                 # Add legend only to first subplot
@@ -4149,8 +4194,8 @@ class BenchmarkRunner:
                 axes[idx].set_visible(False)
 
             plt.suptitle('Loss Kinds by Queue Size - All Intervals', fontsize=16, fontweight='bold')
-            plt.tight_layout()
-            plt.savefig(loss_plots_dir / 'loss_kinds_all_intervals.png', dpi=600, bbox_inches='tight', pad_inches=0.1)
+            safe_tight_layout()
+            plt.savefig(loss_plots_dir / 'loss_kinds_all_intervals.png', dpi=300, bbox_inches='tight', pad_inches=0.1)
             plt.close()
 
         print(f"📊 Loss kinds plots saved to {loss_plots_dir.absolute()}")
@@ -4176,7 +4221,7 @@ class BenchmarkRunner:
             return
 
         # Get unique intervals
-        intervals = sorted(category_data['interval'].unique())
+        intervals = sorted(category_data['interval'].unique(), key=interval_sort_key)
         safe_title = title.lower().replace(' ', '_').replace('&', 'and')
 
         # Create individual plots for each interval (both linear and logarithmic)
@@ -4188,7 +4233,7 @@ class BenchmarkRunner:
 
             # Create both linear and logarithmic plots
             for scale_type in ['linear', 'logarithmic']:
-                fig, ax = plt.subplots(figsize=(12, 8))
+                fig, ax = plt.subplots(figsize=constrain_figsize(12, 8))
 
                 # Create scatter plot for each category in this group
                 for category in categories:
@@ -4207,9 +4252,13 @@ class BenchmarkRunner:
                 # Set scale
                 if scale_type == 'logarithmic':
                     ax.set_xscale('log')
-                    # Only set y-axis to log scale if there are positive values
-                    if category_data['loss_percentage'].min() > 0:
-                        ax.set_yscale('log')
+                    # Set y-axis to log scale and handle zero values by setting a minimum threshold
+                    ax.set_yscale('log')
+                    # Set minimum y-axis value for log scale (avoid zero values)
+                    min_positive_loss = category_data[category_data['loss_percentage'] > 0]['loss_percentage'].min() if len(category_data[category_data['loss_percentage'] > 0]) > 0 else 0.001
+                    y_min_log = max(min_positive_loss * 0.5, 0.001)
+                    y_max_log = category_data['loss_percentage'].max() * 2 if category_data['loss_percentage'].max() > 0 else 1
+                    ax.set_ylim(y_min_log, y_max_log)
                 else:
                     # Set minimum y-axis to 0 for better comparison in linear scale
                     ax.set_ylim(bottom=0)
@@ -4223,7 +4272,7 @@ class BenchmarkRunner:
                     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.3f}'))
 
                 # Save plot
-                plt.savefig(output_dir / f'{safe_title}_{interval}ms_{scale_type}.png', dpi=600, bbox_inches='tight', pad_inches=0.1)
+                plt.savefig(output_dir / f'{safe_title}_{interval}ms_{scale_type}.png', dpi=300, bbox_inches='tight', pad_inches=0.1)
                 plt.close()
 
             # Generate ASCII table for this interval
@@ -4234,7 +4283,8 @@ class BenchmarkRunner:
         # Create combined plot with all intervals (both linear and logarithmic)
         if len(intervals) > 1:
             for scale_type in ['linear', 'logarithmic']:
-                fig, axes = plt.subplots(1, len(intervals), figsize=(6 * len(intervals), 6))
+                figsize = constrain_figsize(6 * len(intervals), 6)
+                fig, axes = plt.subplots(1, len(intervals), figsize=figsize)
                 if len(intervals) == 1:
                     axes = [axes]
 
@@ -4265,10 +4315,9 @@ class BenchmarkRunner:
                     # Set scale
                     if scale_type == 'logarithmic':
                         ax.set_xscale('log')
-                        # Only set y-axis to log scale if there are positive values
-                        if category_data['loss_percentage'].min() > 0:
-                            ax.set_yscale('log')
-                            ax.set_ylim(y_min, y_max)
+                        # Set y-axis to log scale and use proper log range
+                        ax.set_yscale('log')
+                        ax.set_ylim(y_min, y_max)
                     else:
                         ax.set_ylim(y_min, y_max)
 
@@ -4285,8 +4334,8 @@ class BenchmarkRunner:
                     axes[-1].legend(bbox_to_anchor=(1.05, 1), loc='upper left')
 
                 plt.suptitle(f'{title} - All Intervals ({scale_type.title()} Scale)', fontsize=16, fontweight='bold')
-                plt.tight_layout()
-                plt.savefig(output_dir / f'{safe_title}_all_intervals_{scale_type}.png', dpi=600, bbox_inches='tight', pad_inches=0.1)
+                safe_tight_layout()
+                plt.savefig(output_dir / f'{safe_title}_all_intervals_{scale_type}.png', dpi=300, bbox_inches='tight', pad_inches=0.1)
                 plt.close()
 
             # Generate ASCII table for all intervals combined
@@ -4368,7 +4417,7 @@ class BenchmarkRunner:
         vm_ops_plots_dir.mkdir(parents=True, exist_ok=True)
 
         # Get unique intervals
-        intervals = sorted(df_deduplicated['interval'].unique())
+        intervals = sorted(df_deduplicated['interval'].unique(), key=interval_sort_key)
 
         print(f"📊 Found {len(intervals)} intervals: {intervals}")
 
@@ -4446,7 +4495,7 @@ class BenchmarkRunner:
             if interval_data.empty:
                 continue
 
-            fig, ax = plt.subplots(figsize=(12, 8))
+            fig, ax = plt.subplots(figsize=constrain_figsize(12, 8))
 
             # Create scatter plot for each VM operation category
             for category in vm_op_categories:
@@ -4470,11 +4519,11 @@ class BenchmarkRunner:
             ax.legend(title='VM Operation Category')
 
             # Prevent scientific notation
-            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
-            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.2f}'))
+            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
 
-            plt.tight_layout()
-            plt.savefig(vm_ops_plots_dir / f'vm_operations_{interval}.png', dpi=600, bbox_inches='tight')
+            safe_tight_layout()
+            plt.savefig(vm_ops_plots_dir / f'vm_operations_{interval}.png', dpi=300, bbox_inches='tight')
             plt.close()
 
         # Create combined plot with all intervals in a grid
@@ -4490,7 +4539,7 @@ class BenchmarkRunner:
                 cols = 3
                 rows = (len(intervals) + cols - 1) // cols
 
-            fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 5*rows))
+            fig, axes = plt.subplots(rows, cols, figsize=constrain_figsize(6*cols, 5*rows))
 
             # Handle single subplot case
             if len(intervals) == 1:
@@ -4532,23 +4581,52 @@ class BenchmarkRunner:
                     ax.legend(title='VM Operation', fontsize=8, title_fontsize=9)
 
                 # Prevent scientific notation
-                ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
-                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.2f}'))
+                ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
 
             # Hide unused subplots
             for i in range(len(intervals), len(axes)):
                 axes[i].set_visible(False)
 
             plt.suptitle('VM Operations by Queue Size and Interval', fontsize=16, fontweight='bold')
-            plt.tight_layout()
+            safe_tight_layout()
 
         if progress_mode:
-            plt.savefig(vm_ops_plots_dir / f'vm_operations_combined_progress.png', dpi=600, bbox_inches='tight')
+            plt.savefig(vm_ops_plots_dir / f'vm_operations_combined_progress.png', dpi=300, bbox_inches='tight')
         else:
-            plt.savefig(vm_ops_plots_dir / f'vm_operations_combined.png', dpi=600, bbox_inches='tight')
+            plt.savefig(vm_ops_plots_dir / f'vm_operations_combined.png', dpi=300, bbox_inches='tight')
         plt.close()
 
         print(f"📊 VM operations plots saved to {vm_ops_plots_dir.absolute()}")
+
+        # Generate CSV files for VM operations data
+        print("📊 Generating CSV files for VM operations data...")
+
+        if vm_ops_data:
+            vm_ops_df = pd.DataFrame(vm_ops_data)
+
+            # Save comprehensive CSV
+            csv_filename = f'vm_operations_data_{test_type}'
+            if progress_mode:
+                csv_filename += '_progress'
+            csv_filename += '.csv'
+
+            csv_path = vm_ops_plots_dir / csv_filename
+            vm_ops_df.to_csv(csv_path, index=False)
+            print(f"📊 VM operations data saved to {csv_path}")
+
+            # Save interval-specific CSVs
+            for interval in intervals:
+                interval_data = vm_ops_df[vm_ops_df['interval'] == interval]
+                if not interval_data.empty:
+                    interval_csv_filename = f'vm_operations_data_{test_type}_{interval}'
+                    if progress_mode:
+                        interval_csv_filename += '_progress'
+                    interval_csv_filename += '.csv'
+
+                    interval_csv_path = vm_ops_plots_dir / interval_csv_filename
+                    interval_data.to_csv(interval_csv_path, index=False)
+                    print(f"📊 VM operations data for {interval} saved to {interval_csv_path}")
 
         # Generate ASCII table for VM operations breakdown
         self.save_vm_operations_ascii_table(df_deduplicated, f'{test_type}_vm_operations_analysis.png', f'{test_type.title()} VM Operations Analysis', progress_mode)
@@ -4584,7 +4662,7 @@ class BenchmarkRunner:
         merged_data['out_of_thread_percentage'] = (merged_data['drains'] / merged_data['total_drains']) * 100
 
         # Get unique intervals for subplots
-        intervals = sorted(merged_data['interval'].unique())
+        intervals = sorted(merged_data['interval'].unique(), key=interval_sort_key)
 
         # Create figure with subplots for each interval
         n_intervals = len(intervals)
@@ -4595,7 +4673,7 @@ class BenchmarkRunner:
         cols = min(3, n_intervals)
         rows = (n_intervals + cols - 1) // cols
 
-        fig, axes = plt.subplots(rows, cols, figsize=(5*cols, 4*rows))
+        fig, axes = plt.subplots(rows, cols, figsize=constrain_figsize(5*cols, 4*rows))
         if n_intervals == 1:
             axes = [axes]
         elif rows == 1:
@@ -4644,19 +4722,19 @@ class BenchmarkRunner:
 
         plt.suptitle('Renaissance: Out of Thread Drainage Percentage by Queue Size and Interval',
                     fontsize=16, fontweight='bold')
-        plt.tight_layout()
+        safe_tight_layout()
 
         # Save plot
         if progress_mode:
             plt.savefig(out_of_thread_plots_dir / 'renaissance_out_of_thread_percentage_progress.png',
-                       dpi=600, bbox_inches='tight')
+                       dpi=300, bbox_inches='tight')
         else:
             plt.savefig(out_of_thread_plots_dir / 'renaissance_out_of_thread_percentage.png',
-                       dpi=600, bbox_inches='tight')
+                       dpi=300, bbox_inches='tight')
         plt.close()
 
         # Create combined plot with all intervals
-        fig, ax = plt.subplots(figsize=(12, 8))
+        fig, ax = plt.subplots(figsize=constrain_figsize(12, 8))
 
         # Different markers for different intervals
         markers = ['o', 's', '^', 'D', 'v', '>', '<', 'p', '*', 'h']
@@ -4685,14 +4763,14 @@ class BenchmarkRunner:
         ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.1f}%'))
 
-        plt.tight_layout()
+        safe_tight_layout()
 
         if progress_mode:
             plt.savefig(out_of_thread_plots_dir / 'renaissance_out_of_thread_combined_progress.png',
-                       dpi=600, bbox_inches='tight')
+                       dpi=300, bbox_inches='tight')
         else:
             plt.savefig(out_of_thread_plots_dir / 'renaissance_out_of_thread_combined.png',
-                       dpi=600, bbox_inches='tight')
+                       dpi=300, bbox_inches='tight')
         plt.close()
 
         print(f"📊 Renaissance 'out of thread' percentage plots saved to {out_of_thread_plots_dir}")
@@ -4713,12 +4791,12 @@ class BenchmarkRunner:
             print(f"⚠️ No drain statistics found for {test_type} tests")
             return
 
-        # Create output directory
-        queue_dist_plots_dir = PLOTS_DIR / "queue_size_distributions"
-        queue_dist_plots_dir.mkdir(exist_ok=True)
+        # Create output directory with test type separation
+        queue_dist_plots_dir = PLOTS_DIR / "queue_size_distributions" / test_type
+        queue_dist_plots_dir.mkdir(parents=True, exist_ok=True)
 
         # Group by drain category and interval to calculate queue size distributions
-        intervals = sorted(test_drain_data['interval'].unique())
+        intervals = sorted(test_drain_data['interval'].unique(), key=interval_sort_key)
         drain_categories = sorted(test_drain_data['drain_category'].unique())
 
         # Calculate percentiles of queue sizes for each category and interval
@@ -4732,7 +4810,7 @@ class BenchmarkRunner:
             if category_data.empty:
                 continue
 
-            fig, axes = plt.subplots(1, len(intervals), figsize=(5*len(intervals), 5))
+            fig, axes = plt.subplots(1, len(intervals), figsize=constrain_figsize(5*len(intervals), 5))
             if len(intervals) == 1:
                 axes = [axes]
 
@@ -4777,20 +4855,20 @@ class BenchmarkRunner:
 
             plt.suptitle(f'{test_type.title()}: Queue Size Distribution Percentiles\n({category})',
                         fontsize=14, fontweight='bold')
-            plt.tight_layout()
+            safe_tight_layout()
 
             # Save plot
             safe_category = category.replace(' ', '_').replace('/', '_')
             if progress_mode:
                 plt.savefig(queue_dist_plots_dir / f'{test_type}_{safe_category}_queue_distribution_progress.png',
-                           dpi=600, bbox_inches='tight')
+                           dpi=300, bbox_inches='tight')
             else:
                 plt.savefig(queue_dist_plots_dir / f'{test_type}_{safe_category}_queue_distribution.png',
-                           dpi=600, bbox_inches='tight')
+                           dpi=300, bbox_inches='tight')
             plt.close()
 
         # Create combined plot showing all categories
-        fig, ax = plt.subplots(figsize=(12, 8))
+        fig, ax = plt.subplots(figsize=constrain_figsize(12, 8))
 
         # Create grouped bar chart
         width = 0.25
@@ -4831,14 +4909,14 @@ class BenchmarkRunner:
         # Prevent scientific notation on y-axis
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{int(y):,}' if y % 1 == 0 else f'{y:,.1f}'))
 
-        plt.tight_layout()
+        safe_tight_layout()
 
         if progress_mode:
             plt.savefig(queue_dist_plots_dir / f'{test_type}_queue_distribution_combined_progress.png',
-                       dpi=600, bbox_inches='tight')
+                       dpi=300, bbox_inches='tight')
         else:
             plt.savefig(queue_dist_plots_dir / f'{test_type}_queue_distribution_combined.png',
-                       dpi=600, bbox_inches='tight')
+                       dpi=300, bbox_inches='tight')
         plt.close()
 
         print(f"📊 Queue size distribution plots saved to {queue_dist_plots_dir.absolute()}")
@@ -4866,19 +4944,19 @@ class BenchmarkRunner:
             print(f"⚠️ No 'all without locks' drain data found for {test_type}")
             return
 
-        # Create output directory
-        percentile_plots_dir = PLOTS_DIR / "queue_size_percentiles"
-        percentile_plots_dir.mkdir(exist_ok=True)
+        # Create output directory with test type separation
+        percentile_plots_dir = PLOTS_DIR / "queue_size_percentiles" / test_type
+        percentile_plots_dir.mkdir(parents=True, exist_ok=True)
 
         # Get unique intervals
-        intervals = sorted(percentile_data['interval'].unique())
+        intervals = sorted(percentile_data['interval'].unique(), key=interval_sort_key)
 
         # Create separate plots for each percentile (P95, P99, P99.9)
         percentiles = ['p95', 'p99', 'p99_9']
         percentile_labels = ['P95', 'P99', 'P99.9']
 
         for percentile, label in zip(percentiles, percentile_labels):
-            fig, axes = plt.subplots(1, len(intervals), figsize=(5*len(intervals), 5))
+            fig, axes = plt.subplots(1, len(intervals), figsize=constrain_figsize(5*len(intervals), 5))
             if len(intervals) == 1:
                 axes = [axes]
 
@@ -4909,18 +4987,18 @@ class BenchmarkRunner:
                 ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
                 ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.0f}' if y >= 1 else f'{y:.2f}'))
 
-            plt.tight_layout()
+            safe_tight_layout()
 
             if progress_mode:
                 plt.savefig(percentile_plots_dir / f'{test_type}_{percentile}_progress.png',
-                           dpi=600, bbox_inches='tight')
+                           dpi=300, bbox_inches='tight')
             else:
                 plt.savefig(percentile_plots_dir / f'{test_type}_{percentile}.png',
-                           dpi=600, bbox_inches='tight')
+                           dpi=300, bbox_inches='tight')
             plt.close()
 
         # Create combined plot with all percentiles
-        fig, ax = plt.subplots(figsize=(12, 8))
+        fig, ax = plt.subplots(figsize=constrain_figsize(12, 8))
 
         colors = ['blue', 'red', 'green']
         markers = ['o', 's', '^']
@@ -4948,14 +5026,14 @@ class BenchmarkRunner:
         ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.0f}' if y >= 1 else f'{y:.2f}'))
 
-        plt.tight_layout()
+        safe_tight_layout()
 
         if progress_mode:
             plt.savefig(percentile_plots_dir / f'{test_type}_percentiles_combined_progress.png',
-                       dpi=600, bbox_inches='tight')
+                       dpi=300, bbox_inches='tight')
         else:
             plt.savefig(percentile_plots_dir / f'{test_type}_percentiles_combined.png',
-                       dpi=600, bbox_inches='tight')
+                       dpi=300, bbox_inches='tight')
         plt.close()
 
         print(f"📊 Queue size percentile plots saved to {percentile_plots_dir}")
@@ -4986,7 +5064,7 @@ class BenchmarkRunner:
                 continue
 
             # Create subplot for each percentile
-            fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+            fig, axes = plt.subplots(1, 3, figsize=constrain_figsize(18, 6))
 
             for p_idx, (percentile, p_label) in enumerate(zip(percentiles, percentile_labels)):
                 ax = axes[p_idx]
@@ -5025,18 +5103,18 @@ class BenchmarkRunner:
                         ax.set_xscale('log')
 
                 # Prevent scientific notation
-                ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
+                ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
                 ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{int(y):,}'))
 
             plt.suptitle(f'Native Queue Percentiles - {interval}, Stack {stack_depth}, {native_duration}s',
                         fontsize=16, fontweight='bold')
-            plt.tight_layout()
+            safe_tight_layout()
 
             plot_filename = f"native_queue_percentiles_{interval}_stack{stack_depth}_dur{native_duration}s.png"
             if progress_mode:
                 plot_filename = f"native_queue_percentiles_{interval}_stack{stack_depth}_dur{native_duration}s_progress.png"
 
-            plt.savefig(output_dir / plot_filename, dpi=600, bbox_inches='tight')
+            plt.savefig(output_dir / plot_filename, dpi=300, bbox_inches='tight')
             plt.close()
 
     def plot_signal_handler_duration_grid(self, df: pd.DataFrame, progress_mode: bool = False):
@@ -5050,12 +5128,16 @@ class BenchmarkRunner:
             print("⚠️ No data with signal handler information found")
             return
 
-        # Create the output directory for signal handler plots
-        signal_plots_dir = PLOTS_DIR / "signal_handler_duration_grids"
-        signal_plots_dir.mkdir(exist_ok=True)
+        # Determine test type based on presence of native_duration column
+        test_type = 'native' if 'native_duration' in df_with_signals.columns else 'renaissance'
+        print(f"    📊 Creating signal handler duration grid plots for {test_type} test type")
+
+        # Create the output directory for signal handler plots with test type separation
+        signal_plots_dir = PLOTS_DIR / "signal_handler_duration_grids" / test_type
+        signal_plots_dir.mkdir(parents=True, exist_ok=True)
 
         # Get unique intervals
-        intervals = sorted(df_with_signals['interval'].unique())
+        intervals = sorted(df_with_signals['interval'].unique(), key=interval_sort_key)
         print(f"📊 Found {len(intervals)} intervals: {intervals}")
 
         # Define signal handler percentiles to track
@@ -5091,7 +5173,7 @@ class BenchmarkRunner:
 
             # Create both normal and log scale versions
             for scale_type in ['normal', 'log']:
-                fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 5*rows))
+                fig, axes = plt.subplots(rows, cols, figsize=constrain_figsize(6*cols, 5*rows))
                 if len(intervals) == 1:
                     axes = [axes]
                 elif rows == 1:
@@ -5152,7 +5234,7 @@ class BenchmarkRunner:
                         ax.legend(fontsize=8, loc='upper left')
 
                         # Prevent scientific notation
-                        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
+                        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
                         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.1f}'))
 
                         # Set scales based on type
@@ -5176,14 +5258,14 @@ class BenchmarkRunner:
                 title_suffix = ' (Log Scale)' if scale_type == 'log' else ''
                 plt.suptitle(f'Signal Handler Duration by Queue Size - All Percentiles{title_suffix}',
                            fontsize=16, fontweight='bold')
-                plt.tight_layout()
+                safe_tight_layout()
 
                 filename = f'signal_handler_duration_all_percentiles_grid_{scale_type}'
                 if progress_mode:
                     filename += '_progress'
                 filename += '.png'
 
-                plt.savefig(signal_plots_dir / filename, dpi=600, bbox_inches='tight')
+                plt.savefig(signal_plots_dir / filename, dpi=300, bbox_inches='tight')
                 plt.close()
 
         # Also create individual plots for each signal type showing all percentiles
@@ -5191,7 +5273,7 @@ class BenchmarkRunner:
             # Create both normal and log scale versions
             for scale_type in ['normal', 'log']:
                 if len(intervals) > 1:
-                    fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 5*rows))
+                    fig, axes = plt.subplots(rows, cols, figsize=constrain_figsize(6*cols, 5*rows))
                     if len(intervals) == 1:
                         axes = [axes]
                     elif rows == 1:
@@ -5253,7 +5335,7 @@ class BenchmarkRunner:
                                 ax.legend(fontsize=8, loc='upper left')
 
                             # Prevent scientific notation
-                            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
+                            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
                             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.1f}'))
 
                             # Set scales based on type
@@ -5278,19 +5360,76 @@ class BenchmarkRunner:
                         title_suffix = ' (Log Scale)' if scale_type == 'log' else ''
                         plt.suptitle(f'{signal_type.upper()} Signal Handler Duration - All Percentiles{title_suffix}',
                                    fontsize=16, fontweight='bold')
-                        plt.tight_layout()
+                        safe_tight_layout()
 
                         filename = f'signal_handler_{signal_type}_all_percentiles_grid_{scale_type}'
                         if progress_mode:
                             filename += '_progress'
                         filename += '.png'
 
-                        plt.savefig(signal_plots_dir / filename, dpi=600, bbox_inches='tight')
+                        plt.savefig(signal_plots_dir / filename, dpi=300, bbox_inches='tight')
                         plt.close()
                     else:
                         plt.close()  # Close the figure if no data was found
 
         print(f"📊 Signal handler duration grid plots saved to {signal_plots_dir}")
+
+        # Generate CSV files for signal handler data
+        print("📊 Generating CSV files for signal handler duration data...")
+
+        # Collect signal handler data for CSV export
+        signal_handler_data = []
+
+        for _, row in df_with_signals.iterrows():
+            queue_size = row['queue_size']
+            interval = row['interval']
+
+            # Extract signal handler data from various possible formats
+            for signal_type in ['prof', 'quit', 'usr1', 'usr2']:
+                for percentile in signal_percentiles:
+                    # Try to get from flattened CSV format
+                    signal_col = f'signal_{signal_type}_{percentile}_ns'
+                    if signal_col in row and pd.notna(row[signal_col]) and row[signal_col] > 0:
+                        duration_ns = row[signal_col]
+                        duration_us = duration_ns / 1000.0  # Convert to microseconds
+
+                        signal_handler_data.append({
+                            'queue_size': queue_size,
+                            'interval': interval,
+                            'signal_type': signal_type,
+                            'percentile': percentile,
+                            'percentile_label': signal_percentile_labels.get(percentile, percentile),
+                            'duration_ns': duration_ns,
+                            'duration_us': duration_us
+                        })
+
+        if signal_handler_data:
+            signal_df = pd.DataFrame(signal_handler_data)
+
+            # Save comprehensive CSV
+            csv_filename = f'signal_handler_duration_data_{test_type}'
+            if progress_mode:
+                csv_filename += '_progress'
+            csv_filename += '.csv'
+
+            csv_path = signal_plots_dir / csv_filename
+            signal_df.to_csv(csv_path, index=False)
+            print(f"📊 Signal handler duration data saved to {csv_path}")
+
+            # Save interval-specific CSVs
+            for interval in intervals:
+                interval_data = signal_df[signal_df['interval'] == interval]
+                if not interval_data.empty:
+                    interval_csv_filename = f'signal_handler_duration_data_{test_type}_{interval}'
+                    if progress_mode:
+                        interval_csv_filename += '_progress'
+                    interval_csv_filename += '.csv'
+
+                    interval_csv_path = signal_plots_dir / interval_csv_filename
+                    interval_data.to_csv(interval_csv_path, index=False)
+                    print(f"📊 Signal handler duration data for {interval} saved to {interval_csv_path}")
+        else:
+            print("⚠️ No signal handler duration data found for CSV export")
 
     def plot_drainage_duration_grid(self, df: pd.DataFrame, progress_mode: bool = False):
         """Create grid plots for drainage duration percentiles by queue size and interval"""
@@ -5302,61 +5441,70 @@ class BenchmarkRunner:
             print("⚠️ No drain statistics available for drainage duration grid plots")
             return
 
-        # Create the output directory for drainage plots
-        drainage_plots_dir = PLOTS_DIR / "drainage_duration_grids"
-        drainage_plots_dir.mkdir(exist_ok=True)
+        # Create plots for both test types separately
+        for test_type in ['native', 'renaissance']:
+            test_drain_data = drain_df[drain_df['test_type'] == test_type].copy()
+            if test_drain_data.empty:
+                print(f"⚠️ No {test_type} drain statistics found")
+                continue
 
-        # Get unique intervals from the drain data
-        intervals = sorted(drain_df['interval'].unique())
-        print(f"📊 Found {len(intervals)} intervals: {intervals}")
+            print(f"    📊 Creating drainage duration grid plots for {test_type} test type")
 
-        # Define drainage percentiles to track
-        drainage_percentiles = ['p50', 'p90', 'p95', 'p99', 'p99_9']
-        drainage_percentile_labels = {
-            'p50': 'P50', 'p90': 'P90', 'p95': 'P95', 'p99': 'P99', 'p99_9': 'P99.9'
-        }
+            # Create the output directory for drainage plots with test type separation
+            drainage_plots_dir = PLOTS_DIR / "drainage_duration_grids" / test_type
+            drainage_plots_dir.mkdir(parents=True, exist_ok=True)
 
-        # Colors for different percentiles
-        percentile_colors = {
-            'p50': '#1f77b4',   # Blue
-            'p90': '#ff7f0e',   # Orange
-            'p95': '#2ca02c',   # Green
-            'p99': '#d62728',   # Red
-            'p99_9': '#9467bd'  # Purple
-        }
+            # Get unique intervals from the test-specific drain data
+            intervals = sorted(test_drain_data['interval'].unique(), key=interval_sort_key)
+            print(f"📊 Found {len(intervals)} intervals for {test_type}: {intervals}")
 
-        # Common drain categories we expect to find
-        drain_categories = ['all without locks', 'out of thread', 'with locks', 'total']
+            # Define drainage percentiles to track
+            drainage_percentiles = ['p50', 'p90', 'p95', 'p99', 'p99_9']
+            drainage_percentile_labels = {
+                'p50': 'P50', 'p90': 'P90', 'p95': 'P95', 'p99': 'P99', 'p99_9': 'P99.9'
+            }
 
-        # Create grid plot with one subplot per interval, showing ALL percentiles in each plot
-        if len(intervals) > 1:
-            # Calculate grid dimensions
-            if len(intervals) <= 3:
-                cols = len(intervals)
-                rows = 1
-            elif len(intervals) <= 6:
-                cols = 3
-                rows = 2
-            else:
-                cols = 3
-                rows = (len(intervals) + cols - 1) // cols
+            # Colors for different percentiles
+            percentile_colors = {
+                'p50': '#1f77b4',   # Blue
+                'p90': '#ff7f0e',   # Orange
+                'p95': '#2ca02c',   # Green
+                'p99': '#d62728',   # Red
+                'p99_9': '#9467bd'  # Purple
+            }
 
-            # Create both normal and log scale versions
-            for scale_type in ['normal', 'log']:
-                fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 5*rows))
-                if len(intervals) == 1:
-                    axes = [axes]
-                elif rows == 1:
-                    axes = axes if hasattr(axes, '__len__') else [axes]
+            # Common drain categories we expect to find
+            drain_categories = ['all without locks', 'out of thread', 'with locks', 'total']
+
+            # Create grid plot with one subplot per interval, showing ALL percentiles in each plot
+            if len(intervals) > 1:
+                # Calculate grid dimensions
+                if len(intervals) <= 3:
+                    cols = len(intervals)
+                    rows = 1
+                elif len(intervals) <= 6:
+                    cols = 3
+                    rows = 2
                 else:
-                    axes = axes.flatten()
+                    cols = 3
+                    rows = (len(intervals) + cols - 1) // cols
 
-                for i, interval in enumerate(intervals):
-                    if i >= len(axes):
-                        break
+                # Create both normal and log scale versions
+                for scale_type in ['normal', 'log']:
+                    fig, axes = plt.subplots(rows, cols, figsize=constrain_figsize(6*cols, 5*rows))
+                    if len(intervals) == 1:
+                        axes = [axes]
+                    elif rows == 1:
+                        axes = axes if hasattr(axes, '__len__') else [axes]
+                    else:
+                        axes = axes.flatten()
 
-                    ax = axes[i]
-                    interval_data = drain_df[drain_df['interval'] == interval]
+                    for i, interval in enumerate(intervals):
+                        if i >= len(axes):
+                            break
+
+                        ax = axes[i]
+                        interval_data = test_drain_data[test_drain_data['interval'] == interval]
 
                     if interval_data.empty:
                         continue
@@ -5413,7 +5561,7 @@ class BenchmarkRunner:
                         ax.legend(fontsize=8, loc='upper left')
 
                         # Prevent scientific notation
-                        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
+                        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
                         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.1f}'))
 
                         # Set scales based on type
@@ -5437,20 +5585,20 @@ class BenchmarkRunner:
                 title_suffix = ' (Log Scale)' if scale_type == 'log' else ''
                 plt.suptitle(f'Drainage Duration by Queue Size - All Percentiles{title_suffix}',
                            fontsize=16, fontweight='bold')
-                plt.tight_layout()
+                safe_tight_layout()
 
-                filename = f'drainage_duration_all_percentiles_grid_{scale_type}'
+                filename = f'drainage_duration_all_percentiles_grid_{scale_type}_{test_type}'
                 if progress_mode:
                     filename += '_progress'
                 filename += '.png'
 
-                plt.savefig(drainage_plots_dir / filename, dpi=600, bbox_inches='tight')
+                plt.savefig(drainage_plots_dir / filename, dpi=300, bbox_inches='tight')
                 plt.close()        # Also create individual plots for each drain category showing all percentiles
         for category in drain_categories:
             # Create both normal and log scale versions
             for scale_type in ['normal', 'log']:
                 if len(intervals) > 1:
-                    fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 5*rows))
+                    fig, axes = plt.subplots(rows, cols, figsize=constrain_figsize(6*cols, 5*rows))
                     if len(intervals) == 1:
                         axes = [axes]
                     elif rows == 1:
@@ -5525,7 +5673,7 @@ class BenchmarkRunner:
                                 ax.legend(fontsize=8, loc='upper left')
 
                             # Prevent scientific notation
-                            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
+                            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
                             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.1f}'))
 
                             # Set scales based on type
@@ -5550,7 +5698,7 @@ class BenchmarkRunner:
                         title_suffix = ' (Log Scale)' if scale_type == 'log' else ''
                         plt.suptitle(f'{category.title()} Drainage Duration - All Percentiles{title_suffix}',
                                    fontsize=16, fontweight='bold')
-                        plt.tight_layout()
+                        safe_tight_layout()
 
                         safe_category = category.replace(' ', '_').replace('/', '_')
                         filename = f'drainage_duration_{safe_category}_all_percentiles_grid_{scale_type}'
@@ -5558,7 +5706,7 @@ class BenchmarkRunner:
                             filename += '_progress'
                         filename += '.png'
 
-                        plt.savefig(drainage_plots_dir / filename, dpi=600, bbox_inches='tight')
+                        plt.savefig(drainage_plots_dir / filename, dpi=300, bbox_inches='tight')
                         plt.close()
                     else:
                         plt.close()  # Close the figure if no data was found        print(f"📊 Drainage duration grid plots saved to {drainage_plots_dir}")
@@ -5587,12 +5735,16 @@ class BenchmarkRunner:
         df_deduplicated = df_with_loss.groupby(config_columns).last().reset_index()
         print(f"    📊 After deduplication: {len(df_deduplicated)} rows")
 
-        # Create the output directory for VM ops loss plots
-        vm_ops_grid_plots_dir = PLOTS_DIR / "vm_ops_loss_grids"
-        vm_ops_grid_plots_dir.mkdir(exist_ok=True)
+        # Determine test type based on presence of native_duration column
+        test_type = 'native' if 'native_duration' in df_with_loss.columns else 'renaissance'
+        print(f"    📊 Creating VM ops loss grid plots for {test_type} test type")
+
+        # Create the output directory for VM ops loss plots with test type separation
+        vm_ops_grid_plots_dir = PLOTS_DIR / "vm_ops_loss_grids" / test_type
+        vm_ops_grid_plots_dir.mkdir(parents=True, exist_ok=True)
 
         # Get unique intervals
-        intervals = sorted(df_with_loss['interval'].unique())
+        intervals = sorted(df_with_loss['interval'].unique(), key=interval_sort_key)
         print(f"📊 Found {len(intervals)} intervals: {intervals}")
 
         # Define VM operation categories to track
@@ -5631,7 +5783,7 @@ class BenchmarkRunner:
                     cols = 3
                     rows = (len(intervals) + cols - 1) // cols
 
-                fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 5*rows))
+                fig, axes = plt.subplots(rows, cols, figsize=constrain_figsize(6*cols, 5*rows))
                 if len(intervals) == 1:
                     axes = [axes]
                 elif rows == 1:
@@ -5723,19 +5875,32 @@ class BenchmarkRunner:
                         if i == 0:
                             ax.legend(fontsize=8, loc='upper left')
 
-                        # Prevent scientific notation
-                        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
-                        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.2f}'))
-
                         # Set scales based on type
                         if scale_type == 'log':
                             ax.set_xscale('log')
                             ax.set_yscale('log')
-                        elif len(interval_data) > 1:
-                            # For normal scale, only set log x-axis if wide range
-                            queue_range = interval_data['queue_size'].max() / interval_data['queue_size'].min()
-                            if queue_range > 10:
-                                ax.set_xscale('log')
+
+                            # Add minor ticks for log scale with finer subdivisions
+                            ax.xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.1, 1.0, 0.1)))
+                            ax.yaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.1, 1.0, 0.1)))
+
+                            # Prevent scientific notation on log scale
+                            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+                            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.4f}' if y < 0.01 else f'{y:,.2f}'))
+
+                            # Show selective minor tick labels to prevent scientific notation
+                            ax.xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}' if x in [20, 50, 200, 500, 2000, 5000] else ''))
+
+                            # Add more y-axis ticks for better readability
+                            ax.grid(True, which='minor', alpha=0.25)
+                            ax.grid(True, which='major', alpha=0.5)
+                        else:
+                            # For normal scale, prevent scientific notation
+                            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+                            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
+
+                            # Add more y-axis ticks for normal scale
+                            ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=8))
                     else:
                         ax.text(0.5, 0.5, 'No VM Ops Loss Data', transform=ax.transAxes,
                                ha='center', va='center', fontsize=12, alpha=0.5)
@@ -5748,7 +5913,7 @@ class BenchmarkRunner:
                 title_suffix = ' (Log Scale)' if scale_type == 'log' else ''
                 plt.suptitle(f'VM Operations Loss Percentage by Queue Size and Interval{title_suffix}',
                            fontsize=16, fontweight='bold')
-                plt.tight_layout()
+                safe_tight_layout()
 
                 filename = f'vm_ops_loss_percentage_grid_{scale_type}'
                 if progress_mode:
@@ -5757,6 +5922,85 @@ class BenchmarkRunner:
 
                 plt.savefig(vm_ops_grid_plots_dir / filename, dpi=600, bbox_inches='tight')
                 plt.close()
+
+        # Generate CSV files for VM operations loss data
+        print("📊 Generating CSV files for VM operations loss data...")
+
+        # Collect all VM operations data for CSV export
+        all_vm_ops_data = []
+
+        for _, row in df_deduplicated.iterrows():
+            queue_size = row['queue_size']
+            interval = row['interval']
+
+            # Get VM operations data from the results
+            vm_operations = {}
+            total_lost_samples = 0
+
+            # Try to get from raw dict format first
+            if 'vm_operations' in row and isinstance(row['vm_operations'], dict):
+                vm_operations = row['vm_operations']
+                total_lost_samples = row.get('total_lost_samples', 0)
+            else:
+                # Try to get from flattened CSV format
+                for category in vm_op_categories:
+                    csv_col = f'vm_op_{category}'
+                    if csv_col in row:
+                        vm_operations[category] = row[csv_col] if pd.notna(row[csv_col]) else 0
+                        total_lost_samples += vm_operations[category]
+
+                if total_lost_samples == 0:
+                    total_lost_samples = row.get('total_lost_samples', 0)
+
+            if not vm_operations or total_lost_samples == 0:
+                continue
+
+            # Calculate loss percentages for each VM operation category
+            overall_loss_pct = row['loss_percentage']
+
+            for category in vm_op_categories:
+                category_count = vm_operations.get(category, 0)
+                if total_lost_samples > 0:
+                    category_loss_pct = (category_count / total_lost_samples) * overall_loss_pct
+                else:
+                    category_loss_pct = 0.0
+
+                all_vm_ops_data.append({
+                    'queue_size': queue_size,
+                    'interval': interval,
+                    'vm_op_category': category,
+                    'vm_op_label': vm_op_labels.get(category, category),
+                    'loss_percentage': category_loss_pct,
+                    'category_count': category_count,
+                    'total_lost_samples': total_lost_samples,
+                    'overall_loss_percentage': overall_loss_pct
+                })
+
+        if all_vm_ops_data:
+            vm_ops_df = pd.DataFrame(all_vm_ops_data)
+
+            # Save comprehensive CSV
+            csv_filename = f'vm_ops_loss_data_{test_type}'
+            if progress_mode:
+                csv_filename += '_progress'
+            csv_filename += '.csv'
+
+            csv_path = vm_ops_grid_plots_dir / csv_filename
+            vm_ops_df.to_csv(csv_path, index=False)
+            print(f"📊 VM operations loss data saved to {csv_path}")
+
+            # Save interval-specific CSVs
+            for interval in intervals:
+                interval_data = vm_ops_df[vm_ops_df['interval'] == interval]
+                if not interval_data.empty:
+                    interval_csv_filename = f'vm_ops_loss_data_{test_type}_{interval}'
+                    if progress_mode:
+                        interval_csv_filename += '_progress'
+                    interval_csv_filename += '.csv'
+
+                    interval_csv_path = vm_ops_grid_plots_dir / interval_csv_filename
+                    interval_data.to_csv(interval_csv_path, index=False)
+                    print(f"📊 VM operations loss data for {interval} saved to {interval_csv_path}")
 
         # Create both normal and log scale versions
         for scale_type in ['normal', 'log']:
@@ -5814,7 +6058,7 @@ class BenchmarkRunner:
 
                 # Create individual plot for this interval
                 if vm_ops_data:
-                    fig, ax = plt.subplots(figsize=(10, 6))
+                    fig, ax = plt.subplots(figsize=constrain_figsize(10, 6))
 
                     # Plot all VM ops as different series
                     plotted_any = False
@@ -5842,21 +6086,34 @@ class BenchmarkRunner:
                         ax.grid(True, alpha=0.3)
                         ax.legend(fontsize=10, loc='upper left')
 
-                        # Prevent scientific notation
-                        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'))
-                        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.2f}'))
-
                         # Set scales based on type
                         if scale_type == 'log':
                             ax.set_xscale('log')
                             ax.set_yscale('log')
-                        elif len(interval_data) > 1:
-                            # For normal scale, only set log x-axis if wide range
-                            queue_range = interval_data['queue_size'].max() / interval_data['queue_size'].min()
-                            if queue_range > 10:
-                                ax.set_xscale('log')
 
-                        plt.tight_layout()
+                            # Add minor ticks for log scale with finer subdivisions
+                            ax.xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.1, 1.0, 0.1)))
+                            ax.yaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(0.1, 1.0, 0.1)))
+
+                            # Prevent scientific notation on log scale
+                            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+                            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.4f}' if y < 0.01 else f'{y:,.2f}'))
+
+                            # Show selective minor tick labels to prevent scientific notation
+                            ax.xaxis.set_minor_formatter(ticker.FuncFormatter(lambda x, pos: f'{int(x):,}' if x in [20, 50, 200, 500, 2000, 5000] else ''))
+
+                            # Add more y-axis ticks for better readability
+                            ax.grid(True, which='minor', alpha=0.25)
+                            ax.grid(True, which='major', alpha=0.5)
+                        else:
+                            # For normal scale, prevent scientific notation
+                            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}' if x % 1 == 0 else f'{x:,.1f}'))
+                            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:,.2f}'))
+
+                            # Add more y-axis ticks for normal scale
+                            ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=8))
+
+                        safe_tight_layout()
 
                         filename = f'vm_ops_loss_{interval}_all_categories_{scale_type}'
                         if progress_mode:
@@ -5942,12 +6199,16 @@ class BenchmarkRunner:
                     loss_pct = row.get('loss_percentage', 'N/A')
                     print(f"      Queue={queue_size}, Interval={interval}, Total={total_events}, Drains={drains}, Loss={loss_pct}%")
 
-            # Create output directory
-            queue_memory_plots_dir = PLOTS_DIR / "queue_memory_plots"
+            # Determine test type based on presence of native_duration column
+            test_type = 'native' if 'native_duration' in loss_df.columns else 'renaissance'
+            print(f"    📊 Creating queue memory consumption plots for {test_type} test type")
+
+            # Create output directory with test type separation
+            queue_memory_plots_dir = PLOTS_DIR / "queue_memory_plots" / test_type
             queue_memory_plots_dir.mkdir(parents=True, exist_ok=True)
 
             # Get unique intervals
-            intervals = sorted(loss_df['interval'].unique())
+            intervals = sorted(loss_df['interval'].unique(), key=interval_sort_key)
             print(f"📊 Creating queue memory consumption plots for intervals: {intervals}")
 
             # Create individual plots for each interval
@@ -5994,7 +6255,7 @@ class BenchmarkRunner:
 
         # Create figure with dual y-axis
         plt.style.use('seaborn-v0_8')
-        fig, ax1 = plt.subplots(figsize=(12, 8))
+        fig, ax1 = plt.subplots(figsize=constrain_figsize(12, 8))
         ax2 = ax1.twinx()
 
         # Plot loss percentage on left axis
@@ -6027,7 +6288,7 @@ class BenchmarkRunner:
         ax1.legend(lines, labels, loc='upper left')
 
         # Adjust layout
-        plt.tight_layout()
+        safe_tight_layout()
 
         # Save plot
         filename = self._get_plot_filename(f"loss_vs_memory_{interval.replace('ms', 'ms')}", progress_mode)
@@ -6055,7 +6316,7 @@ class BenchmarkRunner:
 
         # Create figure with single y-axis
         plt.style.use('seaborn-v0_8')
-        fig, ax = plt.subplots(figsize=(12, 8))
+        fig, ax = plt.subplots(figsize=constrain_figsize(12, 8))
 
         # Plot queue size increase count
         color = 'tab:green'
@@ -6080,7 +6341,7 @@ class BenchmarkRunner:
         ax.legend(loc='upper left')
 
         # Adjust layout
-        plt.tight_layout()
+        safe_tight_layout()
 
         # Save plot
         filename = self._get_plot_filename(f"queue_increments_{interval.replace('ms', 'ms')}", progress_mode)
@@ -6099,7 +6360,7 @@ class BenchmarkRunner:
         rows = (n_intervals + cols - 1) // cols
 
         plt.style.use('seaborn-v0_8')
-        fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 4*rows))
+        fig, axes = plt.subplots(rows, cols, figsize=constrain_figsize(6*cols, 4*rows))
         if rows == 1 and cols == 1:
             axes = [axes]
         elif rows == 1:
@@ -6170,7 +6431,7 @@ class BenchmarkRunner:
                     fontsize=16, fontweight='bold')
 
         # Adjust layout
-        plt.tight_layout()
+        safe_tight_layout()
 
         # Save plot
         filename = self._get_plot_filename("loss_vs_memory_grid", progress_mode)
@@ -6189,7 +6450,7 @@ class BenchmarkRunner:
         rows = (n_intervals + cols - 1) // cols
 
         plt.style.use('seaborn-v0_8')
-        fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 4*rows))
+        fig, axes = plt.subplots(rows, cols, figsize=constrain_figsize(6*cols, 4*rows))
         if rows == 1 and cols == 1:
             axes = [axes]
         elif rows == 1:
@@ -6255,7 +6516,7 @@ class BenchmarkRunner:
                     fontsize=16, fontweight='bold')
 
         # Adjust layout
-        plt.tight_layout()
+        safe_tight_layout()
 
         # Save plot
         filename = self._get_plot_filename("queue_increments_grid", progress_mode)
