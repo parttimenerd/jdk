@@ -1,35 +1,45 @@
-# JDK with Enhanced JFR Queue Size Analysis and Renaissance Benchmark Support
+# JDK with Enhanced JFR Queue Size Analysis and Benchmarking Framework
 
-This is a modernized JDK fork with enhanced Java Flight Recorder (JFR) capabilities, including extended queue size histogram analysis (up to 5000 events), dynamic queue sizing, comprehensive testing tools with Renaissance benchmark integration, and advanced triple y-axis visualization.
+This is a modernized JDK fork with enhanced Java Flight Recorder (JFR) capabilities, featuring comprehensive queue size histogram analysis, dynamic queue sizing, advanced Renaissance benchmark integration, and sophisticated data visualization with CSV export capabilities.
 
-## Enhanced Features
+## ✨ Enhanced Features
 
 ### 🔍 **Extended Queue Size Analysis**
 - **Histogram Range**: Extended from 1000 to 5000 events for comprehensive analysis
 - **Detailed Buckets**: Fine-grained analysis with buckets up to 5000 events
 - **Overflow Tracking**: Events >5000 tracked in overflow bucket
-- **Visualization Tools**: Python scripts for analyzing queue size distributions
+- **Advanced Visualization**: Python framework with grid plots and external legend positioning
 
 ### 🔄 **Dynamic Queue Sizing**
 - **Adaptive Capacity**: Automatic queue size adjustment based on load
 - **Real-time Scaling**: Queue grows dynamically to prevent sample loss
-- **Queue Size Increase Tracking**: Monitor `QUEUE_SIZE_INCREASE_COUNT` for capacity changes
-- **Triple Y-Axis Visualization**: Loss percentage, memory consumption, and queue increases on single plot
+- **Queue Size Increase Tracking**: Monitor capacity changes through enhanced metrics
+- **Triple Y-Axis Visualization**: Loss percentage, memory consumption, and queue increases
 
-### 🏃 **Comprehensive Testing Framework**
+### 🏃 **Comprehensive Benchmarking Framework**
 - **Native Stress Testing**: Dynamic stack depth testing with configurable parameters
-- **Thread Restart Simulation**: Configurable thread restart frequency for realistic JFR testing
-- **Renaissance Benchmark Integration**: Full Renaissance benchmark suite (v0.16.0) support
+- **Thread Restart Simulation**: Configurable thread restart frequency for realistic testing
+- **Renaissance Benchmark Integration**: Full Renaissance benchmark suite support
 - **Dual-Mode Operation**: Single script supporting both native and Renaissance testing
 - **JFR Integration**: Automatic CPU time sampling with configurable intervals
-- **Drain Statistics**: Enhanced drain statistics collection and analysis
+- **Enhanced Data Export**: CSV generation for all plots enabling Excel analysis
 
-### 📊 **Advanced Analysis Tools**
-- **Queue Histogram Visualization**: Extended range visualization up to 5000 events
-- **Triple Y-Axis Plotting**: Simultaneous visualization of loss percentage, queue memory consumption, and queue size increases
-- **Drain Statistics Analysis**: Comprehensive drain performance analysis
-- **Comparative Analysis**: Before/after performance comparisons
-- **Multiple Chart Types**: ASCII histograms, weighted distributions, PNG outputs
+### 📊 **Advanced Analysis & Visualization Tools**
+- **Grid Plot System**: "By Interval" and "By Queue Size" visualization layouts
+- **Legend Positioning**: External legends to prevent data overlap
+- **Scientific Notation Prevention**: Clean axis formatting for better readability
+- **CSV Export**: Comprehensive data export for all plots with Excel compatibility
+- **Multiple Chart Types**: Signal handler duration, memory consumption, VM operations, drainage statistics
+- **Markdown Summaries**: Auto-generated plot summaries with absolute file paths
+
+### 🎯 **Recent Enhancements (Latest)**
+- **Legend Fixes**: External positioning using `bbox_to_anchor` prevents overlap with data points
+- **Axis Formatting**: Scientific notation prevented in "by Interval" plots for improved readability
+- **Comprehensive CSV Export**: All plotting functions now generate corresponding CSV files
+- **Data Export Structure**: Time metrics in both nanoseconds and microseconds for Excel compatibility
+- **Markdown Summaries**: Auto-generated plot summaries with absolute file paths emitted on command line
+- **Codebase Cleanup**: Removed unnecessary backup directories and temporary analysis files
+- **Configuration Fixes**: Fixed syntax errors and streamlined local configuration settings
 
 For build instructions please see the
 [online documentation](https://openjdk.org/groups/build/doc/building.html),
@@ -39,6 +49,37 @@ or either of these files:
 - [doc/building.md](doc/building.md) (markdown version)
 
 ## Quick Start
+
+### Comprehensive Benchmarking Framework
+```bash
+cd jfr_benchmarking
+
+# FIRST TIME SETUP: Create your local configuration
+cp config_default.py config.py
+# Edit config.py with your preferred test parameters
+
+# Run minimal benchmarking suite with CSV export
+python3 benchmark_queue_sizes.py --minimal
+
+# Full benchmarking with CSV export for Excel analysis
+python3 benchmark_queue_sizes.py
+
+# Progress mode with enhanced visualization
+python3 benchmark_queue_sizes.py --progress
+
+# Analysis outputs absolute paths to markdown summaries for easy access
+```
+
+**Configuration:**
+- **`config_default.py`**: Comprehensive template with all options documented
+- **`config.py`**: Your local settings (gitignored, safe to customize)
+- **Quick setup**: `cp config_default.py config.py` then edit as needed
+
+**Key Outputs:**
+- **Plot Summaries**: Auto-generated markdown files with absolute paths displayed on command line
+- **CSV Export**: All plots generate corresponding Excel-compatible CSV files
+- **Enhanced Visualizations**: External legends prevent data overlap, clean axis formatting
+- **Multiple Test Types**: Native stress tests and Renaissance benchmark analysis
 
 ### Testing with Native Stress Tests
 ```bash
@@ -86,11 +127,21 @@ cd run_in_native
 # Analyze drain statistics with enhanced visualization including triple y-axis plots
 python3 visualize_histograms.py /tmp/drain_stats.txt
 
-# Comprehensive benchmarking with dynamic queue sizing support
-python3 benchmark_queue_sizes.py --dynamic-queue-size --minimal
+# Comprehensive benchmarking with CSV export and absolute path output
+python3 benchmark_queue_sizes.py --minimal
 
-# Comprehensive drain categories analysis
-python3 analyze_drain_categories.py /tmp/drain_stats.txt
+# Full analysis with progress tracking and enhanced visualization
+python3 benchmark_queue_sizes.py --progress
+
+# CSV files automatically generated for Excel analysis:
+# - Signal handler duration data (nanoseconds + microseconds)
+# - Memory consumption metrics
+# - Loss percentage analysis
+# - Drainage duration statistics
+# - VM operations data
+
+# Markdown summaries with absolute paths for easy navigation
+# Paths automatically displayed on command line for quick access
 ```
 
 ## Key Improvements
@@ -135,15 +186,27 @@ python3 analyze_drain_categories.py /tmp/drain_stats.txt
 
 ```
 jdk/
+├── jfr_benchmarking/        # Enhanced benchmarking framework
+│   ├── benchmark_queue_sizes.py    # Main benchmarking script with CSV export
+│   ├── config_default.py   # Default configuration template (committed)
+│   ├── config.py           # Local configuration (gitignored, user-created)
+│   ├── CONFIG_README.md    # Configuration guide and examples
+│   ├── visualize_histograms.py     # Queue histogram visualization
+│   └── analyze_drain_categories.py # Drain statistics analysis
 ├── run_in_native/           # Testing framework directory
 │   ├── run.sh              # Unified test runner (native + Renaissance)
 │   ├── CPUStressTest.*     # Native stress test implementation
 │   ├── DynamicStackCPUStressTest.*  # Dynamic stack testing
 │   └── README.md           # Detailed testing documentation
-├── visualize_histograms.py # Queue histogram visualization (extended to 5000)
-├── analyze_drain_categories.py     # Drain statistics analysis
+├── plots/                   # Generated plot outputs with CSV exports
+│   ├── summaries/          # Auto-generated markdown summaries
+│   ├── signal_handler_duration_by_queue_size/  # + CSV files
+│   ├── memory_consumption_by_queue_size/       # + CSV files
+│   ├── drainage_duration_by_queue_size/        # + CSV files
+│   └── vm_ops_loss_by_queue_size/              # + CSV files
+├── benchmark_results/       # Test execution results and logs
 ├── src/hotspot/share/jfr/periodic/sampling/jfrThreadSampling.cpp  # Extended queue analysis
-└── README.md              # This file
+└── README.md               # This file
 ```
 
 ## Analysis Capabilities
