@@ -103,30 +103,50 @@ def kill_lingering_java_processes(force=False, verbose=False):
             print("    ✅ No lingering Java processes to clean up")
 
 def has_json_parsing_errors(log_path: Path, verbose: bool = False) -> bool:
-    """Check if the log file contains JSON parsing errors that indicate incomplete/corrupted output"""
+    """
+    Check if the log file contains JSON parsing errors that indicate incomplete/corrupted output.
+
+    This function distinguishes between:
+    1. REAL errors: Actual JSON parsing failures, missing essential data, corrupted output
+    2. Informational warnings: Missing optional data that has fallback mechanisms
+
+    Returns True only if there are genuine parsing errors that affect data quality.
+    Returns False if data extraction was successful, even with some informational warnings.
+    """
     try:
         with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
 
-        # Look for JSON parsing error indicators
+        # Look for ACTUAL JSON parsing error indicators (not warnings about missing optional data)
         json_error_indicators = [
             "Error parsing JSON:",
             "JSONDecodeError",
-            "No DRAIN_STATS_JSON found",
-            "Could not parse all required statistics",
-            "Missing Successful Samples",
-            "Missing Total Samples",
-            "Missing Lost Samples"
+            "No DRAIN_STATS_JSON found",  # This is a real error - no drain stats at all
+            "Could not parse all required statistics",  # This means critical parsing failed
+            "Missing Successful Samples",  # This means we failed to extract essential data
+            "Missing Total Samples",  # This means we failed to extract essential data
+            "Missing Lost Samples"  # This means we failed to extract essential data
         ]
 
-        # Check if any error indicators are present
+        # These are informational messages that should NOT be treated as errors:
+        # - "No LOSS_PERCENTAGE found from run.sh, will calculate from JFR statistics" (normal fallback)
+        # - "Could not find 'CPU Time Sample Statistics' section in log" (optional data)
+        # - "⚠️ No {something} found" when followed by successful parsing
+
+        # Check if any REAL error indicators are present
+        error_count = 0
         for indicator in json_error_indicators:
             if indicator in content:
                 if verbose:
                     print(f"    ⚠️ Found JSON parsing issue: {indicator}")
-                return True
+                error_count += 1
+
+        # If we found basic errors, return True
+        if error_count > 0:
+            return True
 
         # Also check if we have incomplete JSON (truncated output)
+        malformed_json_count = 0
         if 'DRAIN_STATS_JSON:' in content:
             # Count complete vs incomplete JSON entries
             json_lines = [line for line in content.split('\n') if 'DRAIN_STATS_JSON:' in line]
@@ -138,7 +158,31 @@ def has_json_parsing_errors(log_path: Path, verbose: bool = False) -> bool:
                     except json.JSONDecodeError:
                         if verbose:
                             print(f"    ⚠️ Found malformed JSON in DRAIN_STATS_JSON")
-                        return True
+                        malformed_json_count += 1
+
+        # If we have malformed JSON, that's a real error
+        if malformed_json_count > 0:
+            return True
+
+        # Check if we have successful data extraction markers
+        successful_extraction_markers = [
+            "LOST_SAMPLE_STATS parsing completed:",
+            "VM_OPS_STATS parsing completed:",
+            "Found MAX_QUEUE_SIZE_SUM:",
+            "Found QUEUE_SIZE_INCREASE_COUNT:"
+        ]
+
+        extraction_success_count = 0
+        for marker in successful_extraction_markers:
+            if marker in content:
+                extraction_success_count += 1
+
+        # If we have successful extraction of key data, this is not an error state
+        # even if there were some informational warnings
+        if extraction_success_count >= 2:  # At least 2 successful extractions
+            if verbose:
+                print(f"    ✅ Found {extraction_success_count} successful data extractions, treating as successful")
+            return False
 
         return False
 
@@ -1190,8 +1234,12 @@ Columns: {len(df.columns)}
                             print(f"    ⚠️ Max retries reached, keeping result despite JSON issues")
                 elif log_file:
                     log_path = LOGS_DIR / log_file
-                    if log_path.exists() and has_json_parsing_errors(log_path, self.verbose):
-                        print(f"    ⚠️ Test succeeded and extracted loss data, but found JSON parsing errors (not retrying)")
+                    # Only check for errors if verbose mode is on, and don't treat as failure
+                    if self.verbose and log_path.exists():
+                        has_errors = has_json_parsing_errors(log_path, self.verbose)
+                        if not has_errors:
+                            print(f"    ✅ Test data extraction completed successfully")
+                        # Note: we don't retry here since we have the data we need
 
                 print(f"    ✅ Test successful" + (f" (after {attempt} retries)" if attempt > 0 else ""))
                 return result
@@ -6200,6 +6248,9 @@ Columns: {len(df.columns)}
             all_labels = {**signal_percentile_labels, **additional_time_labels}
             all_colors = {**percentile_colors, **additional_time_colors}
 
+            # Initialize variable to track if any data was found across all categories
+            category_found = False
+
             # Create plots for each signal handler category
             for category in signal_handler_categories:
                 category_data = test_drain_data[test_drain_data['drain_category'] == category]
@@ -6227,8 +6278,6 @@ Columns: {len(df.columns)}
                             axes = axes if hasattr(axes, '__len__') else [axes]
                         else:
                             axes = axes.flatten()
-
-                        category_found = False
 
                         for i, queue_size in enumerate(queue_sizes):
                             if i >= len(axes):
@@ -7740,6 +7789,9 @@ Columns: {len(df.columns)}
             # Define drainage categories to track
             drainage_categories = ['all without locks', 'safepoint', 'safepoint with locks', 'queue operation']
 
+            # Initialize variable to track if any data was found across all categories
+            category_found = False
+
             # Create plots for each drainage category
             for category in drainage_categories:
                 category_data = test_drain_data[test_drain_data['drain_category'] == category]
@@ -7767,8 +7819,6 @@ Columns: {len(df.columns)}
                             axes = axes if hasattr(axes, '__len__') else [axes]
                         else:
                             axes = axes.flatten()
-
-                        category_found = False
 
                         for i, queue_size in enumerate(queue_sizes):
                             if i >= len(axes):
