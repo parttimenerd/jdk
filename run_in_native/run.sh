@@ -15,6 +15,7 @@ NATIVE_DURATION=""
 QUEUE_SIZE=""
 DYNAMIC_QUEUE_SIZE=""
 RESTART_FREQUENCY=""
+EXTREME_CHURN=false
 NO_ANALYSIS=false
 NO_PLOTS=false
 
@@ -26,7 +27,7 @@ show_help() {
 Dynamic Stack CPU Stress Test & Renaissance Benchmark Runner
 
 USAGE:
-    run.sh [--mode native|renaissance] [-d duration] [-s stack_depth] [-t threads] [-j jvm_opts] [-f stats_file] [-i sampling_interval] [-n iterations] [--native-duration seconds] [-q queue_size] [--dynamic-queue-size] [--restart-frequency N] [-h]
+    run.sh [--mode native|renaissance] [-d duration] [-s stack_depth] [-t threads] [-j jvm_opts] [-f stats_file] [-i sampling_interval] [-n iterations] [--native-duration seconds] [-q queue_size] [--dynamic-queue-size] [--restart-frequency N] [--extreme-churn] [-h]
 
 OPTIONS:
     --mode MODE          Execution mode: 'native' (default) or 'renaissance'
@@ -41,6 +42,7 @@ OPTIONS:
     -q queue_size        JFR queue size override (default: 500, scaled by sampling frequency)
     --dynamic-queue-size Enable dynamic queue sizing (DYNAMIC_QUEUE_SIZE=true)
     --restart-frequency N Restart threads every N native calls (0 = no restarts, default: 0) [native mode only]
+    --extreme-churn      Use ExtremeThreadChurnStressTest (creates/destroys threads instead of reusing) [native mode only]
     --no-analysis        Skip automatic drain statistics analysis (no plots/visualizations)
     --no-plots           Run analysis but skip plot/visualization generation
     -h                   Show this help message
@@ -56,6 +58,7 @@ NATIVE MODE EXAMPLES:
     run.sh -q 2000 -i 100us                      # Override queue size for high-frequency sampling
     run.sh --dynamic-queue-size -i 1ms           # Enable dynamic queue sizing with 1ms sampling
     run.sh --restart-frequency 1000 -d 30        # Restart threads every 1000 native calls
+    run.sh --extreme-churn --restart-frequency 1 -d 30 --native-duration 1  # WORST CASE: Create/destroy threads every 1s
 
 Renaissance mode examples:
 
@@ -192,6 +195,7 @@ while [[ $# -gt 0 ]]; do
         -q) QUEUE_SIZE="$2"; shift 2 ;;
         --dynamic-queue-size) DYNAMIC_QUEUE_SIZE="true"; shift ;;
         --restart-frequency) RESTART_FREQUENCY="$2"; shift 2 ;;
+        --extreme-churn) EXTREME_CHURN=true; shift ;;
         --no-analysis) NO_ANALYSIS=true; shift ;;
         --no-plots) NO_PLOTS=true; shift ;;
         -h) show_help; exit 0 ;;
@@ -489,9 +493,10 @@ if [[ "$SKIP_COMPILATION" == "false" ]]; then
     fi
 fi
 
-    # Compile main Java class
-    echo "Compiling main class..."
-    $JAVA_HOME/bin/javac -h . DynamicStackCPUStressTest.java || { echo "Failed to compile main Java class"; exit 1; }
+    # Compile main Java classes
+    echo "Compiling main classes..."
+    $JAVA_HOME/bin/javac -h . DynamicStackCPUStressTest.java || { echo "Failed to compile DynamicStackCPUStressTest"; exit 1; }
+    $JAVA_HOME/bin/javac -h . ExtremeThreadChurnStressTest.java || { echo "Failed to compile ExtremeThreadChurnStressTest"; exit 1; }
 
     # Detect OS and build native library
     OS=$(uname -s)
@@ -571,11 +576,23 @@ if [[ "$MODE" == "native" ]]; then
     fi
 
     # Use custom JDK's java runtime for native stress test
-    if [[ -n "$NATIVE_DURATION" ]]; then
-        $JAVA_HOME/bin/java --enable-native-access=ALL-UNNAMED $JVM_OPTS -Djava.library.path=. -cp "$CLASSPATH" DynamicStackCPUStressTest $STACK_DEPTH $DURATION $THREADS $NATIVE_DURATION ${RESTART_FREQUENCY:-0}
+    if [[ "$EXTREME_CHURN" == true ]]; then
+        # Use extreme thread churn test for worst-case JFR stress testing
+        echo "Running ExtremeThreadChurnStressTest for maximum JFR stress..."
+        if [[ -n "$NATIVE_DURATION" ]]; then
+            $JAVA_HOME/bin/java --enable-native-access=ALL-UNNAMED $JVM_OPTS -Djava.library.path=. -cp "$CLASSPATH" ExtremeThreadChurnStressTest $STACK_DEPTH $DURATION $THREADS $NATIVE_DURATION ${RESTART_FREQUENCY:-1}
+        else
+            # When native duration is not specified, use the total duration as native duration and pass restart frequency
+            $JAVA_HOME/bin/java --enable-native-access=ALL-UNNAMED $JVM_OPTS -Djava.library.path=. -cp "$CLASSPATH" ExtremeThreadChurnStressTest $STACK_DEPTH $DURATION $THREADS $DURATION ${RESTART_FREQUENCY:-1}
+        fi
     else
-        # When native duration is not specified, use the total duration as native duration and pass restart frequency
-        $JAVA_HOME/bin/java --enable-native-access=ALL-UNNAMED $JVM_OPTS -Djava.library.path=. -cp "$CLASSPATH" DynamicStackCPUStressTest $STACK_DEPTH $DURATION $THREADS $DURATION ${RESTART_FREQUENCY:-0}
+        # Use standard dynamic stack CPU stress test with simulated restarts
+        if [[ -n "$NATIVE_DURATION" ]]; then
+            $JAVA_HOME/bin/java --enable-native-access=ALL-UNNAMED $JVM_OPTS -Djava.library.path=. -cp "$CLASSPATH" DynamicStackCPUStressTest $STACK_DEPTH $DURATION $THREADS $NATIVE_DURATION ${RESTART_FREQUENCY:-0}
+        else
+            # When native duration is not specified, use the total duration as native duration and pass restart frequency
+            $JAVA_HOME/bin/java --enable-native-access=ALL-UNNAMED $JVM_OPTS -Djava.library.path=. -cp "$CLASSPATH" DynamicStackCPUStressTest $STACK_DEPTH $DURATION $THREADS $DURATION ${RESTART_FREQUENCY:-0}
+        fi
     fi
 elif [[ "$MODE" == "renaissance" ]]; then
     # Run Renaissance benchmarks

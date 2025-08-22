@@ -3385,6 +3385,10 @@ class BenchmarkRunner:
             self.plot_memory_consumption_by_queue_size(native_df)
             self.plot_loss_kinds_by_queue_size(native_df)
 
+            # New comprehensive loss bar charts
+            print("📊 Creating comprehensive loss bar charts...")
+            self.plot_loss_bar_charts(native_df)
+
         if renaissance_df is not None:
             self.plot_renaissance_results(renaissance_df)
             self.plot_loss_kinds(renaissance_df)
@@ -3405,6 +3409,10 @@ class BenchmarkRunner:
             self.plot_signal_handler_duration_by_queue_size(renaissance_df)
             self.plot_memory_consumption_by_queue_size(renaissance_df)
             self.plot_loss_kinds_by_queue_size(renaissance_df)
+
+            # New comprehensive loss bar charts
+            print("📊 Creating comprehensive loss bar charts...")
+            self.plot_loss_bar_charts(renaissance_df)
 
             # Load drain statistics and create Renaissance-specific plots
             drain_df = self.load_drain_statistics()
@@ -3527,6 +3535,10 @@ class BenchmarkRunner:
             self.plot_signal_handler_duration_by_queue_size(df, progress_mode=True)
             self.plot_memory_consumption_by_queue_size(df, progress_mode=True)
             self.plot_loss_kinds_by_queue_size(df, progress_mode=True)
+
+            # New comprehensive loss bar charts for progress monitoring
+            print("📊 Creating progress loss bar charts...")
+            self.plot_loss_bar_charts(df, progress_mode=True)
         else:
             self.plot_renaissance_results(df, progress_mode=True)
             self.plot_vm_operations(df, progress_mode=True)
@@ -3545,6 +3557,10 @@ class BenchmarkRunner:
             self.plot_signal_handler_duration_by_queue_size(df, progress_mode=True)
             self.plot_memory_consumption_by_queue_size(df, progress_mode=True)
             self.plot_loss_kinds_by_queue_size(df, progress_mode=True)
+
+            # New comprehensive loss bar charts for progress monitoring
+            print("📊 Creating progress loss bar charts...")
+            self.plot_loss_bar_charts(df, progress_mode=True)
 
         # Generate progress plot summary markdown
         print("📝 Generating progress plot summary documentation...")
@@ -6583,6 +6599,230 @@ class BenchmarkRunner:
 
         print(f"📊 Loss kinds plots by queue size saved to {loss_by_queue_plots_dir}")
 
+    def plot_loss_bar_charts(self, df: pd.DataFrame, progress_mode: bool = False):
+        """Create comprehensive bar charts for loss data with different configurations"""
+        print("📊 Creating comprehensive loss bar charts...")
+
+        # Filter out rows where we don't have loss kind data
+        df_with_loss_kinds = df.dropna(subset=['loss_percentage'])
+
+        if df_with_loss_kinds.empty:
+            print("⚠️ No data with loss kinds information found")
+            return
+
+        # Determine test type based on presence of native_duration column
+        test_type = 'native' if 'native_duration' in df_with_loss_kinds.columns else 'renaissance'
+        print(f"    📊 Creating loss bar charts for {test_type} test type")
+
+        # Create output directory structure
+        base_output_dir = PLOTS_DIR / "loss_bar_charts" / test_type
+        base_output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create subdirectories for different chart types
+        absolute_dir = base_output_dir / "absolute"
+        absolute_log_dir = base_output_dir / "absolute_log"
+        percentage_dir = base_output_dir / "percentage"
+        percentage_log_dir = base_output_dir / "percentage_log"
+
+        for dir_path in [absolute_dir, absolute_log_dir, percentage_dir, percentage_log_dir]:
+            dir_path.mkdir(parents=True, exist_ok=True)
+
+        # Get unique intervals and queue sizes
+        intervals = sorted(df_with_loss_kinds['interval'].unique(), key=interval_sort_key)
+        queue_sizes = sorted(df_with_loss_kinds['queue_size'].unique())
+
+        print(f"    📊 Found {len(intervals)} intervals and {len(queue_sizes)} queue sizes")
+
+        # Define actual loss kinds categories - split into major and minor
+        major_loss_categories = ['stw_gc', 'invalid_state', 'could_not_acquire_lock', 'enqueue_failed']
+        minor_loss_categories = [
+            'state_thread_uninitialized', 'state_thread_new', 'state_thread_new_trans',
+            'state_thread_in_native_trans', 'state_thread_in_vm', 'state_thread_in_vm_trans',
+            'state_thread_in_java_trans', 'state_thread_blocked', 'state_thread_blocked_trans',
+            'no_vm_ops', 'in_jfr_safepoint', 'other'
+        ]
+
+        all_loss_categories = major_loss_categories + minor_loss_categories
+
+        # Process each interval x queue size combination
+        for interval in intervals:
+            for queue_size in queue_sizes:
+                combination_data = df_with_loss_kinds[
+                    (df_with_loss_kinds['interval'] == interval) &
+                    (df_with_loss_kinds['queue_size'] == queue_size)
+                ]
+
+                if combination_data.empty:
+                    continue
+
+                # Prepare data for bar charts
+                bar_data = self._prepare_loss_bar_data(combination_data, all_loss_categories, major_loss_categories)
+
+                if not bar_data:
+                    continue
+
+                combo_title = f'{interval} Interval, Queue Size {queue_size}'
+                filename_base = f'loss_bars_{interval}_q{queue_size}'
+
+                # Create 4 different chart types
+                self._create_loss_bar_chart(bar_data, combo_title, filename_base,
+                                          absolute_dir, chart_type='absolute', log_scale=False, progress_mode=progress_mode)
+
+                self._create_loss_bar_chart(bar_data, combo_title, filename_base,
+                                          absolute_log_dir, chart_type='absolute', log_scale=True, progress_mode=progress_mode)
+
+                self._create_loss_bar_chart(bar_data, combo_title, filename_base,
+                                          percentage_dir, chart_type='percentage', log_scale=False, progress_mode=progress_mode)
+
+                self._create_loss_bar_chart(bar_data, combo_title, filename_base,
+                                          percentage_log_dir, chart_type='percentage', log_scale=True, progress_mode=progress_mode)
+
+        print(f"    📊 Loss bar charts saved to {base_output_dir}")
+
+    def _prepare_loss_bar_data(self, combination_data, all_categories, major_categories):
+        """Prepare bar chart data from loss kinds data for a specific interval/queue combination"""
+        bar_data = []
+
+        # We should have only one row per combination
+        if len(combination_data) > 1:
+            # Take the most recent one if there are duplicates
+            row = combination_data.iloc[-1]
+        else:
+            row = combination_data.iloc[0]
+
+        # Extract loss kinds data from the CSV columns
+        for category in all_categories:
+            # Get absolute count for this loss kind
+            count_col = f'loss_kind_{category}'
+            lost_count = row.get(count_col, 0) if pd.notna(row.get(count_col, 0)) else 0
+
+            # Get percentage for this loss kind
+            pct_col = f'loss_kind_pct_{category}'
+            loss_percentage = row.get(pct_col, 0) if pd.notna(row.get(pct_col, 0)) else 0
+
+            # Skip categories with no data
+            if lost_count == 0 and loss_percentage == 0:
+                continue
+
+            bar_data.append({
+                'category': category.replace('_', ' ').title(),
+                'category_key': category,
+                'lost_events': int(lost_count),
+                'loss_percentage': float(loss_percentage),
+                'category_type': 'major' if category in major_categories else 'minor'
+            })
+
+        return bar_data
+
+    def _create_loss_bar_chart(self, bar_data, title, filename_base, output_dir,
+                              chart_type='absolute', log_scale=False, progress_mode=False):
+        """Create individual loss bar chart with specified configuration"""
+        if not bar_data:
+            return
+
+        fig, ax = plt.subplots(figsize=constrain_figsize(12, 8))
+
+        # Sort data by values for better visualization
+        if chart_type == 'absolute':
+            bar_data = sorted(bar_data, key=lambda x: x['lost_events'], reverse=True)
+        else:
+            bar_data = sorted(bar_data, key=lambda x: x['loss_percentage'], reverse=True)
+
+        # Prepare data for plotting
+        categories = [item['category'] for item in bar_data]
+
+        if chart_type == 'absolute':
+            values = [item['lost_events'] for item in bar_data]
+            ylabel = 'Lost Events (absolute count)'
+            title_suffix = 'Absolute Lost Events'
+        else:  # percentage
+            values = [item['loss_percentage'] for item in bar_data]
+            ylabel = 'Loss Percentage (%)'
+            title_suffix = 'Loss Percentage'
+
+        # Color bars by category type
+        colors = []
+        for item in bar_data:
+            if item['category_type'] == 'major':
+                colors.append('#E74C3C')  # Red for major categories
+            else:
+                colors.append('#3498DB')  # Blue for minor categories
+
+        # Create bar chart
+        bars = ax.bar(range(len(categories)), values, color=colors, alpha=0.7, edgecolor='black', linewidth=0.5)
+
+        # Customize chart
+        chart_title = f'{title} - {title_suffix}'
+        if log_scale:
+            chart_title += ' (Log Scale)'
+
+        ax.set_title(chart_title, fontsize=14, fontweight='bold')
+        ax.set_xlabel('Loss Kind', fontsize=12)
+        ax.set_ylabel(ylabel, fontsize=12)
+
+        # Set category labels on x-axis with rotation for readability
+        ax.set_xticks(range(len(categories)))
+        ax.set_xticklabels(categories, rotation=45, ha='right')
+
+        # Apply log scale if requested
+        if log_scale and any(v > 0 for v in values):
+            ax.set_yscale('log')
+            # Ensure we have positive values for log scale
+            min_positive = min(v for v in values if v > 0)
+            ax.set_ylim(bottom=min_positive * 0.1)
+
+        # Add value labels on bars (only for non-zero values to avoid clutter)
+        for bar, value in zip(bars, values):
+            height = bar.get_height()
+            if height > 0:  # Only label non-zero bars
+                if chart_type == 'absolute':
+                    if height >= 1000:
+                        label = f'{int(height/1000):,}K'
+                    else:
+                        label = f'{int(height):,}'
+                else:
+                    label = f'{height:.2f}%'
+
+                ax.text(bar.get_x() + bar.get_width()/2., height,
+                       label, ha='center', va='bottom', fontsize=9, rotation=0)
+
+        # Add legend for category types
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor='#E74C3C', alpha=0.7, label='Major Loss Kinds'),
+            Patch(facecolor='#3498DB', alpha=0.7, label='Minor Loss Kinds')
+        ]
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=10)
+
+        # Grid and formatting
+        ax.grid(True, alpha=0.3, axis='y')
+
+        # Prevent scientific notation
+        if not log_scale:
+            if chart_type == 'absolute':
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{int(y):,}'))
+            else:
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.1f}'))
+
+        plt.tight_layout()
+
+        # Save the plot
+        filename = filename_base
+        if log_scale:
+            filename += '_log'
+        if progress_mode:
+            filename += '_progress'
+        filename += '.png'
+
+        plt.savefig(output_dir / filename, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        # Create CSV export
+        if not progress_mode:
+            csv_filename = filename.replace('.png', '.csv')
+            csv_data = pd.DataFrame(bar_data)
+            csv_data.to_csv(output_dir / csv_filename, index=False)
+
     def generate_plot_summary_markdown(self, progress_mode: bool = False):
         """Generate comprehensive markdown summaries with all grid plots for easy review"""
         print("📝 Generating plot summary markdown files...")
@@ -6612,6 +6852,10 @@ class BenchmarkRunner:
             "Loss Kinds": {
                 "grid": "loss_kinds",
                 "by_queue": "loss_kinds_by_queue_size"
+            },
+            "Loss Bar Charts": {
+                "grid": None,  # No grid version, organized by chart types instead
+                "by_queue": "loss_bar_charts"
             }
         }
 
@@ -7948,6 +8192,10 @@ class BenchmarkRunner:
             'vm_op_other': 'Other VM Ops'
         }
 
+        # Initialize data tracking variables
+        any_data_found = False
+        test_vm_ops_data = []
+
         # Create both normal and log scale versions
         for scale_type in ['normal', 'log']:
             # Create grid plot with one subplot per queue size
@@ -8031,6 +8279,15 @@ class BenchmarkRunner:
                                         'loss_percentage': category_loss_pct
                                     })
 
+                                    # Collect data for CSV generation
+                                    test_vm_ops_data.append({
+                                        'queue_size': queue_size,
+                                        'interval': interval,
+                                        'loss_category': category,
+                                        'loss_percentage': category_loss_pct
+                                    })
+                                    any_data_found = True
+
                     # Plot the data for this queue size - show all VM ops as different series
                     plotted_any = False
                     colors = plt.cm.Set1(np.linspace(0, 1, len(vm_op_categories)))
@@ -8111,11 +8368,15 @@ class BenchmarkRunner:
 
         # Generate CSV files for VM operations loss data
         if any_data_found:
+            # Convert collected data to DataFrame for easier processing
+            test_vm_ops_df = pd.DataFrame(test_vm_ops_data)
+            loss_categories = vm_op_categories  # Use the same categories as defined for plotting
+
             # Create comprehensive CSV with all VM operations loss data for this test type
             csv_data = []
 
             for category in loss_categories:
-                cat_data = test_vm_ops_data[test_vm_ops_data['loss_category'] == category]
+                cat_data = test_vm_ops_df[test_vm_ops_df['loss_category'] == category]
                 if cat_data.empty:
                     continue
 
