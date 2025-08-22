@@ -276,7 +276,7 @@ def summarize_drain_data(df: pd.DataFrame) -> None:
 
 def test_direct_parsing():
     """Test the direct parsing approach"""
-    print("🧪 Testing direct log parsing...")
+    print("Testing direct log parsing...")
 
     # Parse all logs
     results = parse_all_logs()
