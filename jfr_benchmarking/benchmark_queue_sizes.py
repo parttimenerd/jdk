@@ -781,6 +781,182 @@ class BenchmarkRunner:
         except Exception as e:
             self.vprint(f"    ⚠️ Error saving VM operations ASCII table {base_filename}: {e}")
 
+    def enhance_csv_exports(self, df: pd.DataFrame, output_dir: Path, progress_mode: bool = False):
+        """Create enhanced CSV exports with comprehensive metadata and multiple formats"""
+        print("📊 Creating enhanced CSV exports...")
+
+        if df.empty:
+            print("⚠️ No data available for enhanced CSV exports")
+            return
+
+        # Create CSV exports directory
+        csv_exports_dir = output_dir / "csv_exports"
+        csv_exports_dir.mkdir(parents=True, exist_ok=True)
+
+        # Determine test type
+        test_type = 'native' if 'native_duration' in df.columns else 'renaissance'
+
+        # Generate timestamp for exports
+        from datetime import datetime
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        # 1. Complete raw data export
+        raw_filename = f"complete_benchmark_data_{test_type}"
+        if progress_mode:
+            raw_filename += "_progress"
+        raw_filename += f"_{timestamp}.csv"
+
+        raw_path = csv_exports_dir / raw_filename
+        df.to_csv(raw_path, index=False)
+        print(f"  📄 Complete raw data: {raw_path.name}")
+
+        # 2. Create summary statistics CSV
+        if not df.empty:
+            summary_data = []
+
+            # Get unique configurations
+            config_cols = ['queue_size', 'interval']
+            if 'stack_depth' in df.columns:
+                config_cols.append('stack_depth')
+
+            grouped = df.groupby(config_cols, dropna=False)
+
+            for config, group in grouped:
+                if isinstance(config, tuple):
+                    config_dict = dict(zip(config_cols, config))
+                else:
+                    config_dict = {config_cols[0]: config}
+
+                summary_row = {
+                    'test_type': test_type,
+                    **config_dict,
+                    'total_tests': len(group),
+                    'avg_loss_percentage': group.get('loss_percentage', pd.Series([0])).mean(),
+                    'max_loss_percentage': group.get('loss_percentage', pd.Series([0])).max(),
+                    'min_loss_percentage': group.get('loss_percentage', pd.Series([0])).min(),
+                    'timestamp': timestamp
+                }
+
+                # Add test-specific metrics
+                if 'total_lost_samples' in group.columns:
+                    summary_row['total_lost_samples'] = group['total_lost_samples'].sum()
+                if 'total_samples' in group.columns:
+                    summary_row['total_samples'] = group['total_samples'].sum()
+
+                summary_data.append(summary_row)
+
+            if summary_data:
+                summary_df = pd.DataFrame(summary_data)
+                summary_filename = f"benchmark_summary_{test_type}"
+                if progress_mode:
+                    summary_filename += "_progress"
+                summary_filename += f"_{timestamp}.csv"
+
+                summary_path = csv_exports_dir / summary_filename
+                summary_df.to_csv(summary_path, index=False)
+                print(f"  📊 Summary statistics: {summary_path.name}")
+
+        # 3. Create pivot tables for key metrics
+        if 'loss_percentage' in df.columns and 'queue_size' in df.columns and 'interval' in df.columns:
+            try:
+                pivot_data = df.pivot_table(
+                    index='queue_size',
+                    columns='interval',
+                    values='loss_percentage',
+                    aggfunc='mean',
+                    fill_value=0
+                )
+
+                pivot_filename = f"loss_percentage_pivot_{test_type}"
+                if progress_mode:
+                    pivot_filename += "_progress"
+                pivot_filename += f"_{timestamp}.csv"
+
+                pivot_path = csv_exports_dir / pivot_filename
+                pivot_data.to_csv(pivot_path)
+                print(f"  📈 Loss percentage pivot: {pivot_path.name}")
+
+            except Exception as e:
+                print(f"  ⚠️ Could not create pivot table: {e}")
+
+        # 4. Create metadata file
+        metadata = {
+            'export_timestamp': timestamp,
+            'test_type': test_type,
+            'total_records': len(df),
+            'columns': list(df.columns),
+            'data_types': {col: str(dtype) for col, dtype in df.dtypes.items()},
+            'unique_queue_sizes': sorted(df['queue_size'].unique().tolist()) if 'queue_size' in df.columns else [],
+            'unique_intervals': sorted(df['interval'].unique().tolist()) if 'interval' in df.columns else [],
+            'progress_mode': progress_mode,
+            'description': f"Enhanced CSV export for {test_type} benchmark data including raw data, summaries, and pivot tables"
+        }
+
+        metadata_filename = f"export_metadata_{test_type}"
+        if progress_mode:
+            metadata_filename += "_progress"
+        metadata_filename += f"_{timestamp}.json"
+
+        metadata_path = csv_exports_dir / metadata_filename
+        with open(metadata_path, 'w') as f:
+            import json
+            json.dump(metadata, f, indent=2, default=str)
+        print(f"  📋 Export metadata: {metadata_path.name}")
+
+        # 5. Create README for the exports
+        readme_content = f"""# Enhanced CSV Exports - {test_type.title()} Benchmark Data
+
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Test Type: {test_type}
+Progress Mode: {progress_mode}
+
+## Files in this export:
+
+### Raw Data
+- `{raw_path.name}`: Complete benchmark data with all measurements
+
+### Summary Statistics
+- `{summary_path.name if 'summary_path' in locals() else 'N/A'}`: Aggregated statistics by configuration
+
+### Pivot Tables
+- `{pivot_path.name if 'pivot_path' in locals() else 'N/A'}`: Loss percentage data in pivot format
+
+### Metadata
+- `{metadata_path.name}`: Export metadata and data schema information
+- `README.md`: This file
+
+## Data Schema
+
+Total records: {len(df)}
+Columns: {len(df.columns)}
+
+### Key Columns:
+"""
+
+        if 'queue_size' in df.columns:
+            readme_content += f"- queue_size: Queue buffer sizes ({len(df['queue_size'].unique())} unique values)\n"
+        if 'interval' in df.columns:
+            readme_content += f"- interval: Test intervals ({len(df['interval'].unique())} unique values)\n"
+        if 'loss_percentage' in df.columns:
+            readme_content += f"- loss_percentage: JFR event loss percentage\n"
+
+        readme_content += f"""
+### Usage Notes:
+- Raw data contains all original measurements and can be used for detailed analysis
+- Summary statistics provide aggregated views for quick insights
+- Pivot tables are ready for spreadsheet analysis
+- All timestamps are in format YYYYMMDD_HHMMSS
+- Progress mode files are updated during benchmark execution
+"""
+
+        readme_path = csv_exports_dir / "README.md"
+        with open(readme_path, 'w') as f:
+            f.write(readme_content)
+        print(f"  📖 Export README: {readme_path.name}")
+
+        print(f"📊 Enhanced CSV exports completed in {csv_exports_dir}")
+        return csv_exports_dir
+
     def flatten_for_csv(self, results: List[Dict]) -> pd.DataFrame:
         """Flatten complex nested fields for CSV export"""
         flattened_results = []
@@ -3426,6 +3602,13 @@ class BenchmarkRunner:
         print("📝 Generating comprehensive plot summary documentation...")
         self.generate_plot_summary_markdown()
 
+        # Create enhanced CSV exports for all data
+        print("📊 Creating enhanced CSV exports...")
+        if native_df is not None:
+            self.enhance_csv_exports(native_df, PLOTS_DIR / "native", progress_mode=False)
+        if renaissance_df is not None:
+            self.enhance_csv_exports(renaissance_df, PLOTS_DIR / "renaissance", progress_mode=False)
+
         print(f"📊 Visualizations saved to {PLOTS_DIR.absolute()}")
 
     def create_progress_visualizations(self, csv_file: Optional[str] = None):
@@ -3565,6 +3748,12 @@ class BenchmarkRunner:
         # Generate progress plot summary markdown
         print("📝 Generating progress plot summary documentation...")
         self.generate_plot_summary_markdown(progress_mode=True)
+
+        # Create enhanced CSV exports for progress data
+        if df is not None:
+            print("📊 Creating enhanced progress CSV exports...")
+            test_type = 'native' if 'native_duration' in df.columns else 'renaissance'
+            self.enhance_csv_exports(df, PLOTS_DIR / test_type, progress_mode=True)
 
         print(f"📊 Progress visualizations saved to {PLOTS_DIR.absolute()} with '_progress' suffix")
 
@@ -6817,11 +7006,22 @@ class BenchmarkRunner:
         plt.savefig(output_dir / filename, dpi=300, bbox_inches='tight')
         plt.close()
 
-        # Create CSV export
+        # Create CSV export with detailed metadata
         if not progress_mode:
             csv_filename = filename.replace('.png', '.csv')
             csv_data = pd.DataFrame(bar_data)
+
+            # Add metadata columns for better CSV analysis
+            csv_data['chart_type'] = chart_type
+            csv_data['generated_timestamp'] = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+            csv_data['log_scale'] = log_scale
+
+            # Save with comprehensive column ordering
+            column_order = ['category', 'value', 'chart_type', 'log_scale', 'generated_timestamp']
+            csv_data = csv_data.reindex(columns=[col for col in column_order if col in csv_data.columns])
+
             csv_data.to_csv(output_dir / csv_filename, index=False)
+            print(f"  📄 Loss bar chart CSV saved: {csv_filename}")
 
     def generate_plot_summary_markdown(self, progress_mode: bool = False):
         """Generate comprehensive markdown summaries with all grid plots for easy review"""
