@@ -4062,7 +4062,18 @@ Columns: {len(df.columns)}
                 plt.subplots_adjust(top=0.9, bottom=0.1, left=0.1, right=0.9, hspace=0.4, wspace=0.3)
 
         plt.savefig(PLOTS_DIR / self._get_plot_filename('native_heatmaps_by_duration_stack.png', progress_mode), dpi=300, bbox_inches='tight', pad_inches=0.1)
-        plt.close()        # 2. Line plots: Loss Rate vs Queue Size for each Interval, showing all duration/stack combinations
+        plt.close()
+
+        # Calculate global y-axis limits for consistent scaling across all loss rate plots
+        global_y_min = df_success['loss_percentage'].min() if not df_success.empty else 0
+        global_y_max = df_success['loss_percentage'].max() if not df_success.empty else 100
+        # Add some padding to the range
+        y_range = global_y_max - global_y_min
+        y_padding = y_range * 0.05  # 5% padding
+        global_y_min = max(0, global_y_min - y_padding)  # Don't go below 0
+        global_y_max = global_y_max + y_padding
+
+        # 2. Line plots: Loss Rate vs Queue Size for each Interval, showing all duration/stack combinations
         fig, axes = plt.subplots(2, 2, figsize=constrain_figsize(16, 12))
         axes = axes.flatten()
         fig.suptitle('Native Test: Loss Rate vs Queue Size by Interval (All Duration/Stack Combinations)', fontsize=16)
@@ -4086,6 +4097,9 @@ Columns: {len(df.columns)}
             axes[i].set_title(f'Interval: {interval}')
             axes[i].set_xlabel('Queue Size')
             axes[i].set_ylabel('Loss Rate (%)')
+
+            # Set consistent y-axis limits across all subplots
+            axes[i].set_ylim(global_y_min, global_y_max)
 
             # Only add legend if there are actually lines plotted
             lines, labels = axes[i].get_legend_handles_labels()
@@ -4137,6 +4151,10 @@ Columns: {len(df.columns)}
 
             # Set log scale for y-axis
             axes[i].set_yscale('log')
+
+            # Set consistent y-axis limits across all subplots (log scale appropriate)
+            log_y_min = max(0.001, global_y_min) if global_y_min > 0 else 0.001  # Avoid log(0)
+            axes[i].set_ylim(log_y_min, global_y_max)
 
             # Only add legend if there are actually lines plotted
             lines, labels = axes[i].get_legend_handles_labels()
