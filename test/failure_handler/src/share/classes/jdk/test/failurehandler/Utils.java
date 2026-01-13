@@ -24,6 +24,7 @@
 package jdk.test.failurehandler;
 
 import java.io.IOException;
+import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.Reader;
@@ -62,10 +63,26 @@ public final class Utils {
     }
 
     public static Properties getProperties(String name) {
+        String configPath = System.getProperty("test.failure.handler.config.dir");
         Properties properties = new Properties();
-        String resourceName = String.format(
+        String resourceName;
+        InputStream stream;
+        if (configPath == null) {
+            resourceName = String.format(
                 "/%s.%s", name.toLowerCase(), "properties");
-        InputStream stream = Utils.class.getResourceAsStream(resourceName);
+            stream = Utils.class.getResourceAsStream(resourceName);
+        } else {
+            resourceName = String.format(
+                "%s/%s.%s", configPath, name.toLowerCase(), "properties");
+            try {
+                stream = new FileInputStream(resourceName);
+            } catch (IOException e) {
+                throw new IllegalStateException(String.format(
+                    "can't open resource '%s' : %s%n",
+                    resourceName, e.getMessage()), e);
+            }
+        }
+        
         if (stream == null) {
             throw new IllegalStateException(String.format(
                     "resource '%s' doesn't exist%n", resourceName));

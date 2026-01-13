@@ -47,6 +47,11 @@ to be performed in case of individual test failure or timeout. Each platform
 family uses its own property file (named '<platform>.properties'). For platform
 independent actions, 'common.properties' is used.
 
+By default the configuration files from src/share/conf are used. To override them,
+set the 'test.failure.handler.config.dir' system property to point to a directory
+which contains the configuration files. This should contain a `common.properties` file
+and may contain platform specific files such as `linux.properties`, `windows.properties`, etc.
+
 Actions to be performed on each failure are listed in 'environment' property.
 Extra actions for timeouts are listed in 'onTimeout'.
 
