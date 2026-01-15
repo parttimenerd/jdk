@@ -39,6 +39,7 @@ import jdk.test.lib.jfr.EventNames;
  * @run main/timeout=480 jdk.jfr.event.profiling.TestCPUTimeSampleMultipleRecordings
  */
 public class TestCPUTimeSampleMultipleRecordings {
+
     static volatile boolean alive = true;
 
     public static void main(String[] args) throws Exception {
@@ -48,6 +49,7 @@ public class TestCPUTimeSampleMultipleRecordings {
             try (RecordingStream rs = new RecordingStream()) {
                 rs.enable(EventNames.CPUTimeSample).with("throttle", "1ms");
                 rs.onEvent(EventNames.CPUTimeSample, e -> {
+                    alive = false;
                     rs.close();
                 });
 
@@ -55,7 +57,6 @@ public class TestCPUTimeSampleMultipleRecordings {
             }
         }
         alive = false;
-        t.join();
     }
 
     public static void nativeMethod() {
